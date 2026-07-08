@@ -1,0 +1,40 @@
+{
+  "claimId": "CLM-20260706-0003",
+  "policyNo": "POL-HEALTH-003",
+  "insured": {
+    "name": "王五",
+    "idNo": "310101199512123456",
+    "gender": "M",
+    "age": 31
+  },
+  "claimType": "hospitalization_medical",
+  "policyEffectiveDate": "2026-05-20",
+  "incident": {
+    "hospitalName": "上海某综合医院",
+    "admissionDate": "2026-06-05",
+    "dischargeDate": "2026-06-08",
+    "diagnosis": [
+      "急性肠胃炎"
+    ]
+  },
+  "documents": [
+    {
+      "type": "discharge_summary",
+      "status": "received"
+    },
+    {
+      "type": "invoice",
+      "status": "received"
+    }
+  ],
+  "expense": {
+    "totalAmount": 5680.40,
+    "socialInsurancePaid": 2230.10,
+    "selfPaidAmount": 3450.30,
+    "suspectedExcludedItems": []
+  },
+  "riskFlags": [
+    "early_claim"
+  ],
+  "status": "accepted"
+}

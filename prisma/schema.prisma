@@ -1,0 +1,165 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum HolderType {
+  group
+  company
+}
+
+enum PolicyStatus {
+  enabled
+  disabled
+}
+
+enum ProductStatus {
+  active
+  inactive
+}
+
+enum BenefitStatus {
+  active
+  inactive
+}
+
+enum Gender {
+  male
+  female
+  unknown
+}
+
+enum IdType {
+  id_card
+  passport
+  other
+}
+
+enum InsuredRole {
+  employee
+  spouse
+  child
+  parent
+  other
+}
+
+model Policy {
+  id               String          @id @default(uuid()) @db.Uuid
+  policyNo         String          @unique @map("policy_no") @db.VarChar(50)
+  policyName       String?         @map("policy_name") @db.VarChar(100)
+  applicantName    String          @map("applicant_name") @db.VarChar(100)
+  holderType       HolderType      @map("holder_type")
+  policyStatus     PolicyStatus    @default(enabled) @map("policy_status")
+  effectiveDate    DateTime        @map("effective_date") @db.Date
+  expiryDate       DateTime        @map("expiry_date") @db.Date
+  currency         String          @default("CNY") @db.VarChar(10)
+  totalPremium     Decimal?        @map("total_premium") @db.Decimal(18, 2)
+  insuredCount     Int?            @map("insured_count")
+  issueDate        DateTime?       @map("issue_date") @db.Date
+  underwritingDate DateTime?       @map("underwriting_date") @db.Date
+  remark           String?         @db.Text
+  createdAt        DateTime        @default(now()) @map("created_at")
+  updatedAt        DateTime        @updatedAt @map("updated_at")
+
+  products         PolicyProduct[]
+  insureds         PolicyInsured[]
+
+  @@index([policyStatus], map: "idx_policy_status")
+  @@index([effectiveDate, expiryDate], map: "idx_policy_coverage_period")
+  @@map("policy")
+}
+
+model PolicyProduct {
+  id            String         @id @default(uuid()) @db.Uuid
+  policyId      String         @map("policy_id") @db.Uuid
+  productNo     String         @unique @map("product_no") @db.VarChar(50)
+  productCode   String         @map("product_code") @db.VarChar(50)
+  productName   String         @map("product_name") @db.VarChar(100)
+  productStatus ProductStatus  @default(active) @map("product_status")
+  effectiveDate DateTime       @map("effective_date") @db.Date
+  expiryDate    DateTime       @map("expiry_date") @db.Date
+  premium       Decimal?       @db.Decimal(18, 2)
+  sumInsured    Decimal?       @map("sum_insured") @db.Decimal(18, 2)
+  sequenceNo    Int?           @map("sequence_no")
+  remark        String?        @db.Text
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  policy        Policy         @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  benefits      PolicyBenefit[]
+
+  @@unique([policyId, productCode], map: "uk_policy_product_policy_id_product_code")
+  @@index([policyId], map: "idx_policy_product_policy_id")
+  @@index([productStatus], map: "idx_policy_product_status")
+  @@map("policy_product")
+}
+
+model PolicyBenefit {
+  id              String         @id @default(uuid()) @db.Uuid
+  policyProductId String         @map("policy_product_id") @db.Uuid
+  benefitNo       String         @unique @map("benefit_no") @db.VarChar(50)
+  benefitCode     String         @map("benefit_code") @db.VarChar(50)
+  benefitName     String         @map("benefit_name") @db.VarChar(100)
+  benefitStatus   BenefitStatus  @default(active) @map("benefit_status")
+  effectiveDate   DateTime       @map("effective_date") @db.Date
+  expiryDate      DateTime       @map("expiry_date") @db.Date
+  sequenceNo      Int?           @map("sequence_no")
+  claimableFlag   Boolean        @default(true) @map("claimable_flag")
+  remark          String?        @db.Text
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  policyProduct   PolicyProduct  @relation(fields: [policyProductId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([policyProductId, benefitCode], map: "uk_policy_benefit_product_id_benefit_code")
+  @@index([policyProductId], map: "idx_policy_benefit_policy_product_id")
+  @@index([benefitStatus], map: "idx_policy_benefit_status")
+  @@map("policy_benefit")
+}
+
+model InsuredPerson {
+  id               String             @id @default(uuid()) @db.Uuid
+  insuredNo        String             @unique @map("insured_no") @db.VarChar(50)
+  name             String             @db.VarChar(100)
+  gender           Gender?            
+  birthDate        DateTime?          @map("birth_date") @db.Date
+  idType           IdType?            @map("id_type")
+  idNo             String?            @map("id_no") @db.VarChar(50)
+  phone            String?            @db.VarChar(30)
+  occupationCode   String?            @map("occupation_code") @db.VarChar(50)
+  occupationName   String?            @map("occupation_name") @db.VarChar(100)
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+
+  policies         PolicyInsured[]
+
+  @@unique([idType, idNo], map: "uk_insured_person_id_type_id_no")
+  @@index([name], map: "idx_insured_person_name")
+  @@map("insured_person")
+}
+
+model PolicyInsured {
+  id              String         @id @default(uuid()) @db.Uuid
+  policyId        String         @map("policy_id") @db.Uuid
+  insuredPersonId String         @map("insured_person_id") @db.Uuid
+  effectiveDate   DateTime       @map("effective_date") @db.Date
+  expiryDate      DateTime       @map("expiry_date") @db.Date
+  joinDate        DateTime?      @map("join_date") @db.Date
+  leaveDate       DateTime?      @map("leave_date") @db.Date
+  insuredRole     InsuredRole?   @map("insured_role")
+  remark          String?        @db.Text
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  policy          Policy         @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  insuredPerson   InsuredPerson  @relation(fields: [insuredPersonId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([policyId, insuredPersonId], map: "uk_policy_insured_policy_id_insured_person_id")
+  @@index([policyId], map: "idx_policy_insured_policy_id")
+  @@index([insuredPersonId], map: "idx_policy_insured_insured_person_id")
+  @@map("policy_insured")
+}

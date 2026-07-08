@@ -1,0 +1,54 @@
+{
+  "claimId": "CLM-20260706-0001",
+  "policyNo": "POL-HEALTH-001",
+  "insured": {
+    "name": "张三",
+    "idNo": "310101199001011234",
+    "gender": "M",
+    "age": 36
+  },
+  "claimType": "hospitalization_medical",
+  "policyEffectiveDate": "2026-01-01",
+  "incident": {
+    "hospitalName": "上海某三甲医院",
+    "admissionDate": "2026-06-12",
+    "dischargeDate": "2026-06-18",
+    "diagnosis": [
+      "急性阑尾炎"
+    ]
+  },
+  "documents": [
+    {
+      "type": "discharge_summary",
+      "status": "received"
+    },
+    {
+      "type": "invoice",
+      "status": "received"
+    },
+    {
+      "type": "itemized_bill",
+      "status": "received"
+    },
+    {
+      "type": "medical_insurance_statement",
+      "status": "received"
+    }
+  ],
+  "expense": {
+    "totalAmount": 18250.36,
+    "socialInsurancePaid": 9860.20,
+    "selfPaidAmount": 8390.16,
+    "suspectedExcludedItems": [
+      {
+        "name": "单人病房床位费",
+        "amount": 600.00,
+        "reason": "超过条款普通病房标准"
+      }
+    ]
+  },
+  "riskFlags": [
+    "standard_case"
+  ],
+  "status": "accepted"
+}

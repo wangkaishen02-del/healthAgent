@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>健康险理算理赔 Agent 工作台</title>
+    <style>
+      :root {
+        --bg: #efe7dc;
+        --panel: rgba(255, 251, 246, 0.94);
+        --card: #fffdf9;
+        --ink: #1b2826;
+        --muted: #62706c;
+        --line: #dccfbe;
+        --accent: #0f766e;
+        --accent-soft: #dff3ed;
+        --amber: #9a6700;
+        --amber-soft: #f8ecd3;
+        --red: #b42318;
+        --red-soft: #fde8e8;
+        --blue: #0f4c81;
+        --blue-soft: #e3effb;
+        --shadow: 0 18px 45px rgba(43, 51, 46, 0.12);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--ink);
+        font-family: "PingFang SC", "Noto Sans SC", sans-serif;
+        background:
+          radial-gradient(circle at top left, #f7d8b7 0, transparent 22%),
+          radial-gradient(circle at top right, #d5ede2 0, transparent 20%),
+          linear-gradient(180deg, #f7f1e8 0%, var(--bg) 100%);
+      }
+      button, input { font: inherit; }
+      .wrap {
+        width: min(1380px, calc(100% - 24px));
+        margin: 0 auto;
+        padding: 24px 0 48px;
+      }
+      .hero, .panel {
+        background: var(--panel);
+        border: 1px solid rgba(255, 255, 255, 0.65);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(12px);
+      }
+      .banner {
+        margin-bottom: 14px;
+        padding: 14px 16px;
+        border-radius: 16px;
+        border: 1px solid #efdaa4;
+        background: var(--amber-soft);
+        color: #7a5200;
+        line-height: 1.6;
+      }
+      .banner a {
+        color: inherit;
+        font-weight: 700;
+      }
+      .hero { padding: 24px; margin-bottom: 18px; }
+      .eyebrow {
+        display: inline-flex;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 12px;
+        font-weight: 700;
+        letter-spacing: 0.05em;
+      }
+      .hero-top {
+        display: flex;
+        gap: 16px;
+        justify-content: space-between;
+      }
+      h1 {
+        margin: 14px 0 10px;
+        font-size: clamp(30px, 4vw, 52px);
+        line-height: 1.04;
+      }
+      .lead {
+        max-width: 820px;
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.75;
+        font-size: 16px;
+      }
+      .hero-status {
+        min-width: 320px;
+        padding: 18px;
+        border-radius: 20px;
+        background: var(--card);
+        border: 1px solid var(--line);
+      }
+      .hero-status strong {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 16px;
+      }
+      .hero-status p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.6;
+        font-size: 14px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 20px;
+      }
+      .stat, .card, .composer, .claim-item {
+        padding: 16px;
+        border-radius: 18px;
+        background: var(--card);
+        border: 1px solid var(--line);
+      }
+      .stat-label { color: var(--muted); font-size: 13px; }
+      .stat-value {
+        display: block;
+        margin-top: 8px;
+        font-size: 28px;
+        font-weight: 700;
+        color: var(--accent);
+      }
+      .layout {
+        display: grid;
+        grid-template-columns: 330px 1fr 360px;
+        gap: 18px;
+      }
+      .panel { padding: 20px; }
+      h2 { margin: 0; font-size: 23px; }
+      h3 { margin: 0 0 10px; font-size: 18px; }
+      .subtle { color: var(--muted); font-size: 13px; }
+      .panel-title {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 14px;
+      }
+      .claim-list {
+        display: grid;
+        gap: 12px;
+      }
+      .claim-item {
+        cursor: pointer;
+        transition: transform 120ms ease, border-color 120ms ease;
+      }
+      .claim-item:hover { transform: translateY(-1px); }
+      .claim-item.active {
+        border-color: #a8d5c8;
+        background: linear-gradient(180deg, #eef9f5 0%, #fffdf9 100%);
+      }
+      .claim-item strong {
+        display: block;
+        margin-bottom: 8px;
+      }
+      .claim-item p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .status-row, .tags, .chips, .action-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .tag, .chip, .status-pill {
+        padding: 6px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        border: 1px solid var(--line);
+      }
+      .status-pill.ok, .tag.ok { background: var(--accent-soft); color: var(--accent); border-color: #b6dfd5; }
+      .status-pill.warn, .tag.warn { background: var(--amber-soft); color: var(--amber); border-color: #efdaa4; }
+      .status-pill.risk, .tag.risk { background: var(--red-soft); color: var(--red); border-color: #f3bcbc; }
+      .status-pill.info, .tag.info { background: var(--blue-soft); color: var(--blue); border-color: #bfd5ee; }
+      .chip { background: #f8f2e9; }
+      .composer {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .field label {
+        display: block;
+        margin-bottom: 8px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .field input {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: white;
+      }
+      .actions {
+        display: flex;
+        align-items: end;
+        gap: 10px;
+      }
+      .btn {
+        padding: 11px 15px;
+        border: 0;
+        border-radius: 12px;
+        cursor: pointer;
+      }
+      .btn.primary { background: var(--accent); color: white; }
+      .btn.secondary { background: #ede5da; color: var(--ink); }
+      .btn.warn { background: #f3e6c7; color: #7a5200; }
+      .btn.risk { background: #f9dddd; color: #962014; }
+      .sections, .timeline, .history-list {
+        display: grid;
+        gap: 12px;
+      }
+      .grid-two {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+      .kv { display: grid; gap: 10px; }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px dashed #eadfce;
+      }
+      .row:last-child { padding-bottom: 0; border-bottom: 0; }
+      .k { color: var(--muted); }
+      .v { font-weight: 600; text-align: right; }
+      .timeline-item, .history-item {
+        padding: 14px 16px;
+        border-left: 3px solid #c7ddd5;
+        border-radius: 0 18px 18px 0;
+        background: var(--card);
+      }
+      .timeline-item strong, .history-item strong {
+        display: block;
+        margin-bottom: 6px;
+      }
+      .timeline-item p, .history-item p, .brief, .empty, .card p {
+        margin: 0;
+        color: var(--muted);
+        line-height: 1.68;
+      }
+      .brief { white-space: pre-wrap; }
+      .decision {
+        padding: 18px;
+        border-radius: 18px;
+        background: linear-gradient(180deg, #eef8f5 0%, #ffffff 100%);
+        border: 1px solid #b6dfd5;
+      }
+      .decision strong {
+        display: block;
+        font-size: 18px;
+        margin-bottom: 10px;
+      }
+      .footer-note {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .empty {
+        padding: 20px;
+        text-align: center;
+        border: 1px dashed var(--line);
+        border-radius: 18px;
+        background: rgba(255,255,255,0.45);
+      }
+      @media (max-width: 1220px) {
+        .layout { grid-template-columns: 1fr; }
+        .composer, .stats, .grid-two, .hero-top { grid-template-columns: 1fr; display: grid; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <div class="banner" id="modeBanner" style="display: none;"></div>
+      <section class="hero">
+        <div class="hero-top">
+          <div>
+            <span class="eyebrow">HEALTH CLAIMS AI WORKBENCH</span>
+            <h1>健康险理算理赔 Agent<br />从单案演示升级为最小作业台</h1>
+            <p class="lead">
+              这版已经支持多案件池、规则理算、审批动作回写、操作留痕，以及基于本地 Ollama 的审批摘要。
+              你现在可以像一个简化版理赔员一样，在一个页面里切案件、改试算、做审批和结案动作。
+            </p>
+          </div>
+          <div class="hero-status">
+            <strong id="caseHeadline">正在加载案件</strong>
+            <p id="caseSummary">系统正在获取案件列表和当前案件详情。</p>
+          </div>
+        </div>
+        <div class="stats">
+          <div class="stat"><span class="stat-label">总医疗费用</span><strong class="stat-value" id="totalAmount">-</strong></div>
+          <div class="stat"><span class="stat-label">医保已报销</span><strong class="stat-value" id="socialPaid">-</strong></div>
+          <div class="stat"><span class="stat-label">预计应赔金额</span><strong class="stat-value" id="payableAmount">-</strong></div>
+          <div class="stat"><span class="stat-label">建议动作</span><strong class="stat-value" id="approvalSuggestion">-</strong></div>
+        </div>
+      </section>
+
+      <section class="layout">
+        <aside class="panel">
+          <div class="panel-title">
+            <h2>案件池</h2>
+            <span class="subtle" id="claimCount">0 件</span>
+          </div>
+          <div class="claim-list" id="claimList"></div>
+        </aside>
+
+        <section class="panel">
+          <div class="panel-title">
+            <h2>理算台</h2>
+            <span class="subtle" id="briefSource">等待摘要</span>
+          </div>
+
+          <div class="composer">
+            <div class="field">
+              <label for="selfPaidInput">自费金额</label>
+              <input id="selfPaidInput" type="number" step="0.01" />
+            </div>
+            <div class="field">
+              <label for="excludedInput">剔除金额</label>
+              <input id="excludedInput" type="number" step="0.01" />
+            </div>
+            <div class="field">
+              <label for="deductibleInput">免赔额</label>
+              <input id="deductibleInput" type="number" step="0.01" />
+            </div>
+            <div class="field">
+              <label for="rateInput">赔付比例</label>
+              <input id="rateInput" type="number" step="0.01" min="0" max="1" />
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="recalculateBtn">重新理算</button>
+              <button class="btn secondary" id="resetBtn">恢复原始值</button>
+            </div>
+          </div>
+
+          <div class="action-bar" style="margin-bottom: 14px;">
+            <button class="btn primary" id="approveBtn">审批通过</button>
+            <button class="btn warn" id="escalateBtn">升级复核</button>
+            <button class="btn risk" id="rejectBtn">拒赔退回</button>
+            <button class="btn secondary" id="reopenBtn">重新打开</button>
+          </div>
+
+          <div class="grid-two">
+            <article class="card">
+              <h3>案件信息</h3>
+              <div class="kv" id="claimDetails"></div>
+            </article>
+            <article class="card">
+              <h3>单证接收情况</h3>
+              <div class="tags" id="documentTags"></div>
+              <p class="footer-note" id="documentSummary"></p>
+            </article>
+            <article class="card">
+              <h3>理算试算</h3>
+              <div class="kv" id="calculationDetails"></div>
+            </article>
+            <article class="card">
+              <h3>规则与风险</h3>
+              <div class="tags" id="riskTags"></div>
+              <p class="footer-note" id="ruleSummary"></p>
+            </article>
+          </div>
+
+          <div class="sections" style="margin-top: 14px;">
+            <article class="card">
+              <h3>Agent 审批摘要</h3>
+              <div class="brief" id="llmBrief">等待生成...</div>
+            </article>
+            <article class="card">
+              <h3>系统处理轨迹</h3>
+              <div class="timeline" id="approvalTimeline"></div>
+            </article>
+          </div>
+        </section>
+
+        <aside class="panel">
+          <div class="panel-title">
+            <h2>审批与结案</h2>
+            <span class="subtle">动作会写入本地 SQLite</span>
+          </div>
+
+          <div class="decision">
+            <strong id="decisionTitle">-</strong>
+            <p id="decisionBody">-</p>
+          </div>
+
+          <div class="sections" style="margin-top: 14px;">
+            <article class="card">
+              <h3>AI 适合做什么</h3>
+              <div class="chips" id="aiTasks"></div>
+            </article>
+            <article class="card">
+              <h3>必须人工确认的节点</h3>
+              <div class="chips" id="manualTasks"></div>
+            </article>
+            <article class="card">
+              <h3>动作留痕</h3>
+              <div class="history-list" id="actionHistory"></div>
+            </article>
+          </div>
+        </aside>
+      </section>
+    </main>
+
+    <script>
+      const apiBase =
+        new URLSearchParams(window.location.search).get("apiBase") ||
+        (window.location.protocol === "file:" ? "http://127.0.0.1:8000" : "");
+
+      const state = {
+        claims: [],
+        currentClaimId: null,
+        currentPayload: null,
+        originalPayloadById: {},
+        summaryRequestToken: 0
+      };
+
+      const aiTasks = ["病历与票据抽取", "案件摘要生成", "异常费用提示", "审批意见草稿"];
+      const manualTasks = ["确认责任适用", "确认剔除项成立", "确认最终赔付金额", "确认结案发送"];
+
+      function money(value) {
+        return new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(value || 0);
+      }
+      function setText(id, value) {
+        document.getElementById(id).textContent = value;
+      }
+      function renderRows(containerId, rows) {
+        document.getElementById(containerId).innerHTML = rows
+          .map((item) => `<div class="row"><span class="k">${item.label}</span><span class="v">${item.value}</span></div>`)
+          .join("");
+      }
+      function renderTags(containerId, values, className) {
+        document.getElementById(containerId).innerHTML = values.map((item) => `<span class="${className}">${item}</span>`).join("");
+      }
+      function renderTimeline(containerId, items, emptyText) {
+        const root = document.getElementById(containerId);
+        if (!items.length) {
+          root.innerHTML = `<div class="empty">${emptyText}</div>`;
+          return;
+        }
+        root.innerHTML = items
+          .map((item) => `<div class="timeline-item"><strong>${item.title}</strong><p>${item.body}</p></div>`)
+          .join("");
+      }
+      function riskPill(item) {
+        const lowered = item.toLowerCase();
+        if (lowered.includes("waiting") || lowered.includes("reject")) return "risk";
+        if (lowered.includes("high") || lowered.includes("manual")) return "warn";
+        if (lowered.includes("pending")) return "info";
+        return "ok";
+      }
+      function actionLabel(action) {
+        return {
+          approve: "审批通过",
+          reject: "拒赔退回",
+          escalate: "升级复核",
+          reopen: "重新打开"
+        }[action] || action;
+      }
+      function statusLabel(status) {
+        return {
+          accepted: "待处理",
+          approved: "已通过",
+          rejected: "已拒赔",
+          pending_senior_review: "高级复核中"
+        }[status] || status;
+      }
+      function suggestionLabel(action) {
+        return {
+          approve: "人工审批",
+          escalate: "升级复核",
+          reject: "建议拒赔"
+        }[action] || action;
+      }
+
+      async function fetchJson(url, options) {
+        const target = apiBase ? new URL(url, apiBase).toString() : url;
+        const response = await fetch(target, options);
+        if (!response.ok) throw new Error(`请求失败: ${response.status}`);
+        return response.json();
+      }
+
+      function renderModeBanner() {
+        const banner = document.getElementById("modeBanner");
+        if (window.location.protocol !== "file:") {
+          banner.style.display = "none";
+          return;
+        }
+
+        banner.style.display = "block";
+        banner.innerHTML =
+          `你现在是直接打开本地文件，所以页面会默认去连接 <strong>${apiBase}</strong>。` +
+          ` 如果按钮没反应，通常是后端没启动，或者你服务跑在别的端口。` +
+          ` 推荐直接打开 <a href="${apiBase}" target="_blank">${apiBase}</a>，` +
+          ` 或者用 <code>?apiBase=http://127.0.0.1:8001</code> 这种方式指定端口。`;
+      }
+
+      async function loadClaimList() {
+        const data = await fetchJson("/api/claims");
+        state.claims = data.items;
+        setText("claimCount", `${data.items.length} 件`);
+        renderClaimList();
+        if (!state.currentClaimId && data.items.length) {
+          await loadClaimDetail(data.items[0].claimId);
+        }
+      }
+
+      function renderClaimList() {
+        const root = document.getElementById("claimList");
+        root.innerHTML = state.claims
+          .map((item) => {
+            const pillType = item.suggestedAction === "reject" ? "risk" : item.suggestedAction === "escalate" ? "warn" : "ok";
+            return `
+              <article class="claim-item${item.claimId === state.currentClaimId ? " active" : ""}" data-claim-id="${item.claimId}">
+                <strong>${item.claimId}</strong>
+                <p>${item.insuredName} · ${item.diagnosis}</p>
+                <p>${item.hospitalName}</p>
+                <div class="status-row" style="margin-top: 10px;">
+                  <span class="status-pill ${pillType}">${suggestionLabel(item.suggestedAction)}</span>
+                  <span class="status-pill info">${statusLabel(item.status)}</span>
+                </div>
+                <p style="margin-top: 8px;">预计赔付 ${money(item.payableAmount)}</p>
+              </article>
+            `;
+          })
+          .join("");
+
+        root.querySelectorAll(".claim-item").forEach((element) => {
+          element.addEventListener("click", () => loadClaimDetail(element.dataset.claimId));
+        });
+      }
+
+      async function loadClaimDetail(claimId) {
+        state.currentClaimId = claimId;
+        renderClaimList();
+        setText("caseHeadline", `${claimId} · 加载中`);
+        setText("caseSummary", "正在加载案件详情...");
+        setText("briefSource", "摘要来源：正在生成");
+        setText("llmBrief", "摘要生成中...");
+        const payload = await fetchJson(`/api/claims?claimId=${encodeURIComponent(claimId)}`);
+        state.currentPayload = payload;
+        state.originalPayloadById[claimId] = structuredClone(payload);
+        renderPayload(payload);
+        void loadClaimSummary(claimId);
+      }
+
+      async function loadClaimSummary(claimId) {
+        const token = ++state.summaryRequestToken;
+        try {
+          const data = await fetchJson(`/api/claims/summary?claimId=${encodeURIComponent(claimId)}`);
+          if (token !== state.summaryRequestToken || claimId !== state.currentClaimId || !state.currentPayload) {
+            return;
+          }
+          state.currentPayload.summary = data.summary;
+          state.originalPayloadById[claimId] = structuredClone(state.currentPayload);
+          renderPayload(state.currentPayload);
+        } catch (error) {
+          if (token !== state.summaryRequestToken || claimId !== state.currentClaimId || !state.currentPayload) {
+            return;
+          }
+          state.currentPayload.summary = {
+            source: "fallback",
+            reason: error.message,
+            text: "摘要加载失败，请稍后重试或直接查看系统理算结果。"
+          };
+          renderPayload(state.currentPayload);
+        }
+      }
+
+      function renderPayload(payload) {
+        const { claim, rule, evaluation, summary, actions = [] } = payload;
+        setText("caseHeadline", `${claim.claimId} · ${statusLabel(claim.status || "accepted")}`);
+        setText("caseSummary", `${claim.insured.name}，${claim.incident.hospitalName}，当前系统建议为 ${suggestionLabel(evaluation.suggestedAction)}。`);
+        setText("totalAmount", money(claim.expense.totalAmount));
+        setText("socialPaid", money(claim.expense.socialInsurancePaid));
+        setText("payableAmount", money(evaluation.payableAmount));
+        setText("approvalSuggestion", suggestionLabel(evaluation.suggestedAction));
+
+        document.getElementById("selfPaidInput").value = claim.expense.selfPaidAmount;
+        document.getElementById("excludedInput").value = evaluation.excludedAmount;
+        document.getElementById("deductibleInput").value = evaluation.deductible;
+        document.getElementById("rateInput").value = evaluation.reimbursementRate;
+
+        renderRows("claimDetails", [
+          { label: "保单号", value: claim.policyNo },
+          { label: "被保险人", value: `${claim.insured.name} / ${claim.insured.age}岁` },
+          { label: "主诊断", value: claim.incident.diagnosis.join("、") },
+          { label: "住院时间", value: `${claim.incident.admissionDate} 至 ${claim.incident.dischargeDate}` },
+          { label: "案件状态", value: statusLabel(claim.status || "accepted") }
+        ]);
+
+        renderTags(
+          "documentTags",
+          claim.documents.map((doc) => `${doc.type} · ${doc.status === "received" ? "已接收" : doc.status}`),
+          "tag ok"
+        );
+        setText("documentSummary", `当前共收到 ${claim.documents.length} 份材料，系统会据此生成理算和审批摘要。`);
+
+        renderRows("calculationDetails", [
+          { label: "自费金额", value: money(claim.expense.selfPaidAmount) },
+          { label: "剔除金额", value: money(evaluation.excludedAmount) },
+          { label: "免赔额", value: money(evaluation.deductible) },
+          { label: "赔付比例", value: `${Math.round(evaluation.reimbursementRate * 100)}%` },
+          { label: "可赔基数", value: money(evaluation.eligibleBase) },
+          { label: "预计应赔", value: money(evaluation.payableAmount) }
+        ]);
+
+        renderTags("riskTags", evaluation.riskFlags.map((flag) => flag), `tag ${riskPill(evaluation.suggestedAction)}`);
+        setText(
+          "ruleSummary",
+          `等待期 ${rule.coverage.waitingPeriodDays} 天，年度限额 ${money(rule.coverage.annualLimit)}。超 ${money(rule.approvalRouting.manualReviewThreshold)} 将自动建议升级复核。`
+        );
+        setText(
+          "briefSource",
+          summary.source === "ollama"
+            ? "摘要来源：本地 Ollama / qwen3:8b"
+            : summary.source === "pending"
+              ? "摘要来源：正在生成"
+              : `摘要来源：回退模板 (${summary.reason || "unknown"})`
+        );
+        setText("llmBrief", summary.text);
+        renderTimeline("approvalTimeline", evaluation.timeline, "暂无系统轨迹");
+        setText("decisionTitle", evaluation.decision.title);
+        setText("decisionBody", evaluation.decision.body);
+        renderTags("aiTasks", aiTasks, "chip");
+        renderTags("manualTasks", manualTasks, "chip");
+
+        const history = actions.map((item) => ({
+          title: `${actionLabel(item.action)} · ${item.createdAt}`,
+          body: item.note
+        }));
+        renderTimeline("actionHistory", history, "这单还没有人工动作记录。");
+      }
+
+      async function recalculate() {
+        if (!state.currentPayload) return;
+        const claim = structuredClone(state.currentPayload.claim);
+        const rule = structuredClone(state.currentPayload.rule);
+        claim.expense.selfPaidAmount = Number(document.getElementById("selfPaidInput").value);
+        rule.coverage.deductible = Number(document.getElementById("deductibleInput").value);
+        rule.coverage.reimbursementRate = Number(document.getElementById("rateInput").value);
+        const excludedAmount = Number(document.getElementById("excludedInput").value);
+        claim.expense.suspectedExcludedItems = excludedAmount
+          ? [{ name: "人工调整剔除项", amount: excludedAmount, reason: "页面手工调整" }]
+          : [];
+        const payload = await fetchJson("/api/evaluate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ claim, rule })
+        });
+        payload.actions = state.currentPayload.actions || [];
+        state.currentPayload = payload;
+        state.originalPayloadById[state.currentClaimId] = structuredClone(payload);
+        renderPayload(payload);
+      }
+
+      function resetCurrent() {
+        const original = state.originalPayloadById[state.currentClaimId];
+        if (!original) return;
+        state.currentPayload = structuredClone(original);
+        renderPayload(state.currentPayload);
+      }
+
+      async function submitAction(action) {
+        if (!state.currentClaimId) return;
+        const noteMap = {
+          approve: "审批员确认系统试算后通过。",
+          reject: "审批员认为当前案件不满足赔付条件，进入拒赔处理。",
+          escalate: "审批员将案件升级到高级审批或风控复核。",
+          reopen: "审批员要求退回理算重新处理。"
+        };
+        const payload = await fetchJson("/api/claims/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            claimId: state.currentClaimId,
+            action,
+            note: noteMap[action]
+          })
+        });
+        state.currentPayload = payload;
+        state.originalPayloadById[state.currentClaimId] = structuredClone(payload);
+        await loadClaimList();
+        renderPayload(payload);
+      }
+
+      document.getElementById("recalculateBtn").addEventListener("click", recalculate);
+      document.getElementById("resetBtn").addEventListener("click", resetCurrent);
+      document.getElementById("approveBtn").addEventListener("click", () => submitAction("approve"));
+      document.getElementById("escalateBtn").addEventListener("click", () => submitAction("escalate"));
+      document.getElementById("rejectBtn").addEventListener("click", () => submitAction("reject"));
+      document.getElementById("reopenBtn").addEventListener("click", () => submitAction("reopen"));
+
+      renderModeBanner();
+      loadClaimList().catch((error) => {
+        setText("caseHeadline", "加载失败");
+        setText("caseSummary", `请先运行 python3 app.py，并确认页面连接的是正确端口。错误信息：${error.message}`);
+        document.getElementById("claimList").innerHTML = `<div class="empty">当前连不到后端。若你是直接打开 file 页面，请改用 http://127.0.0.1:8000 或带 ?apiBase 指定端口。</div>`;
+      });
+    </script>
+  </body>
+</html>

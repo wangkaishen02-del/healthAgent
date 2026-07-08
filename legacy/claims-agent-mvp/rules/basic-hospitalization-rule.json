@@ -1,0 +1,36 @@
+{
+  "ruleSetId": "hospitalization-medical-v1",
+  "productName": "住院医疗险基础版",
+  "coverage": {
+    "claimType": "hospitalization_medical",
+    "waitingPeriodDays": 30,
+    "deductible": 1000,
+    "reimbursementRate": 0.8,
+    "annualLimit": 500000
+  },
+  "requiredDocuments": [
+    "discharge_summary",
+    "invoice",
+    "itemized_bill",
+    "medical_insurance_statement"
+  ],
+  "exclusions": [
+    {
+      "code": "private_room_fee",
+      "description": "超标准床位费不赔"
+    },
+    {
+      "code": "cosmetic_treatment",
+      "description": "美容整形相关费用不赔"
+    }
+  ],
+  "approvalRouting": {
+    "autoSuggestThreshold": 5000,
+    "manualReviewThreshold": 20000,
+    "highRiskTags": [
+      "duplicate_claim",
+      "suspected_fraud",
+      "abnormal_length_of_stay"
+    ]
+  }
+}

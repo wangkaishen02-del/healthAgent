@@ -1,0 +1,55 @@
+{
+  "claimId": "CLM-20260706-0002",
+  "policyNo": "POL-HEALTH-002",
+  "insured": {
+    "name": "李四",
+    "idNo": "310101198405051876",
+    "gender": "F",
+    "age": 42
+  },
+  "claimType": "hospitalization_medical",
+  "policyEffectiveDate": "2026-01-01",
+  "incident": {
+    "hospitalName": "上海某肿瘤专科医院",
+    "admissionDate": "2026-06-02",
+    "dischargeDate": "2026-06-16",
+    "diagnosis": [
+      "肺部感染",
+      "重症监护观察"
+    ]
+  },
+  "documents": [
+    {
+      "type": "discharge_summary",
+      "status": "received"
+    },
+    {
+      "type": "invoice",
+      "status": "received"
+    },
+    {
+      "type": "itemized_bill",
+      "status": "received"
+    },
+    {
+      "type": "medical_insurance_statement",
+      "status": "received"
+    }
+  ],
+  "expense": {
+    "totalAmount": 58210.18,
+    "socialInsurancePaid": 20860.55,
+    "selfPaidAmount": 37349.63,
+    "suspectedExcludedItems": [
+      {
+        "name": "进口特需护理包",
+        "amount": 3800.00,
+        "reason": "非必要特需服务"
+      }
+    ]
+  },
+  "riskFlags": [
+    "high_amount_case"
+  ],
+  "status": "accepted"
+}
