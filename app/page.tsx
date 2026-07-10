@@ -1,13 +1,34 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { formatToolCall, type AssistantPlan, type AssistantToolCall } from "../src/assistant/policy-query-assistant";
 import type { PolicyFullView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
 
 type MainTab = "policy" | "claim";
 type DrawerTab = "basic" | "benefits" | "insureds";
+type PolicyFilters = {
+  policyNo: string;
+  applicantName: string;
+  insuredName: string;
+  insuredIdNo: string;
+  policyStatus: string;
+};
+type AssistantMessage = {
+  id: string;
+  role: "assistant" | "user";
+  content: string;
+  steps?: string[];
+};
 
 const POLICY_PAGE_SIZE = 10;
 const INSURED_PAGE_SIZE = 10;
+const EMPTY_POLICY_FILTERS: PolicyFilters = {
+  policyNo: "",
+  applicantName: "",
+  insuredName: "",
+  insuredIdNo: "",
+  policyStatus: "",
+};
 
 const policyStatusOptions = [
   { value: "", label: "全部" },
@@ -39,6 +60,10 @@ function formatInsuredRole(value?: string) {
   if (value === "child") return "子女";
   if (value === "parent") return "父母";
   return "-";
+}
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function Pagination({
@@ -234,13 +259,7 @@ export default function Page() {
   const [mainTab, setMainTab] = useState<MainTab>("policy");
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
-  const [filters, setFilters] = useState({
-    policyNo: "",
-    applicantName: "",
-    insuredName: "",
-    insuredIdNo: "",
-    policyStatus: "",
-  });
+  const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
   const [policies, setPolicies] = useState<PolicyListItem[]>([]);
   const [policyPage, setPolicyPage] = useState(1);
   const [activePolicyId, setActivePolicyId] = useState<string | null>(null);
@@ -248,11 +267,28 @@ export default function Page() {
   const [drawerTab, setDrawerTab] = useState<DrawerTab>("basic");
   const [drawerData, setDrawerData] = useState<PolicyFullView | null>(null);
   const [insuredPage, setInsuredPage] = useState(1);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [assistantInput, setAssistantInput] = useState("");
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
+    {
+      id: "assistant-welcome",
+      role: "assistant",
+      content:
+        "你好，我是智能助手。你可以直接说：查张三有哪些保单、查华曜科技的保单、查停用保单。",
+    },
+  ]);
+  const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
   const selectRef = useRef<HTMLDivElement | null>(null);
+  const filtersRef = useRef<PolicyFilters>(EMPTY_POLICY_FILTERS);
 
   useEffect(() => {
     void loadPolicies(filters);
   }, []);
+
+  useEffect(() => {
+    filtersRef.current = filters;
+  }, [filters]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -264,7 +300,7 @@ export default function Page() {
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
 
-  async function loadPolicies(nextFilters: typeof filters) {
+  async function loadPolicies(nextFilters: PolicyFilters) {
     const params = new URLSearchParams();
     Object.entries(nextFilters).forEach(([key, value]) => {
       if (value) params.set(key, value);
@@ -276,6 +312,7 @@ export default function Page() {
     setActivePolicyId(null);
     setDrawerOpen(false);
     setDrawerData(null);
+    return data.items;
   }
 
   async function openPolicyDrawer(policyId: string, tab: DrawerTab) {
@@ -286,6 +323,223 @@ export default function Page() {
     const data: PolicyFullView = await response.json();
     setDrawerData(data);
     setDrawerOpen(true);
+    return data;
+  }
+
+  function appendAssistantMessage(message: AssistantMessage) {
+    setAssistantMessages((current) => [...current, message]);
+  }
+
+  async function executeAssistantTools(toolCalls: AssistantToolCall[], initialTab: MainTab = mainTab) {
+    const nextFilters: PolicyFilters = { ...filtersRef.current };
+    let currentPolicies = policies;
+    let executionTab = initialTab;
+    let lastOperationResult: unknown = null;
+    const steps: string[] = [];
+
+    for (const toolCall of toolCalls) {
+      // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
+      if (toolCall.tool !== "open_page" && toolCall.args.page === "policy_query" && executionTab !== "policy") {
+        setMainTab("policy");
+        executionTab = "policy";
+        steps.push("打开保单信息查询页");
+        await delay(120);
+      }
+
+      if (toolCall.tool === "open_page") {
+        const targetTab = toolCall.args.page === "policy_query" ? "policy" : "claim";
+        if (executionTab === targetTab) {
+          continue;
+        }
+        steps.push(formatToolCall(toolCall));
+        setMainTab(targetTab);
+        executionTab = targetTab;
+        await delay(120);
+        continue;
+      }
+
+      steps.push(formatToolCall(toolCall));
+
+      if (toolCall.tool === "click_button" && toolCall.args.button === "reset") {
+        Object.assign(nextFilters, EMPTY_POLICY_FILTERS);
+        setFilters({ ...nextFilters });
+        setPolicyPage(1);
+        setActivePolicyId(null);
+        setDrawerOpen(false);
+        setDrawerData(null);
+        await delay(160);
+        continue;
+      }
+
+      if (toolCall.tool === "set_field") {
+        nextFilters[toolCall.args.field] = toolCall.args.value;
+        setFilters({ ...nextFilters });
+        await delay(180);
+        continue;
+      }
+
+      if (toolCall.tool === "click_button" && toolCall.args.button === "search") {
+        setFilters({ ...nextFilters });
+        currentPolicies = await loadPolicies(nextFilters);
+        lastOperationResult = {
+          type: "policy_search",
+          matchedPolicyCount: currentPolicies.length,
+          policies: currentPolicies.slice(0, 10).map((policy) => ({
+            policyId: policy.id,
+            policyNo: policy.policyNo,
+            policyName: policy.policyName,
+            applicantName: policy.applicantName,
+            insuredCount: policy.insuredCount,
+          })),
+        };
+        await delay(220);
+        continue;
+      }
+
+      if (toolCall.tool === "click_result_action") {
+        const selectedPolicy = currentPolicies[toolCall.args.row - 1];
+        if (selectedPolicy) {
+          const drawerTabMap = {
+            view_detail: "basic",
+            view_benefits: "benefits",
+            view_insureds: "insureds",
+          } as const;
+          const drawerData = await openPolicyDrawer(selectedPolicy.id, drawerTabMap[toolCall.args.action]);
+          lastOperationResult = {
+            type: "open_policy_drawer",
+            policyId: selectedPolicy.id,
+            tab: toolCall.args.action,
+            policyNo: drawerData.policy.policyNo,
+            policyName: drawerData.policy.policyName,
+            insuredCount: drawerData.insureds.length,
+            insureds: drawerData.insureds.slice(0, 50).map((item) => ({
+              insuredNo: item.insuredPerson.insuredNo,
+              name: item.insuredPerson.name,
+              idNo: item.insuredPerson.idNo,
+            })),
+          };
+          await delay(220);
+        } else {
+          steps.push("查询结果为空，暂时没有可打开的保单");
+        }
+      }
+    }
+
+    return {
+      steps,
+      currentPage: executionTab,
+      executionResult: lastOperationResult ?? {
+        executedActions: toolCalls.map(formatToolCall),
+      },
+    };
+  }
+
+  async function handleAssistantSubmit() {
+    const text = assistantInput.trim();
+    if (!text || assistantBusy) return;
+
+    appendAssistantMessage({
+      id: `user-${Date.now()}`,
+      role: "user",
+      content: text,
+    });
+    setAssistantInput("");
+
+    setAssistantBusy(true);
+
+    try {
+      let context: {
+        currentPage?: string;
+        currentPageRegistry?: unknown;
+        history?: Array<{
+          toolCalls: AssistantToolCall[];
+        }>;
+        lastOperationResult?: unknown;
+      } | undefined;
+      const operationHistory: Array<{
+        toolCalls: AssistantToolCall[];
+      }> = [];
+      let currentPageRegistry: unknown = undefined;
+      let currentPage: MainTab = mainTab;
+      let plan: AssistantPlan | null = null;
+      let allSteps: string[] = [];
+      let lastExecutedPlan: AssistantPlan | null = null;
+      let lastExecutionResult: { currentPage: string; executionResult: unknown; steps: string[] } | null = null;
+
+      // 每次最多进行4个“规划→执行→观察”阶段，避免模型异常时无限循环。
+      for (let round = 0; round < 4; round += 1) {
+        const response = await fetch("/api/assistant/plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text, context }),
+        });
+
+        if (!response.ok) {
+          const errorPayload = (await response.json().catch(() => null)) as
+            | { detail?: string; message?: string }
+            | null;
+          appendAssistantMessage({
+            id: `assistant-${Date.now()}`,
+            role: "assistant",
+            content: errorPayload?.detail ?? "本地模型当前不可用，请稍后再试。",
+            steps: ["当前模式：仅使用本地 LLM", "未启用规则回退"],
+          });
+          return;
+        }
+
+        plan = (await response.json()) as AssistantPlan;
+        lastExecutedPlan = plan;
+        setAssistantRecognized(plan.recognized ?? []);
+        allSteps = [...allSteps, ...(plan.discoverySteps ?? [])];
+
+        if (plan.toolCalls.length > 0) {
+          const execution = await executeAssistantTools(plan.toolCalls, currentPage);
+          lastExecutionResult = execution;
+          currentPage = execution.currentPage;
+          allSteps = [...allSteps, ...execution.steps];
+          operationHistory.push({
+            toolCalls: plan.toolCalls,
+          });
+          if (plan.discoveryResults && plan.discoveryResults.length > 0) {
+            currentPageRegistry = plan.discoveryResults[plan.discoveryResults.length - 1];
+          }
+        }
+
+        if (plan.decision !== "continue" || plan.toolCalls.length === 0 || !lastExecutionResult) {
+          break;
+        }
+
+        context = {
+          currentPage: lastExecutionResult.currentPage,
+          currentPageRegistry,
+          history: operationHistory,
+          lastOperationResult: lastExecutionResult.executionResult,
+        };
+      }
+
+      if (!lastExecutedPlan) return;
+
+      setAssistantRecognized([]);
+
+      const lastToolCall = lastExecutedPlan.toolCalls.at(-1);
+      const resultSummary =
+        lastToolCall?.tool === "click_button" && lastToolCall.args.button === "search"
+          ? "查询结果已经刷新，等待 Agent 根据结果继续判断。"
+          : lastToolCall?.tool === "click_result_action"
+            ? "已打开对应的被保人信息。"
+            : lastExecutedPlan.decision === "finish"
+              ? "任务已结束。"
+              : "已执行当前步骤。";
+
+      appendAssistantMessage({
+        id: `assistant-${Date.now()}`,
+        role: "assistant",
+        content: `${lastExecutedPlan.reply}${resultSummary}（由本地模型 Agent 生成执行计划）`,
+        steps: [...allSteps, ...(lastExecutedPlan.recognized ?? [])],
+      });
+    } finally {
+      setAssistantBusy(false);
+    }
   }
 
   const pagedPolicies = useMemo(() => {
@@ -300,22 +554,36 @@ export default function Page() {
   return (
     <>
       <header className="topbar">
-        <div className="topbar-brand">healthAgent 承保管理系统</div>
-        <nav className="topnav">
-          <div className="menu-item active">
-            <button className="menu-trigger" onClick={() => setMenuOpen((value) => !value)}>
-              综合查询 ▾
-            </button>
-            <div className={`dropdown ${menuOpen ? "" : "hidden"}`}>
-              <button className="dropdown-item" onClick={() => { setMainTab("policy"); setMenuOpen(false); }}>
-                保单信息查询
+        <div className="topbar-left">
+          <div className="topbar-brand">healthAgent 承保管理系统</div>
+          <nav className="topnav">
+            <div className="menu-item active">
+              <button className="menu-trigger" onClick={() => setMenuOpen((value) => !value)}>
+                综合查询 ▾
               </button>
-              <button className="dropdown-item" onClick={() => { setMainTab("claim"); setMenuOpen(false); }}>
-                案件查询
-              </button>
+              <div className={`dropdown ${menuOpen ? "" : "hidden"}`}>
+                <button className="dropdown-item" onClick={() => { setMainTab("policy"); setMenuOpen(false); }}>
+                  保单信息查询
+                </button>
+                <button className="dropdown-item" onClick={() => { setMainTab("claim"); setMenuOpen(false); }}>
+                  案件查询
+                </button>
+              </div>
             </div>
-          </div>
-        </nav>
+            <button className={`menu-link ${mainTab === "claim" ? "active" : ""}`} onClick={() => setMainTab("claim")}>
+              理赔处理
+            </button>
+          </nav>
+        </div>
+        <div className="topbar-right">
+          <button
+            className={`assistant-top-button ${assistantOpen ? "open" : ""}`}
+            type="button"
+            onClick={() => setAssistantOpen((value) => !value)}
+          >
+            智能助手
+          </button>
+        </div>
       </header>
 
       <main className="workspace">
@@ -378,7 +646,7 @@ export default function Page() {
                   type="button"
                   className="secondary-button"
                   onClick={() => {
-                    const next = { policyNo: "", applicantName: "", insuredName: "", insuredIdNo: "", policyStatus: "" };
+                    const next = { ...EMPTY_POLICY_FILTERS };
                     setFilters(next);
                     void loadPolicies(next);
                   }}
@@ -483,6 +751,61 @@ export default function Page() {
           </section>
         </section>
       </main>
+
+      <section className={`assistant-panel ${assistantOpen ? "open" : ""}`} aria-hidden={!assistantOpen}>
+        <div className="assistant-panel-header">
+          <div>
+            <div className="assistant-title">智能助手</div>
+            <div className="assistant-subtitle">输入自然语言，我会理解后自动操作页面</div>
+          </div>
+          <button className="assistant-close" type="button" onClick={() => setAssistantOpen(false)}>
+            收起
+          </button>
+        </div>
+
+        <div className="assistant-messages">
+          {assistantMessages.map((message) => (
+            <article key={message.id} className={`assistant-message ${message.role}`}>
+              <div className="assistant-message-role">
+                {message.role === "assistant" ? "助手" : "我"}
+              </div>
+              <div className="assistant-message-content">{message.content}</div>
+              {message.steps && message.steps.length > 0 ? (
+                <ul className="assistant-steps">
+                  {message.steps.map((step, index) => (
+                    <li key={`${message.id}-step-${index}`}>{step}</li>
+                  ))}
+                </ul>
+              ) : null}
+            </article>
+          ))}
+        </div>
+
+        <div className="assistant-recognized">
+          <div className="assistant-recognized-title">本次识别</div>
+          {assistantRecognized.length > 0 ? (
+            <ul className="assistant-steps compact">
+              {assistantRecognized.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ) : (
+            <div className="muted">暂未识别到执行计划</div>
+          )}
+        </div>
+
+        <div className="assistant-input-area">
+          <textarea
+            className="assistant-textarea"
+            placeholder="例如：查张三有哪些保单"
+            value={assistantInput}
+            onChange={(e) => setAssistantInput(e.target.value)}
+          />
+          <button type="button" onClick={() => void handleAssistantSubmit()} disabled={assistantBusy}>
+            {assistantBusy ? "执行中..." : "执行"}
+          </button>
+        </div>
+      </section>
     </>
   );
 }
