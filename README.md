@@ -148,14 +148,21 @@ curl "http://127.0.0.1:3000/api/assistant/registry?resource=tools"
 
 本地模型配置为 Ollama 的 `qwen3:8b`，地址为 `http://localhost:11434/api/chat`。
 
-每次LLM调用只向控制台和 `logs/assistant-llm.log` 打印两条记录：
+每次 LLM 调用会向控制台和 `logs/assistant-llm.log` 写入两个可读区块：`INPUT` 和 `OUTPUT`。区块带有本次运行 ID、轮次、时间和模型响应耗时；输入会按 `SYSTEM` / `USER` / `ASSISTANT` 分段，JSON 输出会自动缩进。
 
-```json
-{"llmInput":[...]}
-{"llmOutput":"..."}
+```text
+====================================================================================
+[assistant-llm] 2026-07-11T...Z | run=1a2b3c4d | turn=1 | OUTPUT
+------------------------------------------------------------------------------------
+duration=18234ms
+{
+  "decision": "continue",
+  "toolCalls": []
+}
+====================================================================================
 ```
 
-不打印其他 Agent 汇总字段。
+不额外打印 Agent 汇总字段，便于按运行 ID 与轮次追踪单次模型调用。
 
 LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示一条简短的当前判断与下一步计划；任务完成后该展示自动隐藏。
 

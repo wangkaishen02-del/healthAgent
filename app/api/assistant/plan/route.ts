@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -44,14 +45,49 @@ type AssistantContinuationContext = {
   lastOperationResult?: unknown;
 };
 
-async function writeAssistantLog(entry: Record<string, unknown>) {
-  const line = JSON.stringify(entry);
-  console.info("[assistant-llm]", line);
+type AssistantLogEntry =
+  | { type: "input"; runId: string; turn: number; messages: OllamaMessage[] }
+  | { type: "output"; runId: string; turn: number; content: string; durationMs: number };
+
+function formatJsonIfPossible(content: string) {
+  try {
+    return JSON.stringify(JSON.parse(content), null, 2);
+  } catch {
+    return content || "（模型未返回内容）";
+  }
+}
+
+function formatAssistantLog(entry: AssistantLogEntry) {
+  const header = [
+    "=".repeat(84),
+    `[assistant-llm] ${new Date().toISOString()} | run=${entry.runId} | turn=${entry.turn} | ${entry.type.toUpperCase()}`,
+    "-".repeat(84),
+  ];
+
+  if (entry.type === "input") {
+    const messages = entry.messages.map((message, index) => [
+      `[${index + 1}] ${message.role.toUpperCase()}`,
+      message.content,
+    ].join("\n"));
+    return [...header, ...messages, "=".repeat(84)].join("\n");
+  }
+
+  return [
+    ...header,
+    `duration=${entry.durationMs}ms`,
+    formatJsonIfPossible(entry.content),
+    "=".repeat(84),
+  ].join("\n");
+}
+
+async function writeAssistantLog(entry: AssistantLogEntry) {
+  const content = formatAssistantLog(entry);
+  console.info(content);
   try {
     await mkdir(ASSISTANT_LOG_DIR, { recursive: true });
-    await appendFile(ASSISTANT_LOG_PATH, `${line}\n`, "utf8");
+    await appendFile(ASSISTANT_LOG_PATH, `${content}\n`, "utf8");
   } catch {
-    // 日志写入失败不额外输出，保持日志只包含 LLM 输入和输出。
+    // 日志写入失败不额外输出，保持控制台与日志文件内容一致。
   }
 }
 
@@ -158,6 +194,7 @@ function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizeP
 async function callOllama(messages: OllamaMessage[]) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+  const startedAt = Date.now();
   try {
     const response = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -169,13 +206,14 @@ async function callOllama(messages: OllamaMessage[]) {
     if (!response.ok) throw new Error(`ollama_http_${response.status}`);
     const data = (await response.json()) as OllamaResponse;
     const content = data.message?.content?.trim() ?? "";
-    return { content, parsed: tryParseJson(content) };
+    return { content, parsed: tryParseJson(content), durationMs: Date.now() - startedAt };
   } finally {
     clearTimeout(timeout);
   }
 }
 
 async function requestAgentPlan(userText: string, context?: AssistantContinuationContext) {
+  const runId = randomUUID().slice(0, 8);
   const userMessage = context
     ? `${userText}
 
@@ -203,10 +241,16 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
   let lastPlan: ReturnType<typeof normalizePayload> = null;
 
   for (let turn = 1; turn <= MAX_AGENT_TURNS; turn += 1) {
-    await writeAssistantLog({ llmInput: messages });
+    await writeAssistantLog({ type: "input", runId, turn, messages });
     const result = await callOllama(messages);
     rawReplies.push(result.content);
-    await writeAssistantLog({ llmOutput: result.content });
+    await writeAssistantLog({
+      type: "output",
+      runId,
+      turn,
+      content: result.content,
+      durationMs: result.durationMs,
+    });
     if (!result.parsed) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
     const plan = normalizePayload(result.parsed);
     if (!plan) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
