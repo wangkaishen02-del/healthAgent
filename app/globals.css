@@ -3,6 +3,7 @@
   --bg: #f5f7fb;
   --panel: #ffffff;
   --border: #dbe3f0;
+  --table-border: #c4d0df;
   --text: #162033;
   --muted: #63708a;
   --primary: #3366ff;
@@ -134,12 +135,37 @@ button {
   border: 1px solid var(--border);
   color: var(--text);
   border-radius: 8px 8px 0 0;
-  padding: 10px 16px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
 }
 
 .tab.active {
   border-bottom-color: #fff;
   font-weight: 600;
+}
+
+.tab-button,
+.tab-close {
+  border: none;
+  background: transparent;
+  color: inherit;
+}
+
+.tab-button {
+  padding: 10px 8px 10px 16px;
+}
+
+.tab-close {
+  padding: 8px 11px 8px 8px;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.tab-close:hover {
+  color: var(--text);
+  background: #eef3fb;
 }
 
 .panel,
@@ -437,9 +463,15 @@ table {
 th,
 td {
   padding: 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--table-border);
+  border-right: 1px solid var(--table-border);
   text-align: left;
   font-size: 14px;
+}
+
+th:last-child,
+td:last-child {
+  border-right: none;
 }
 
 .index-col {
@@ -560,7 +592,9 @@ td {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
   padding-top: 0;
 }
 
@@ -592,6 +626,14 @@ td {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+}
+
+.benefits-table-wrapper {
+  margin-top: 12px;
+}
+
+.benefits-table-wrapper td[rowspan] {
+  vertical-align: middle;
 }
 
 .assistant-top-button {
@@ -704,6 +746,28 @@ td {
   padding: 12px 18px;
   border-top: 1px solid var(--border);
   background: #fbfcff;
+}
+
+.assistant-progress {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px 18px;
+  border-top: 1px solid #d9e4fb;
+  background: #f4f7ff;
+  color: #45618f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.assistant-progress span {
+  flex: 0 0 auto;
+  color: #2f65bd;
+  font-weight: 700;
+}
+
+.assistant-progress p {
+  margin: 0;
 }
 
 .assistant-recognized-title {

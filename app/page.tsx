@@ -148,48 +148,49 @@ function BasicView({ data }: { data: PolicyFullView }) {
 }
 
 function BenefitsView({ products }: { products: PolicyProductView[] }) {
+  const benefits = products.flatMap((product) =>
+    product.benefits.map((benefit) => ({ product, benefit })),
+  );
+  let rowNumber = 0;
+
   return (
     <>
       <div className="panel-title-row">
         <h3>险种与责任</h3>
-        <span className="muted">{products.length} 个险种</span>
+        <span className="muted">{products.length} 个险种，{benefits.length} 项责任</span>
       </div>
-      <div className="product-list">
-        {products.map((product) => (
-          <div className="subpanel" key={product.id}>
-            <div className="panel-title-row">
-              <div>
-                <h4>{product.productName}</h4>
-                <p className="muted">代码：{product.productCode}</p>
-              </div>
-              <span className="chip">{formatPolicyStatus(product.productStatus)}</span>
-            </div>
-            <div className="table-wrapper">
-              <table className="compact-table">
-                <thead>
-                  <tr>
-                    <th>险种代码</th>
-                    <th>险种名称</th>
-                    <th>责任代码</th>
-                    <th>责任名称</th>
-                    <th>顺序</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {product.benefits.map((benefit) => (
-                    <tr key={benefit.id}>
-                      <td>{product.productCode}</td>
-                      <td>{product.productName}</td>
+      <div className="detail-table-shell">
+        <div className="table-wrapper detail-table-wrapper benefits-table-wrapper">
+          <table className="compact-table">
+            <thead>
+              <tr>
+                <th className="index-col">序号</th>
+                <th>险种代码</th>
+                <th>险种名称</th>
+                <th>责任代码</th>
+                <th>责任名称</th>
+                <th>顺序</th>
+              </tr>
+            </thead>
+            <tbody>
+              {products.flatMap((product) =>
+                product.benefits.map((benefit, benefitIndex) => {
+                  rowNumber += 1;
+                  return (
+                    <tr key={`${product.id}-${benefit.id}`}>
+                      <td>{rowNumber}</td>
+                      {benefitIndex === 0 && <td rowSpan={product.benefits.length}>{product.productCode}</td>}
+                      {benefitIndex === 0 && <td rowSpan={product.benefits.length}>{product.productName}</td>}
                       <td>{benefit.benefitCode}</td>
                       <td>{benefit.benefitName}</td>
                       <td>{benefit.sequenceNo ?? "-"}</td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        ))}
+                  );
+                }),
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </>
   );
@@ -257,6 +258,7 @@ function InsuredsView({
 
 export default function Page() {
   const [mainTab, setMainTab] = useState<MainTab>("policy");
+  const [openTabs, setOpenTabs] = useState<MainTab[]>(["policy"]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
@@ -270,6 +272,7 @@ export default function Page() {
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantProgress, setAssistantProgress] = useState<string | null>(null);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
     {
       id: "assistant-welcome",
@@ -281,6 +284,25 @@ export default function Page() {
   const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
   const selectRef = useRef<HTMLDivElement | null>(null);
   const filtersRef = useRef<PolicyFilters>(EMPTY_POLICY_FILTERS);
+
+  function openMainTab(tab: MainTab) {
+    setOpenTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
+    setMainTab(tab);
+  }
+
+  function closeMainTab(tab: MainTab) {
+    setOpenTabs((tabs) => {
+      const nextTabs = tabs.filter((item) => item !== tab);
+      if (mainTab === tab) {
+        setMainTab(nextTabs[nextTabs.length - 1] ?? "policy");
+      }
+      return nextTabs;
+    });
+
+    if (tab === "policy") {
+      setDrawerOpen(false);
+    }
+  }
 
   useEffect(() => {
     void loadPolicies(filters);
@@ -326,6 +348,12 @@ export default function Page() {
     return data;
   }
 
+  async function loadAssistantPageRegistry(pageId: string) {
+    const response = await fetch(`/api/assistant/registry?resource=page&pageId=${encodeURIComponent(pageId)}`);
+    const data = (await response.json()) as { page?: unknown };
+    return data.page;
+  }
+
   function appendAssistantMessage(message: AssistantMessage) {
     setAssistantMessages((current) => [...current, message]);
   }
@@ -335,24 +363,25 @@ export default function Page() {
     let currentPolicies = policies;
     let executionTab = initialTab;
     let lastOperationResult: unknown = null;
+    let openedPageId: string | null = null;
     const steps: string[] = [];
 
     for (const toolCall of toolCalls) {
       // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
-      if (toolCall.tool !== "open_page" && toolCall.args.page === "policy_query" && executionTab !== "policy") {
-        setMainTab("policy");
+      if (toolCall.tool !== "open_page" && toolCall.args.pageId === "policy_query" && executionTab !== "policy") {
+        openMainTab("policy");
         executionTab = "policy";
         steps.push("打开保单信息查询页");
         await delay(120);
       }
 
       if (toolCall.tool === "open_page") {
-        const targetTab = toolCall.args.page === "policy_query" ? "policy" : "claim";
+        const targetTab = toolCall.args.pageId === "policy_query" ? "policy" : "claim";
         if (executionTab === targetTab) {
           continue;
         }
         steps.push(formatToolCall(toolCall));
-        setMainTab(targetTab);
+        openMainTab(targetTab);
         executionTab = targetTab;
         await delay(120);
         continue;
@@ -360,7 +389,7 @@ export default function Page() {
 
       steps.push(formatToolCall(toolCall));
 
-      if (toolCall.tool === "click_button" && toolCall.args.button === "reset") {
+      if (toolCall.tool === "click_button" && toolCall.args.actionId === "reset") {
         Object.assign(nextFilters, EMPTY_POLICY_FILTERS);
         setFilters({ ...nextFilters });
         setPolicyPage(1);
@@ -372,19 +401,19 @@ export default function Page() {
       }
 
       if (toolCall.tool === "set_field") {
-        nextFilters[toolCall.args.field] = toolCall.args.value;
+        nextFilters[toolCall.args.fieldId] = toolCall.args.value;
         setFilters({ ...nextFilters });
         await delay(180);
         continue;
       }
 
-      if (toolCall.tool === "click_button" && toolCall.args.button === "search") {
+      if (toolCall.tool === "click_button" && toolCall.args.actionId === "search") {
         setFilters({ ...nextFilters });
         currentPolicies = await loadPolicies(nextFilters);
         lastOperationResult = {
           type: "policy_search",
           matchedPolicyCount: currentPolicies.length,
-          policies: currentPolicies.slice(0, 10).map((policy) => ({
+          policies: currentPolicies.slice(0, 5).map((policy) => ({
             policyId: policy.id,
             policyNo: policy.policyNo,
             policyName: policy.policyName,
@@ -396,7 +425,7 @@ export default function Page() {
         continue;
       }
 
-      if (toolCall.tool === "click_result_action") {
+      if (toolCall.tool === "click_list_row_action") {
         const selectedPolicy = currentPolicies[toolCall.args.row - 1];
         if (selectedPolicy) {
           const drawerTabMap = {
@@ -404,15 +433,16 @@ export default function Page() {
             view_benefits: "benefits",
             view_insureds: "insureds",
           } as const;
-          const drawerData = await openPolicyDrawer(selectedPolicy.id, drawerTabMap[toolCall.args.action]);
+          const drawerData = await openPolicyDrawer(selectedPolicy.id, drawerTabMap[toolCall.args.actionId]);
+          openedPageId = "policy_detail";
           lastOperationResult = {
             type: "open_policy_drawer",
             policyId: selectedPolicy.id,
-            tab: toolCall.args.action,
+            tab: toolCall.args.actionId,
             policyNo: drawerData.policy.policyNo,
             policyName: drawerData.policy.policyName,
             insuredCount: drawerData.insureds.length,
-            insureds: drawerData.insureds.slice(0, 50).map((item) => ({
+            insureds: drawerData.insureds.slice(0, 5).map((item) => ({
               insuredNo: item.insuredPerson.insuredNo,
               name: item.insuredPerson.name,
               idNo: item.insuredPerson.idNo,
@@ -428,6 +458,7 @@ export default function Page() {
     return {
       steps,
       currentPage: executionTab,
+      openedPageId,
       executionResult: lastOperationResult ?? {
         executedActions: toolCalls.map(formatToolCall),
       },
@@ -446,10 +477,11 @@ export default function Page() {
     setAssistantInput("");
 
     setAssistantBusy(true);
+    setAssistantProgress("正在等待 LLM 生成本轮计划。");
 
     try {
       let context: {
-        currentPage?: string;
+        currentPagePath?: string[];
         currentPageRegistry?: unknown;
         history?: Array<{
           toolCalls: AssistantToolCall[];
@@ -461,6 +493,7 @@ export default function Page() {
       }> = [];
       let currentPageRegistry: unknown = undefined;
       let currentPage: MainTab = mainTab;
+      let currentPagePath = mainTab === "policy" ? ["综合查询", "保单信息查询"] : ["综合查询", "案件查询"];
       let plan: AssistantPlan | null = null;
       let allSteps: string[] = [];
       let lastExecutedPlan: AssistantPlan | null = null;
@@ -490,9 +523,12 @@ export default function Page() {
         plan = (await response.json()) as AssistantPlan;
         lastExecutedPlan = plan;
         setAssistantRecognized(plan.recognized ?? []);
+        const thought = plan.thought ?? plan.reply;
+        setAssistantProgress(`LLM 思路：${thought}`);
         allSteps = [...allSteps, ...(plan.discoverySteps ?? [])];
 
         if (plan.toolCalls.length > 0) {
+          setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
           const execution = await executeAssistantTools(plan.toolCalls, currentPage);
           lastExecutionResult = execution;
           currentPage = execution.currentPage;
@@ -503,6 +539,16 @@ export default function Page() {
           if (plan.discoveryResults && plan.discoveryResults.length > 0) {
             currentPageRegistry = plan.discoveryResults[plan.discoveryResults.length - 1];
           }
+          if (execution.openedPageId) {
+            const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId);
+            if (openedPageRegistry && typeof openedPageRegistry === "object") {
+              currentPageRegistry = openedPageRegistry;
+              const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
+              if (Array.isArray(pagePath) && pagePath.every((item) => typeof item === "string")) {
+                currentPagePath = pagePath;
+              }
+            }
+          }
         }
 
         if (plan.decision !== "continue" || plan.toolCalls.length === 0 || !lastExecutionResult) {
@@ -510,7 +556,7 @@ export default function Page() {
         }
 
         context = {
-          currentPage: lastExecutionResult.currentPage,
+          currentPagePath,
           currentPageRegistry,
           history: operationHistory,
           lastOperationResult: lastExecutionResult.executionResult,
@@ -523,9 +569,9 @@ export default function Page() {
 
       const lastToolCall = lastExecutedPlan.toolCalls.at(-1);
       const resultSummary =
-        lastToolCall?.tool === "click_button" && lastToolCall.args.button === "search"
+        lastToolCall?.tool === "click_button" && lastToolCall.args.actionId === "search"
           ? "查询结果已经刷新，等待 Agent 根据结果继续判断。"
-          : lastToolCall?.tool === "click_result_action"
+          : lastToolCall?.tool === "click_list_row_action"
             ? "已打开对应的被保人信息。"
             : lastExecutedPlan.decision === "finish"
               ? "任务已结束。"
@@ -535,10 +581,11 @@ export default function Page() {
         id: `assistant-${Date.now()}`,
         role: "assistant",
         content: `${lastExecutedPlan.reply}${resultSummary}（由本地模型 Agent 生成执行计划）`,
-        steps: [...allSteps, ...(lastExecutedPlan.recognized ?? [])],
+        steps: allSteps,
       });
     } finally {
       setAssistantBusy(false);
+      setAssistantProgress(null);
     }
   }
 
@@ -562,15 +609,15 @@ export default function Page() {
                 综合查询 ▾
               </button>
               <div className={`dropdown ${menuOpen ? "" : "hidden"}`}>
-                <button className="dropdown-item" onClick={() => { setMainTab("policy"); setMenuOpen(false); }}>
+                <button className="dropdown-item" onClick={() => { openMainTab("policy"); setMenuOpen(false); }}>
                   保单信息查询
                 </button>
-                <button className="dropdown-item" onClick={() => { setMainTab("claim"); setMenuOpen(false); }}>
+                <button className="dropdown-item" onClick={() => { openMainTab("claim"); setMenuOpen(false); }}>
                   案件查询
                 </button>
               </div>
             </div>
-            <button className={`menu-link ${mainTab === "claim" ? "active" : ""}`} onClick={() => setMainTab("claim")}>
+            <button className={`menu-link ${mainTab === "claim" ? "active" : ""}`} onClick={() => openMainTab("claim")}>
               理赔处理
             </button>
           </nav>
@@ -588,15 +635,20 @@ export default function Page() {
 
       <main className="workspace">
         <div className="tabs-bar">
-          <button className={`tab ${mainTab === "policy" ? "active" : ""}`} onClick={() => setMainTab("policy")}>
-            保单信息查询
-          </button>
-          <button className={`tab ${mainTab === "claim" ? "active" : ""}`} onClick={() => setMainTab("claim")}>
-            案件查询
-          </button>
+          {openTabs.map((tab) => {
+            const label = tab === "policy" ? "保单信息查询" : "案件查询";
+            return (
+              <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
+                <button className="tab-button" onClick={() => setMainTab(tab)}>{label}</button>
+                <button className="tab-close" type="button" aria-label={`关闭${label}`} onClick={() => closeMainTab(tab)}>×</button>
+              </div>
+            );
+          })}
         </div>
 
-        <section className={`page-section ${mainTab === "policy" ? "" : "hidden"}`}>
+        {openTabs.length === 0 && <section className="panel empty-state"><h3>暂无打开的页面</h3><p>可通过顶部菜单重新打开功能页面。</p></section>}
+
+        <section className={`page-section ${openTabs.includes("policy") && mainTab === "policy" ? "" : "hidden"}`}>
           <section className="panel query-panel">
             <div className="section-title">查询条件</div>
             <form className="query-form" onSubmit={(e) => { e.preventDefault(); void loadPolicies(filters); }}>
@@ -743,7 +795,7 @@ export default function Page() {
           </div>
         </section>
 
-        <section className={`page-section ${mainTab === "claim" ? "" : "hidden"}`}>
+        <section className={`page-section ${openTabs.includes("claim") && mainTab === "claim" ? "" : "hidden"}`}>
           <section className="panel empty-state">
             <h3>案件查询</h3>
             <p>该功能入口已预留，当前阶段暂未接入案件数据与查询条件。</p>
@@ -781,18 +833,23 @@ export default function Page() {
           ))}
         </div>
 
-        <div className="assistant-recognized">
-          <div className="assistant-recognized-title">本次识别</div>
-          {assistantRecognized.length > 0 ? (
+        {assistantBusy && assistantProgress ? (
+          <div className="assistant-progress" aria-live="polite">
+            <span>执行中</span>
+            <p>{assistantProgress}</p>
+          </div>
+        ) : null}
+
+        {assistantRecognized.length > 0 ? (
+          <div className="assistant-recognized">
+            <div className="assistant-recognized-title">本次识别</div>
             <ul className="assistant-steps compact">
-              {assistantRecognized.map((item) => (
-                <li key={item}>{item}</li>
+              {assistantRecognized.map((item, index) => (
+                <li key={`recognized-${index}`}>{item}</li>
               ))}
             </ul>
-          ) : (
-            <div className="muted">暂未识别到执行计划</div>
-          )}
-        </div>
+          </div>
+        ) : null}
 
         <div className="assistant-input-area">
           <textarea

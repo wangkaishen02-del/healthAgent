@@ -29,13 +29,14 @@ type OllamaMessage = { role: "system" | "user" | "assistant"; content: string };
 type OllamaResponse = { message?: { content?: string } };
 type LlmPayload = {
   reply?: string;
+  thought?: string;
   recognized?: string[];
   decision?: "continue" | "finish";
   toolCalls?: AssistantModelToolCall[];
 };
 
 type AssistantContinuationContext = {
-  currentPage?: string;
+  currentPagePath?: string[];
   currentPageRegistry?: unknown;
   history?: Array<{
     toolCalls: AssistantToolCall[];
@@ -79,12 +80,13 @@ ${JSON.stringify(getAssistantControlToolCatalog())}
 5. 原始用户请求中如果包含明确的姓名、保单号、证件号、投保单位或状态等查询条件，执行 search 前必须先为这些条件生成对应的 set_field；不能只根据 recognized 描述条件而省略 set_field。
 6. “张三有哪些保单”应使用注册信息中与被保人姓名对应的字段ID；公司、集团、科技、医院等通常使用投保单位对应的字段ID。
 7. 保单状态的值必须使用注册字段声明的值，不要自行创造业务值。
-8. 如果已经可以执行页面动作，返回 open_page、set_field、click_button、click_result_action；如果任务已经完成或无法继续，返回 finish_task。
+8. 如果已经可以执行页面动作，返回 open_page、set_field、click_button、click_list_row_action；如果任务已经完成或无法继续，返回 finish_task。
 9. 一次页面计划最多选择一个结果行操作，因为当前页面一次只能展示一个结果详情区域；需要处理其他结果时，等待执行结果后再继续。
 10. decision=continue 表示 Agent 还需要下一轮，decision=finish 表示结束本次任务。
+11. 每轮必须输出 thought，简短说明当前判断和下一步计划；不要输出冗长逐字推理。
 
 输出结构：
-{"reply":"给用户的简短说明","recognized":["识别出的信息"],"decision":"continue 或 finish","toolCalls":[{"tool":"工具名","args":{}}]}
+{"thought":"不超过40字的当前判断与下一步计划","reply":"给用户的简短说明","recognized":["识别出的信息"],"decision":"continue 或 finish","toolCalls":[{"tool":"工具名","args":{}}]}
 `.trim();
 }
 
@@ -108,6 +110,7 @@ function normalizePayload(payload: LlmPayload) {
     : [];
   return {
     reply: payload.reply,
+    thought: typeof payload.thought === "string" ? payload.thought.slice(0, 120) : undefined,
     recognized,
     decision: payload.decision === "continue" ? "continue" as const : "finish" as const,
     toolCalls,
@@ -139,7 +142,7 @@ function hasExplicitQueryCondition(userText: string) {
 }
 
 function hasSearchAction(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
-  return plan.toolCalls.some((call) => call.tool === "click_button" && call.args.button === "search");
+  return plan.toolCalls.some((call) => call.tool === "click_button" && call.args.actionId === "search");
 }
 
 function hasSetFieldAction(plan: NonNullable<ReturnType<typeof normalizePayload>>, context?: AssistantContinuationContext) {
@@ -149,7 +152,7 @@ function hasSetFieldAction(plan: NonNullable<ReturnType<typeof normalizePayload>
 }
 
 function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
-  return plan.toolCalls.filter((call) => call.tool === "click_result_action").length > 1;
+  return plan.toolCalls.filter((call) => call.tool === "click_list_row_action").length > 1;
 }
 
 async function callOllama(messages: OllamaMessage[]) {
@@ -187,8 +190,8 @@ ${JSON.stringify(context.currentPageRegistry ?? null)}
 上一次操作结果：
 ${JSON.stringify(context.lastOperationResult ?? null)}
 
-当前页面：
-${context.currentPage ?? "未知"}`
+当前页面路径：
+${context.currentPagePath?.join(" -> ") ?? "未知"}`
     : userText;
   const messages: OllamaMessage[] = [
     { role: "system", content: buildSystemPrompt() },
@@ -222,7 +225,7 @@ ${context.currentPage ?? "未知"}`
       messages.push({ role: "assistant", content: result.content });
       messages.push({
         role: "user",
-        content: "系统校验发现：当前页面一次只能打开一个保单抽屉，但当前计划包含多个 click_result_action。请只选择一个最符合当前用户目标的 policyId，执行后等待结果再决定是否继续；不要一次返回多个结果操作。",
+        content: "系统校验发现：当前页面一次只能打开一个详情区域，但当前计划包含多个 click_list_row_action。请只选择一个最符合当前用户目标的列表行操作，执行后等待结果再决定是否继续；不要一次返回多个列表行操作。",
       });
       continue;
     }

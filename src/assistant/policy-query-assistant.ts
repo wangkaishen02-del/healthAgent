@@ -22,29 +22,29 @@ export type AssistantToolCall =
   | {
       tool: "open_page";
       args: {
-        page: AssistantPageId;
+        pageId: AssistantPageId;
       };
     }
   | {
       tool: "set_field";
       args: {
-        page: "policy_query";
-        field: AssistantFieldId;
+        pageId: "policy_query";
+        fieldId: AssistantFieldId;
         value: string;
       };
     }
   | {
       tool: "click_button";
       args: {
-        page: "policy_query";
-        button: AssistantButtonId;
+        pageId: "policy_query";
+        actionId: AssistantButtonId;
       };
     }
   | {
-      tool: "click_result_action";
+      tool: "click_list_row_action";
       args: {
-        page: "policy_query";
-        action: AssistantResultActionId;
+        pageId: "policy_query";
+        actionId: AssistantResultActionId;
         row: number;
       };
     };
@@ -53,6 +53,7 @@ export type AssistantModelToolCall = AssistantToolCall | AssistantDiscoveryCall 
 
 export interface AssistantPlan {
   reply: string;
+  thought?: string;
   toolCalls: AssistantToolCall[];
   recognized: string[];
   source?: "rule" | "llm";
@@ -107,7 +108,7 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
       toolCalls: [
         {
           tool: "open_page",
-          args: { page: "claim_query" },
+          args: { pageId: "claim_query" },
         },
       ],
     };
@@ -150,8 +151,8 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
       recognized: ["目标页面：保单信息查询", "动作：重置查询条件"],
       source: "rule",
       toolCalls: [
-        { tool: "open_page", args: { page: "policy_query" } },
-        { tool: "click_button", args: { page: "policy_query", button: "reset" } },
+        { tool: "open_page", args: { pageId: "policy_query" } },
+        { tool: "click_button", args: { pageId: "policy_query", actionId: "reset" } },
       ],
     };
   }
@@ -170,24 +171,24 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
     recognized: ["目标页面：保单信息查询", ...filters.map((item) => item.label), "动作：点击查询"],
     source: "rule",
     toolCalls: [
-      { tool: "open_page", args: { page: "policy_query" } },
-      { tool: "click_button", args: { page: "policy_query", button: "reset" } },
+      { tool: "open_page", args: { pageId: "policy_query" } },
+      { tool: "click_button", args: { pageId: "policy_query", actionId: "reset" } },
       ...filters.map<AssistantToolCall>((item) => ({
         tool: "set_field",
         args: {
-          page: "policy_query",
-          field: item.field,
+          pageId: "policy_query",
+          fieldId: item.field,
           value: item.value,
         },
       })),
-      { tool: "click_button", args: { page: "policy_query", button: "search" } },
+      { tool: "click_button", args: { pageId: "policy_query", actionId: "search" } },
     ],
   };
 }
 
 export function formatToolCall(call: AssistantToolCall) {
   if (call.tool === "open_page") {
-    return call.args.page === "policy_query" ? "打开保单信息查询页" : "打开案件查询页";
+    return call.args.pageId === "policy_query" ? "打开保单信息查询页" : "打开案件查询页";
   }
 
   if (call.tool === "set_field") {
@@ -202,19 +203,19 @@ export function formatToolCall(call: AssistantToolCall) {
       enabled: "启用",
       disabled: "停用",
     };
-    return `填写${labelMap[call.args.field]}：${valueMap[call.args.value] ?? call.args.value}`;
+    return `填写${labelMap[call.args.fieldId]}：${valueMap[call.args.value] ?? call.args.value}`;
   }
 
-  if (call.tool === "click_result_action") {
+  if (call.tool === "click_list_row_action") {
     const labels: Record<AssistantResultActionId, string> = {
       view_detail: "详细信息",
       view_benefits: "责任信息",
       view_insureds: "被保人信息",
     };
-    return `点击保单列表第${call.args.row}行的${labels[call.args.action]}`;
+    return `点击保单列表第${call.args.row}行的${labels[call.args.actionId]}`;
   }
 
-  return call.args.button === "search" ? "点击查询按钮" : "点击重置按钮";
+  return call.args.actionId === "search" ? "点击查询按钮" : "点击重置按钮";
 }
 
 export function isAssistantToolCall(value: unknown): value is AssistantToolCall {
@@ -222,14 +223,14 @@ export function isAssistantToolCall(value: unknown): value is AssistantToolCall 
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
 
   if (candidate.tool === "open_page") {
-    return candidate.args?.page === "policy_query" || candidate.args?.page === "claim_query";
+    return candidate.args?.pageId === "policy_query" || candidate.args?.pageId === "claim_query";
   }
 
   if (candidate.tool === "set_field") {
     return (
-      candidate.args?.page === "policy_query" &&
+      candidate.args?.pageId === "policy_query" &&
       ["policyNo", "applicantName", "insuredName", "insuredIdNo", "policyStatus"].includes(
-        String(candidate.args?.field),
+        String(candidate.args?.fieldId),
       ) &&
       typeof candidate.args?.value === "string"
     );
@@ -237,15 +238,15 @@ export function isAssistantToolCall(value: unknown): value is AssistantToolCall 
 
   if (candidate.tool === "click_button") {
     return (
-      candidate.args?.page === "policy_query" &&
-      (candidate.args?.button === "search" || candidate.args?.button === "reset")
+      candidate.args?.pageId === "policy_query" &&
+      (candidate.args?.actionId === "search" || candidate.args?.actionId === "reset")
     );
   }
 
-  if (candidate.tool === "click_result_action") {
+  if (candidate.tool === "click_list_row_action") {
     return (
-      candidate.args?.page === "policy_query" &&
-      ["view_detail", "view_benefits", "view_insureds"].includes(String(candidate.args?.action)) &&
+      candidate.args?.pageId === "policy_query" &&
+      ["view_detail", "view_benefits", "view_insureds"].includes(String(candidate.args?.actionId)) &&
       typeof candidate.args?.row === "number" &&
       Number.isInteger(candidate.args?.row) &&
       candidate.args.row > 0
@@ -278,6 +279,27 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
   if (!value || typeof value !== "object") return null;
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
 
+  if (candidate.tool === "get_page_registry" && typeof candidate.args?.page === "string") {
+    return {
+      tool: "get_page_registry",
+      args: { pageId: candidate.args.page },
+    };
+  }
+
+  if (candidate.tool === "get_menu_pages" && typeof candidate.args?.menu === "string") {
+    return {
+      tool: "get_menu_pages",
+      args: { menuId: candidate.args.menu },
+    };
+  }
+
+  if (candidate.tool === "open_page" && typeof candidate.args?.page === "string") {
+    return {
+      tool: "open_page",
+      args: { pageId: candidate.args.page as AssistantPageId },
+    };
+  }
+
   if (candidate.tool === "set_field") {
     const fieldAliases: Record<string, AssistantFieldId> = {
       policy_no: "policyNo",
@@ -286,14 +308,15 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
       insured_id_no: "insuredIdNo",
       policy_status: "policyStatus",
     };
-    const rawField = String(candidate.args?.field ?? "");
+    const rawField = String(candidate.args?.fieldId ?? candidate.args?.field ?? "");
     const normalizedField = fieldAliases[rawField] ?? rawField;
-    if (candidate.args?.page === "policy_query" && typeof candidate.args?.value === "string") {
+    const pageId = candidate.args?.pageId ?? candidate.args?.page;
+    if (pageId === "policy_query" && typeof candidate.args?.value === "string") {
       const normalizedCall = {
         tool: "set_field" as const,
         args: {
-          page: "policy_query" as const,
-          field: normalizedField as AssistantFieldId,
+          pageId: "policy_query" as const,
+          fieldId: normalizedField as AssistantFieldId,
           value: candidate.args.value,
         },
       };
@@ -301,33 +324,29 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
     }
   }
 
-  // 兼容模型把“查询”写成 query，统一转换为页面注册的 search。
-  if (
-    candidate.tool === "click_button" &&
-    ["query", "查询", "搜索"].includes(String(candidate.args?.button))
-  ) {
-    return { tool: "click_button", args: { page: "policy_query", button: "search" } };
+  if (candidate.tool === "click_button") {
+    const pageId = candidate.args?.pageId ?? candidate.args?.page;
+    const rawActionId = String(candidate.args?.actionId ?? candidate.args?.button ?? "");
+    const actionId = ["query", "查询", "搜索"].includes(rawActionId) ? "search" : rawActionId;
+    const normalizedCall = {
+      tool: "click_button" as const,
+      args: { pageId, actionId },
+    };
+    return isAssistantToolCall(normalizedCall) ? normalizedCall : null;
   }
 
-  if (candidate.tool === "click_result_action" && candidate.args?.action === "view_details") {
-    return {
-      tool: "click_result_action",
+  if (candidate.tool === "click_list_row_action" || candidate.tool === "click_result_action") {
+    const rawActionId = String(candidate.args?.actionId ?? candidate.args?.action ?? "");
+    const actionId = rawActionId === "view_details" ? "view_detail" : rawActionId;
+    const normalizedCall = {
+      tool: "click_list_row_action" as const,
       args: {
-        page: "policy_query",
-        action: "view_detail",
-        row: Number(candidate.args.row),
+        pageId: candidate.args?.pageId ?? candidate.args?.page,
+        actionId,
+        row: Number(candidate.args?.row),
       },
     };
-  }
-
-  if (candidate.tool === "click_result_action" && typeof candidate.args?.row === "string") {
-    const row = Number(candidate.args.row);
-    if (Number.isInteger(row) && row > 0) {
-      return normalizeAssistantModelToolCall({
-        tool: "click_result_action",
-        args: { ...candidate.args, row },
-      });
-    }
+    return isAssistantToolCall(normalizedCall) ? normalizedCall : null;
   }
 
   return isAssistantModelToolCall(value) ? value : null;

@@ -23,9 +23,10 @@
 ## 当前范围
 
 - 保单列表查询
-- 保单详情查询
-- 保单下险种与责任查询
-- 保单下被保人查询
+- 全量宽度的保单详情抽屉：基本信息、险种与责任、被保人清单三个页签
+- 保单下险种与责任查询：以紧凑明细表展示，同一险种的代码和名称跨责任行合并
+- 保单下被保人查询：分页列表展示
+- 顶部菜单可打开保单信息查询、案件查询；工作区标签页可关闭并可从菜单重新打开
 - 智能助手通过本地 Ollama LLM 自动打开页面、填写条件和执行查询
 - 页面导航、页面区域、字段和动作注册中心
 - Agent 注册信息发现与多轮决策
@@ -37,10 +38,12 @@
 注册中心位于 `src/assistant/page-registry.ts`，目前注册了：
 
 - 菜单：综合查询、理赔处理
-- 页面：保单信息查询、案件查询
+- 页面：保单信息查询、保单详细信息、案件查询
 - 保单查询区域：查询条件、保单结果列表
 - 字段：保单号、投保单位、被保人姓名、被保人证件号、保单状态
 - 动作：打开页面、重置、查询，以及详情/责任/被保人信息入口
+
+页面注册使用明确 ID：页面使用 `pageId`，区域使用 `regionId`，字段使用 `fieldId`，动作使用 `actionId`。LLM工具参数直接使用这些注册 ID。
 
 Agent 的一次执行过程是：
 
@@ -82,7 +85,7 @@ LLM目前可用工具分为三类：
 - `open_page`：打开已注册页面
 - `set_field`：填写已注册字段
 - `click_button`：点击已注册按钮，例如查询、重置
-- `click_result_action`：点击结果列表操作
+- `click_list_row_action`：点击列表某一行操作列中的动作
 
 任务控制工具：
 
@@ -90,14 +93,14 @@ LLM目前可用工具分为三类：
 
 `get_navigation_registry`不再作为LLM工具提供。系统导航信息会直接放入系统提示词。
 
-`click_result_action`使用通用行号，不依赖业务主键：
+`click_list_row_action`使用通用行号，不依赖业务主键：
 
 ```json
 {
-  "tool": "click_result_action",
+  "tool": "click_list_row_action",
   "args": {
-    "page": "policy_query",
-    "action": "view_insureds",
+    "pageId": "policy_query",
+    "actionId": "view_insureds",
     "row": 1
   }
 }
@@ -119,11 +122,19 @@ LLM目前可用工具分为三类：
 每次 continuation 请求只传递：
 
 - `history`：历史工具操作记录
-- `currentPage`：当前页面
+- `currentPagePath`：当前页面路径
 - `currentPageRegistry`：当前页面注册信息
 - `lastOperationResult`：上一次页面操作结果
 
 不会继续累积更早的完整查询结果。查询完成后，`lastOperationResult`是查询结果；打开详情或结果抽屉后，`lastOperationResult`会替换为当前详情/抽屉结果。
+
+列表行操作打开保单详情抽屉后，系统会将当前页面切换为注册页面 `policy_detail`，并直接加载其注册信息。下一轮仅传递当前页面路径：
+
+```text
+综合查询 -> 保单信息查询 -> 详细信息
+```
+
+不会继续传递 `policy_query` 的页面注册信息。
 
 系统提示词不写死“被保人”“责任”等具体业务流程。LLM应该根据当前页面注册信息和执行结果自主选择下一步动作。
 
@@ -146,6 +157,8 @@ curl "http://127.0.0.1:3000/api/assistant/registry?resource=tools"
 
 不打印其他 Agent 汇总字段。
 
+LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示一条简短的当前判断与下一步计划；任务完成后该展示自动隐藏。
+
 ## 当前目录
 
 - `prisma/`
@@ -161,7 +174,7 @@ curl "http://127.0.0.1:3000/api/assistant/registry?resource=tools"
 - `app/api/assistant/registry/route.ts`
   注册信息查询 API
 - `app/page.tsx`
-  页面导航、保单查询页面、Agent 前端执行器和助手面板
+  页面导航、可关闭标签页、保单查询/详情抽屉、Agent 前端执行器和助手面板
 - `docs/reset-retrospective.md`
   重启前复盘
 - `docs/identifier-conventions.md`
@@ -200,7 +213,8 @@ docs/frontend-style-guide.md
 3. 不由系统根据用户关键词自动补充业务动作，让LLM根据注册信息和结果自主决策
 4. 页面操作参数使用注册 ID；结果列表操作使用从1开始的行号
 5. 执行后只把当前页面注册信息和上一次操作结果传给下一轮LLM
-6. 修改后至少运行 `npm run build` 验证
+6. 详情页签的内容区应独立滚动，抽屉标题和页签保持固定
+7. 修改后至少运行 `npm run build` 验证
 
 下一步会继续接：
 
