@@ -19,15 +19,19 @@ import {
   getPageRegistration,
 } from "../../../../src/assistant/page-registry";
 
-const OLLAMA_URL = "http://localhost:11434/api/chat";
-const OLLAMA_MODEL = "qwen3:8b";
-const OLLAMA_TIMEOUT_MS = 90000;
+const LLM_PROVIDER = process.env.LLM_PROVIDER ?? "ollama";
+const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434/api/chat";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3:8b";
+const DEEPSEEK_URL = process.env.DEEPSEEK_URL ?? "https://api.deepseek.com/chat/completions";
+const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash";
+const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 90000);
 const MAX_AGENT_TURNS = 5;
 const ASSISTANT_LOG_DIR = join(process.cwd(), "logs");
 const ASSISTANT_LOG_PATH = join(ASSISTANT_LOG_DIR, "assistant-llm.log");
 
 type OllamaMessage = { role: "system" | "user" | "assistant"; content: string };
 type OllamaResponse = { message?: { content?: string } };
+type DeepSeekResponse = { choices?: Array<{ message?: { content?: string | null } }> };
 type LlmPayload = {
   reply?: string;
   thought?: string;
@@ -46,8 +50,8 @@ type AssistantContinuationContext = {
 };
 
 type AssistantLogEntry =
-  | { type: "input"; runId: string; turn: number; messages: OllamaMessage[] }
-  | { type: "output"; runId: string; turn: number; content: string; durationMs: number };
+  | { type: "input"; runId: string; turn: number; provider: string; model: string; messages: OllamaMessage[] }
+  | { type: "output"; runId: string; turn: number; provider: string; model: string; content: string; durationMs: number };
 
 function formatJsonIfPossible(content: string) {
   try {
@@ -60,7 +64,7 @@ function formatJsonIfPossible(content: string) {
 function formatAssistantLog(entry: AssistantLogEntry) {
   const header = [
     "=".repeat(84),
-    `[assistant-llm] ${new Date().toISOString()} | run=${entry.runId} | turn=${entry.turn} | ${entry.type.toUpperCase()}`,
+    `[assistant-llm] ${new Date().toISOString()} | run=${entry.runId} | turn=${entry.turn} | provider=${entry.provider} | model=${entry.model} | ${entry.type.toUpperCase()}`,
     "-".repeat(84),
   ];
 
@@ -191,9 +195,36 @@ function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizeP
   return plan.toolCalls.filter((call) => call.tool === "click_list_row_action").length > 1;
 }
 
+function formatLastOperationResult(result: unknown) {
+  const serialized = JSON.stringify(result ?? null);
+  if (!result || typeof result !== "object") return serialized;
+
+  const candidate = result as {
+    type?: unknown;
+    matchedPolicyCount?: unknown;
+    returnedPolicyCount?: unknown;
+    policyListContextLimit?: unknown;
+    policyListTruncated?: unknown;
+  };
+  if (candidate.type !== "policy_search" || typeof candidate.matchedPolicyCount !== "number") return serialized;
+
+  const returnedCount = typeof candidate.returnedPolicyCount === "number" ? candidate.returnedPolicyCount : 0;
+  const limit = typeof candidate.policyListContextLimit === "number" ? candidate.policyListContextLimit : returnedCount;
+  const truncated = candidate.policyListTruncated === true;
+  return `${serialized}
+
+查询结果上下文说明：本次完整命中 ${candidate.matchedPolicyCount} 条保单。为限制模型上下文，policies 仅提供前 ${returnedCount} 条（最大 ${limit} 条）作为样本${truncated ? "，仍有其他命中结果未传入" : "，已包含全部命中结果"}。不得把 policies 的长度当作完整结果数，也不要臆测未传入的保单。`;
+}
+
+function getLlmIdentity() {
+  if (LLM_PROVIDER === "ollama") return { provider: "ollama", model: OLLAMA_MODEL };
+  if (LLM_PROVIDER === "deepseek") return { provider: "deepseek", model: DEEPSEEK_MODEL };
+  throw new Error(`unsupported_llm_provider:${LLM_PROVIDER}`);
+}
+
 async function callOllama(messages: OllamaMessage[]) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), OLLAMA_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
   const startedAt = Date.now();
   try {
     const response = await fetch(OLLAMA_URL, {
@@ -212,8 +243,47 @@ async function callOllama(messages: OllamaMessage[]) {
   }
 }
 
+async function callDeepSeek(messages: OllamaMessage[]) {
+  const apiKey = process.env.DEEPSEEK_API_KEY;
+  if (!apiKey) throw new Error("deepseek_api_key_missing");
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+  const startedAt = Date.now();
+  try {
+    const response = await fetch(DEEPSEEK_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model: DEEPSEEK_MODEL,
+        stream: false,
+        temperature: 0,
+        thinking: { type: "disabled" },
+        response_format: { type: "json_object" },
+        messages,
+      }),
+      signal: controller.signal,
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`deepseek_http_${response.status}`);
+    const data = (await response.json()) as DeepSeekResponse;
+    const content = data.choices?.[0]?.message?.content?.trim() ?? "";
+    return { content, parsed: tryParseJson(content), durationMs: Date.now() - startedAt };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function callLlm(messages: OllamaMessage[]) {
+  return LLM_PROVIDER === "deepseek" ? callDeepSeek(messages) : callOllama(messages);
+}
+
 async function requestAgentPlan(userText: string, context?: AssistantContinuationContext) {
   const runId = randomUUID().slice(0, 8);
+  const llm = getLlmIdentity();
   const userMessage = context
     ? `${userText}
 
@@ -226,7 +296,7 @@ ${JSON.stringify(context.history ?? [])}
 ${JSON.stringify(context.currentPageRegistry ?? null)}
 
 上一次操作结果：
-${JSON.stringify(context.lastOperationResult ?? null)}
+${formatLastOperationResult(context.lastOperationResult)}
 
 当前页面路径：
 ${context.currentPagePath?.join(" -> ") ?? "未知"}`
@@ -241,13 +311,14 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
   let lastPlan: ReturnType<typeof normalizePayload> = null;
 
   for (let turn = 1; turn <= MAX_AGENT_TURNS; turn += 1) {
-    await writeAssistantLog({ type: "input", runId, turn, messages });
-    const result = await callOllama(messages);
+    await writeAssistantLog({ type: "input", runId, turn, ...llm, messages });
+    const result = await callLlm(messages);
     rawReplies.push(result.content);
     await writeAssistantLog({
       type: "output",
       runId,
       turn,
+      ...llm,
       content: result.content,
       durationMs: result.durationMs,
     });
@@ -327,7 +398,13 @@ export async function POST(request: NextRequest) {
     }
     return NextResponse.json(result.plan);
   } catch (error) {
-    const detail = error instanceof Error && error.name === "AbortError" ? `本地模型响应超时（>${Math.round(OLLAMA_TIMEOUT_MS / 1000)} 秒）。` : error instanceof Error ? error.message : "本地模型当前不可用。";
+    const detail = error instanceof Error && error.name === "AbortError"
+      ? `模型响应超时（>${Math.round(LLM_TIMEOUT_MS / 1000)} 秒）。`
+      : error instanceof Error && error.message === "deepseek_api_key_missing"
+        ? "未配置 DEEPSEEK_API_KEY，无法调用 DeepSeek。"
+        : error instanceof Error
+          ? error.message
+          : "模型当前不可用。";
     return NextResponse.json({ message: "llm_unavailable", detail }, { status: 502 });
   }
 }

@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { URL } from "node:url";
-import { getPolicyFullView, listPolicies } from "../underwriting/service.ts";
+import { getPolicyDetailView, getPolicyFullView, listPolicies, listPolicyInsureds } from "../underwriting/service.ts";
 
 export interface ApiResponse {
   status: number;
@@ -30,7 +30,7 @@ export function handleGetRequest(url: string): ApiResponse {
   }
 
   if (pathname === "/api/policies") {
-    const items = listPolicies({
+    const result = listPolicies({
       policyNo: requestUrl.searchParams.get("policyNo") ?? undefined,
       applicantName: requestUrl.searchParams.get("applicantName") ?? undefined,
       insuredName: requestUrl.searchParams.get("insuredName") ?? undefined,
@@ -39,12 +39,11 @@ export function handleGetRequest(url: string): ApiResponse {
         | "enabled"
         | "disabled"
         | null) ?? undefined,
+      page: Number(requestUrl.searchParams.get("page") ?? 1),
+      pageSize: Number(requestUrl.searchParams.get("pageSize") ?? 10),
     });
 
-    return json(200, {
-      items,
-      total: items.length,
-    });
+    return json(200, result);
   }
 
   const policyIdMatch = pathname.match(/^\/api\/policies\/([^/]+)$/);
@@ -68,21 +67,17 @@ export function handleGetRequest(url: string): ApiResponse {
 
   const policyInsuredsMatch = pathname.match(/^\/api\/policies\/([^/]+)\/insureds$/);
   if (policyInsuredsMatch) {
-    const fullView = getPolicyFullView(policyInsuredsMatch[1]);
-    return fullView
-      ? json(200, {
-          policyId: fullView.policy.id,
-          policyNo: fullView.policy.policyNo,
-          items: fullView.insureds,
-          total: fullView.insureds.length,
-        })
-      : json(404, { message: "Not Found" });
+    const result = listPolicyInsureds(policyInsuredsMatch[1], {
+      page: Number(requestUrl.searchParams.get("page") ?? 1),
+      pageSize: Number(requestUrl.searchParams.get("pageSize") ?? 10),
+    });
+    return result ? json(200, result) : json(404, { message: "Not Found" });
   }
 
   const policyFullViewMatch = pathname.match(/^\/api\/policies\/([^/]+)\/full-view$/);
   if (policyFullViewMatch) {
-    const fullView = getPolicyFullView(policyFullViewMatch[1]);
-    return fullView ? json(200, fullView) : json(404, { message: "Not Found" });
+    const detailView = getPolicyDetailView(policyFullViewMatch[1]);
+    return detailView ? json(200, detailView) : json(404, { message: "Not Found" });
   }
 
   return json(404, { message: "Not Found" });

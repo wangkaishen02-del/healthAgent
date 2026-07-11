@@ -97,3 +97,17 @@ export interface PolicyFullView {
   products: PolicyProductView[];
   insureds: PolicyInsuredView[];
 }
+
+export interface PolicyDetailView {
+  policy: Policy;
+  products: PolicyProductView[];
+  insuredCount: number;
+}
+
+export interface PageResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}

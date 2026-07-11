@@ -4,7 +4,7 @@ import { listPolicies } from "../../../src/underwriting/service";
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
 
-  const items = listPolicies({
+  const result = listPolicies({
     policyNo: searchParams.get("policyNo") ?? undefined,
     applicantName: searchParams.get("applicantName") ?? undefined,
     insuredName: searchParams.get("insuredName") ?? undefined,
@@ -12,10 +12,9 @@ export async function GET(request: NextRequest) {
     policyStatus:
       (searchParams.get("policyStatus") as "enabled" | "disabled" | null) ??
       undefined,
+    page: Number(searchParams.get("page") ?? 1),
+    pageSize: Number(searchParams.get("pageSize") ?? 10),
   });
 
-  return NextResponse.json({
-    items,
-    total: items.length,
-  });
+  return NextResponse.json(result);
 }

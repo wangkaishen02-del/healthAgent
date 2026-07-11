@@ -126,7 +126,7 @@ LLM目前可用工具分为三类：
 - `currentPageRegistry`：当前页面注册信息
 - `lastOperationResult`：上一次页面操作结果
 
-不会继续累积更早的完整查询结果。查询完成后，`lastOperationResult`是查询结果；打开详情或结果抽屉后，`lastOperationResult`会替换为当前详情/抽屉结果。
+不会继续累积更早的完整查询结果。查询完成后，`lastOperationResult`是查询结果；打开详情或结果抽屉后，`lastOperationResult`会替换为当前详情/抽屉结果。保单查询结果会保留完整命中总数，但为限制模型上下文，`policies` 最多仅传递前 5 条；系统会明确告知模型总数、已传递条数以及是否截断，模型不得把这 5 条当作完整结果集。
 
 列表行操作打开保单详情抽屉后，系统会将当前页面切换为注册页面 `policy_detail`，并直接加载其注册信息。下一轮仅传递当前页面路径：
 
@@ -146,7 +146,19 @@ curl "http://127.0.0.1:3000/api/assistant/registry?resource=page&pageId=policy_q
 curl "http://127.0.0.1:3000/api/assistant/registry?resource=tools"
 ```
 
-本地模型配置为 Ollama 的 `qwen3:8b`，地址为 `http://localhost:11434/api/chat`。
+## 模型配置
+
+默认使用本地 Ollama 的 `qwen3:8b`，地址为 `http://localhost:11434/api/chat`。可复制 `.env.example` 为本机 `.env.local` 并按需修改。
+
+若要对比 DeepSeek 的响应速度，在 `.env.local` 中配置：
+
+```bash
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=你的 DeepSeek API Key
+DEEPSEEK_MODEL=deepseek-v4-flash
+```
+
+DeepSeek 请求使用非 thinking 模式和 JSON 输出，以减少页面操作 Agent 的响应时间。日志会记录实际 `provider`、`model` 与耗时，便于对比。健康险真实环境接入外部模型前，应先完成个人信息、健康信息的脱敏和数据出境合规评估；当前仅建议使用脱敏或模拟数据测试。
 
 每次 LLM 调用会向控制台和 `logs/assistant-llm.log` 写入两个可读区块：`INPUT` 和 `OUTPUT`。区块带有本次运行 ID、轮次、时间和模型响应耗时；输入会按 `SYSTEM` / `USER` / `ASSISTANT` 分段，JSON 输出会自动缩进。
 
@@ -252,6 +264,7 @@ npm run dev:api
 - `GET /`
 - `GET /api/health`
 - `GET /api/policies`
+- `GET /api/policies?page=1&pageSize=10`
 - `GET /api/policies/:policyId`
 - `GET /api/policies/:policyId/products`
 - `GET /api/policies/:policyId/insureds`

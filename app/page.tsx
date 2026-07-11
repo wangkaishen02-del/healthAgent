@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatToolCall, type AssistantPlan, type AssistantToolCall } from "../src/assistant/policy-query-assistant";
-import type { PolicyFullView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
+import type { PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
 
 type MainTab = "policy" | "claim";
 type DrawerTab = "basic" | "benefits" | "insureds";
@@ -22,6 +22,7 @@ type AssistantMessage = {
 
 const POLICY_PAGE_SIZE = 10;
 const INSURED_PAGE_SIZE = 10;
+const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
 const EMPTY_POLICY_FILTERS: PolicyFilters = {
   policyNo: "",
   applicantName: "",
@@ -77,6 +78,18 @@ function Pagination({
   total: number;
   onChange: (page: number) => void;
 }) {
+  const pageItems = useMemo(() => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+    const pages = [1, currentPage - 1, currentPage, currentPage + 1, totalPages]
+      .filter((page) => page >= 1 && page <= totalPages)
+      .sort((a, b) => a - b)
+      .filter((page, index, values) => index === 0 || page !== values[index - 1]);
+    return pages.flatMap((page, index) => {
+      const previous = pages[index - 1];
+      return index > 0 && page - previous > 1 ? ["ellipsis" as const, page] : [page];
+    });
+  }, [currentPage, totalPages]);
+
   return (
     <div className="pagination">
       <span className="pagination-info">
@@ -85,7 +98,9 @@ function Pagination({
       <button className="page-btn" disabled={currentPage === 1} onClick={() => onChange(currentPage - 1)}>
         上一页
       </button>
-      {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
+      {pageItems.map((page, index) => page === "ellipsis" ? (
+        <span className="pagination-info" key={`ellipsis-${index}`}>…</span>
+      ) : (
         <button
           key={page}
           className={`page-btn ${page === currentPage ? "active" : ""}`}
@@ -101,11 +116,11 @@ function Pagination({
   );
 }
 
-function BasicView({ data }: { data: PolicyFullView }) {
+function BasicView({ data }: { data: PolicyDetailView }) {
   const summary = [
     { label: "险种数", value: data.products.length },
     { label: "责任数", value: data.products.reduce((sum, item) => sum + item.benefits.length, 0) },
-    { label: "被保人数", value: data.insureds.length },
+    { label: "被保人数", value: data.insuredCount },
   ];
   const basic = [
     { label: "保单号", value: data.policy.policyNo },
@@ -198,22 +213,22 @@ function BenefitsView({ products }: { products: PolicyProductView[] }) {
 
 function InsuredsView({
   insureds,
+  total,
   page,
   setPage,
 }: {
   insureds: PolicyInsuredView[];
+  total: number;
   page: number;
   setPage: (page: number) => void;
 }) {
-  const totalPages = Math.max(1, Math.ceil(insureds.length / INSURED_PAGE_SIZE));
-  const start = (page - 1) * INSURED_PAGE_SIZE;
-  const pageItems = insureds.slice(start, start + INSURED_PAGE_SIZE);
+  const totalPages = Math.max(1, Math.ceil(total / INSURED_PAGE_SIZE));
 
   return (
     <>
       <div className="panel-title-row">
         <h3>被保人清单</h3>
-        <span className="muted">{insureds.length} 人</span>
+        <span className="muted">{total} 人</span>
       </div>
       <div className="detail-table-shell">
         <div className="table-wrapper detail-table-wrapper">
@@ -233,9 +248,9 @@ function InsuredsView({
               </tr>
             </thead>
             <tbody>
-              {pageItems.map((item, index) => (
+              {insureds.map((item, index) => (
                 <tr key={item.id}>
-                  <td>{start + index + 1}</td>
+                  <td>{(page - 1) * INSURED_PAGE_SIZE + index + 1}</td>
                   <td>{item.insuredPerson.insuredNo}</td>
                   <td>{item.insuredPerson.name}</td>
                   <td>{formatGender(item.insuredPerson.gender)}</td>
@@ -250,7 +265,7 @@ function InsuredsView({
             </tbody>
           </table>
         </div>
-        <Pagination currentPage={page} totalPages={totalPages} total={insureds.length} onChange={setPage} />
+        <Pagination currentPage={page} totalPages={totalPages} total={total} onChange={setPage} />
       </div>
     </>
   );
@@ -263,11 +278,14 @@ export default function Page() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
   const [policies, setPolicies] = useState<PolicyListItem[]>([]);
+  const [policyTotal, setPolicyTotal] = useState(0);
   const [policyPage, setPolicyPage] = useState(1);
   const [activePolicyId, setActivePolicyId] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerTab, setDrawerTab] = useState<DrawerTab>("basic");
-  const [drawerData, setDrawerData] = useState<PolicyFullView | null>(null);
+  const [drawerData, setDrawerData] = useState<PolicyDetailView | null>(null);
+  const [insureds, setInsureds] = useState<PolicyInsuredView[]>([]);
+  const [insuredTotal, setInsuredTotal] = useState(0);
   const [insuredPage, setInsuredPage] = useState(1);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
@@ -322,19 +340,33 @@ export default function Page() {
     return () => document.removeEventListener("click", handleClickOutside);
   }, []);
 
-  async function loadPolicies(nextFilters: PolicyFilters) {
+  async function loadPolicies(nextFilters: PolicyFilters, page = 1) {
     const params = new URLSearchParams();
     Object.entries(nextFilters).forEach(([key, value]) => {
       if (value) params.set(key, value);
     });
+    params.set("page", String(page));
+    params.set("pageSize", String(POLICY_PAGE_SIZE));
     const response = await fetch(`/api/policies?${params.toString()}`);
-    const data: { items: PolicyListItem[] } = await response.json();
+    const data: PageResult<PolicyListItem> = await response.json();
     setPolicies(data.items);
-    setPolicyPage(1);
+    setPolicyTotal(data.total);
+    setPolicyPage(data.page);
     setActivePolicyId(null);
     setDrawerOpen(false);
     setDrawerData(null);
-    return data.items;
+    setInsureds([]);
+    setInsuredTotal(0);
+    return data;
+  }
+
+  async function loadPolicyInsureds(policyId: string, page = 1) {
+    const response = await fetch(`/api/policies/${policyId}/insureds?page=${page}&pageSize=${INSURED_PAGE_SIZE}`);
+    const data: PageResult<PolicyInsuredView> = await response.json();
+    setInsureds(data.items);
+    setInsuredTotal(data.total);
+    setInsuredPage(data.page);
+    return data;
   }
 
   async function openPolicyDrawer(policyId: string, tab: DrawerTab) {
@@ -342,9 +374,12 @@ export default function Page() {
     setDrawerTab(tab);
     setInsuredPage(1);
     const response = await fetch(`/api/policies/${policyId}/full-view`);
-    const data: PolicyFullView = await response.json();
+    const data: PolicyDetailView = await response.json();
     setDrawerData(data);
+    setInsureds([]);
+    setInsuredTotal(data.insuredCount);
     setDrawerOpen(true);
+    if (tab === "insureds") await loadPolicyInsureds(policyId);
     return data;
   }
 
@@ -409,11 +444,17 @@ export default function Page() {
 
       if (toolCall.tool === "click_button" && toolCall.args.actionId === "search") {
         setFilters({ ...nextFilters });
-        currentPolicies = await loadPolicies(nextFilters);
+        const policyResult = await loadPolicies(nextFilters);
+        currentPolicies = policyResult.items;
+        const contextPolicies = currentPolicies.slice(0, ASSISTANT_POLICY_CONTEXT_LIMIT);
         lastOperationResult = {
           type: "policy_search",
-          matchedPolicyCount: currentPolicies.length,
-          policies: currentPolicies.slice(0, 5).map((policy) => ({
+          matchedPolicyCount: policyResult.total,
+          resultPage: policyResult.page,
+          returnedPolicyCount: contextPolicies.length,
+          policyListContextLimit: ASSISTANT_POLICY_CONTEXT_LIMIT,
+          policyListTruncated: policyResult.total > contextPolicies.length,
+          policies: contextPolicies.map((policy) => ({
             policyId: policy.id,
             policyNo: policy.policyNo,
             policyName: policy.policyName,
@@ -441,12 +482,7 @@ export default function Page() {
             tab: toolCall.args.actionId,
             policyNo: drawerData.policy.policyNo,
             policyName: drawerData.policy.policyName,
-            insuredCount: drawerData.insureds.length,
-            insureds: drawerData.insureds.slice(0, 5).map((item) => ({
-              insuredNo: item.insuredPerson.insuredNo,
-              name: item.insuredPerson.name,
-              idNo: item.insuredPerson.idNo,
-            })),
+            insuredCount: drawerData.insuredCount,
           };
           await delay(220);
         } else {
@@ -589,12 +625,7 @@ export default function Page() {
     }
   }
 
-  const pagedPolicies = useMemo(() => {
-    const start = (policyPage - 1) * POLICY_PAGE_SIZE;
-    return policies.slice(start, start + POLICY_PAGE_SIZE);
-  }, [policies, policyPage]);
-
-  const totalPolicyPages = Math.max(1, Math.ceil(policies.length / POLICY_PAGE_SIZE));
+  const totalPolicyPages = Math.max(1, Math.ceil(policyTotal / POLICY_PAGE_SIZE));
   const selectedStatusLabel =
     policyStatusOptions.find((option) => option.value === filters.policyStatus)?.label ?? "全部";
 
@@ -712,7 +743,7 @@ export default function Page() {
           <section className="panel result-panel">
             <div className="panel-title-row">
               <div className="section-title">查询结果</div>
-              <span className="muted">{policies.length} 条</span>
+              <span className="muted">{policyTotal} 条</span>
             </div>
             <div className="result-table-shell">
               <div className="table-wrapper result-table-wrapper">
@@ -731,8 +762,8 @@ export default function Page() {
                     </tr>
                   </thead>
                   <tbody>
-                    {pagedPolicies.length > 0 ? (
-                      pagedPolicies.map((item, index) => (
+                    {policies.length > 0 ? (
+                      policies.map((item, index) => (
                         <tr key={item.id} className={activePolicyId === item.id ? "active-row" : ""}>
                           <td>{(policyPage - 1) * POLICY_PAGE_SIZE + index + 1}</td>
                           <td>{item.policyNo}</td>
@@ -757,7 +788,12 @@ export default function Page() {
                   </tbody>
                 </table>
               </div>
-              <Pagination currentPage={policyPage} totalPages={totalPolicyPages} total={policies.length} onChange={(page) => { setPolicyPage(page); setActivePolicyId(null); }} />
+              <Pagination
+                currentPage={policyPage}
+                totalPages={totalPolicyPages}
+                total={policyTotal}
+                onChange={(page) => { void loadPolicies(filters, page); }}
+              />
             </div>
           </section>
 
@@ -781,13 +817,26 @@ export default function Page() {
                 <div className="drawer-tabs">
                   <button className={`detail-tab ${drawerTab === "basic" ? "active" : ""}`} onClick={() => setDrawerTab("basic")}>详细信息</button>
                   <button className={`detail-tab ${drawerTab === "benefits" ? "active" : ""}`} onClick={() => setDrawerTab("benefits")}>责任信息</button>
-                  <button className={`detail-tab ${drawerTab === "insureds" ? "active" : ""}`} onClick={() => { setDrawerTab("insureds"); setInsuredPage(1); }}>被保人信息</button>
+                  <button
+                    className={`detail-tab ${drawerTab === "insureds" ? "active" : ""}`}
+                    onClick={() => {
+                      setDrawerTab("insureds");
+                      if (drawerData) void loadPolicyInsureds(drawerData.policy.id);
+                    }}
+                  >
+                    被保人信息
+                  </button>
                 </div>
                 <div className="drawer-content">
                   {drawerData && drawerTab === "basic" && <BasicView data={drawerData} />}
                   {drawerData && drawerTab === "benefits" && <BenefitsView products={drawerData.products} />}
                   {drawerData && drawerTab === "insureds" && (
-                    <InsuredsView insureds={drawerData.insureds} page={insuredPage} setPage={setInsuredPage} />
+                    <InsuredsView
+                      insureds={insureds}
+                      total={insuredTotal}
+                      page={insuredPage}
+                      setPage={(page) => { void loadPolicyInsureds(drawerData.policy.id, page); }}
+                    />
                   )}
                 </div>
               </div>
