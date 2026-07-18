@@ -24,6 +24,7 @@ export interface Policy {
 export interface PolicyProduct {
   id: string;
   policyId: string;
+  coveragePlanId: string;
   productNo: string;
   productCode: string;
   productName: string;
@@ -35,6 +36,55 @@ export interface PolicyProduct {
   sequenceNo?: number;
   remark?: string;
 }
+
+export interface CoveragePlan {
+  id: string;
+  policyId: string;
+  planCode: string;
+  planName: string;
+  effectiveDate: string;
+  expiryDate: string;
+  status: "active" | "inactive";
+  remark?: string;
+}
+
+export type CalculationParameterScope = "policy" | "plan" | "product" | "benefit";
+export type CalculationParameterValueType = "text" | "number" | "percentage" | "amount" | "boolean";
+
+export interface CalculationParameterDefinition {
+  parameterCode: string;
+  parameterName: string;
+  valueType: CalculationParameterValueType;
+  unit?: string;
+  applicableScopes: CalculationParameterScope[];
+  description?: string;
+}
+
+export interface CalculationParameter {
+  id: string;
+  scope: CalculationParameterScope;
+  targetId: string;
+  parameterCode: string;
+  parameterName: string;
+  valueType: CalculationParameterValueType;
+  parameterValue: string;
+  unit?: string;
+  description?: string;
+  enabled: boolean;
+  updatedAt: string;
+}
+
+export interface CalculationConfigTarget {
+  id: string;
+  code: string;
+  name: string;
+  parentLabel?: string;
+  policyId: string;
+  planId?: string;
+  productId?: string;
+}
+
+export type CalculationConfigCatalog = Record<CalculationParameterScope, CalculationConfigTarget[]>;
 
 export interface PolicyBenefit {
   id: string;

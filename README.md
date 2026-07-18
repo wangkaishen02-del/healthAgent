@@ -160,6 +160,12 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 
 DeepSeek 请求使用非 thinking 模式和 JSON 输出，以减少页面操作 Agent 的响应时间。日志会记录实际 `provider`、`model` 与耗时，便于对比。健康险真实环境接入外部模型前，应先完成个人信息、健康信息的脱敏和数据出境合规评估；当前仅建议使用脱敏或模拟数据测试。
 
+智能助手面板支持在“本地模型”和“DeepSeek”之间快速切换，选择会保存在浏览器中并应用于后续请求。任务执行期间切换器会暂时锁定，确保一次多轮 Agent 任务始终使用同一个模型。
+
+界面中的下拉选择统一使用项目自绘组件，不使用浏览器或操作系统原生下拉菜单，以保持视觉和交互一致。
+
+Agent 显式执行 `open_page` 时采用强制重开语义：即使页面标签已经存在，也会先关闭并清空页面状态，再以默认条件重新打开。其他页面动作因前置条件触发的隐式打开不会重复重置页面。
+
 每次 LLM 调用会向控制台和 `logs/assistant-llm.log` 写入两个可读区块：`INPUT` 和 `OUTPUT`。区块带有本次运行 ID、轮次、时间和模型响应耗时；输入会按 `SYSTEM` / `USER` / `ASSISTANT` 分段，JSON 输出会自动缩进。
 
 ```text
@@ -193,7 +199,11 @@ LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示
 - `app/api/assistant/registry/route.ts`
   注册信息查询 API
 - `app/page.tsx`
-  页面导航、可关闭标签页、保单查询/详情抽屉、Agent 前端执行器和助手面板
+  页面导航、可关闭标签页、保单查询/详情抽屉、理赔配置入口、Agent 前端执行器和助手面板
+- `app/components/CalculationConfigPage.tsx`
+  保单、保障计划、险种和责任四级理算参数维护页面
+- `app/api/calculation-parameters/route.ts`
+  理算配置对象目录与参数增删改查 API
 - `docs/reset-retrospective.md`
   重启前复盘
 - `docs/identifier-conventions.md`
@@ -211,7 +221,12 @@ LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示
 
 - `app/`：Next.js App Router 前端与 API 路由
 - `src/underwriting/`：承保域查询模型、样例数据、查询服务
+- `prisma/`：保障计划、参数定义和通用理算参数表结构；参数按 `scope + target_id + definition_id` 唯一
 - `public/`：旧版原生页面，保留为迁移期参考，不再作为主入口继续演进
+
+“理赔配置 → 保单理算配置”按完整保单号精确查询，查到后直接展示保单基本信息和“保单 → 保障计划 → 险种 → 责任”四级对象列表；点击具体对象的“配置”按钮后才进入参数维护页，可维护文本、数值、百分比、金额和布尔类型的理算参数。当前 Next.js 演示运行时使用内存 mock 数据；接入 PostgreSQL 后执行 Prisma 迁移即可持久化到 `coverage_plan` 和 `calculation_parameter` 表。
+
+参数名称由统一参数定义中心提供，不允许自由输入。每个定义唯一绑定参数编码、值类型、默认单位和适用层级；新增其他参数时只需扩展参数定义数据，配置页面和 API 会自动加载并校验。数据库使用 `calculation_parameter_definition` 保存定义，`calculation_parameter` 通过 `definition_id` 引用定义，从结构上保证名称和编码一一对应。
 
 ## 新对话接续说明
 

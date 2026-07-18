@@ -19,7 +19,9 @@ import {
   getPageRegistration,
 } from "../../../../src/assistant/page-registry";
 
-const LLM_PROVIDER = process.env.LLM_PROVIDER ?? "ollama";
+type LlmProvider = "ollama" | "deepseek";
+
+const DEFAULT_LLM_PROVIDER: LlmProvider = process.env.LLM_PROVIDER === "deepseek" ? "deepseek" : "ollama";
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434/api/chat";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3:8b";
 const DEEPSEEK_URL = process.env.DEEPSEEK_URL ?? "https://api.deepseek.com/chat/completions";
@@ -216,10 +218,9 @@ function formatLastOperationResult(result: unknown) {
 查询结果上下文说明：本次完整命中 ${candidate.matchedPolicyCount} 条保单。为限制模型上下文，policies 仅提供前 ${returnedCount} 条（最大 ${limit} 条）作为样本${truncated ? "，仍有其他命中结果未传入" : "，已包含全部命中结果"}。不得把 policies 的长度当作完整结果数，也不要臆测未传入的保单。`;
 }
 
-function getLlmIdentity() {
-  if (LLM_PROVIDER === "ollama") return { provider: "ollama", model: OLLAMA_MODEL };
-  if (LLM_PROVIDER === "deepseek") return { provider: "deepseek", model: DEEPSEEK_MODEL };
-  throw new Error(`unsupported_llm_provider:${LLM_PROVIDER}`);
+function getLlmIdentity(provider: LlmProvider) {
+  if (provider === "ollama") return { provider, model: OLLAMA_MODEL };
+  return { provider, model: DEEPSEEK_MODEL };
 }
 
 async function callOllama(messages: OllamaMessage[]) {
@@ -277,13 +278,13 @@ async function callDeepSeek(messages: OllamaMessage[]) {
   }
 }
 
-async function callLlm(messages: OllamaMessage[]) {
-  return LLM_PROVIDER === "deepseek" ? callDeepSeek(messages) : callOllama(messages);
+async function callLlm(provider: LlmProvider, messages: OllamaMessage[]) {
+  return provider === "deepseek" ? callDeepSeek(messages) : callOllama(messages);
 }
 
-async function requestAgentPlan(userText: string, context?: AssistantContinuationContext) {
+async function requestAgentPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
   const runId = randomUUID().slice(0, 8);
-  const llm = getLlmIdentity();
+  const llm = getLlmIdentity(provider);
   const userMessage = context
     ? `${userText}
 
@@ -312,7 +313,7 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
 
   for (let turn = 1; turn <= MAX_AGENT_TURNS; turn += 1) {
     await writeAssistantLog({ type: "input", runId, turn, ...llm, messages });
-    const result = await callLlm(messages);
+    const result = await callLlm(provider, messages);
     rawReplies.push(result.content);
     await writeAssistantLog({
       type: "output",
@@ -387,12 +388,20 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
 }
 
 export async function POST(request: NextRequest) {
-  const body = (await request.json().catch(() => null)) as { text?: string; context?: AssistantContinuationContext } | null;
+  const body = (await request.json().catch(() => null)) as {
+    text?: string;
+    provider?: unknown;
+    context?: AssistantContinuationContext;
+  } | null;
   const text = body?.text?.trim();
   if (!text) return NextResponse.json({ message: "text is required" }, { status: 400 });
+  const provider = body?.provider ?? DEFAULT_LLM_PROVIDER;
+  if (provider !== "ollama" && provider !== "deepseek") {
+    return NextResponse.json({ message: "unsupported_llm_provider" }, { status: 400 });
+  }
 
   try {
-    const result = await requestAgentPlan(text, body?.context);
+    const result = await requestAgentPlan(text, provider, body?.context);
     if (!result.ok) {
       return NextResponse.json({ message: "llm_invalid_plan", detail: "本地模型返回了无法解析的执行计划。" }, { status: 502 });
     }

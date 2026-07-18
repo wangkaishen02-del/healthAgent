@@ -47,6 +47,21 @@ enum InsuredRole {
   other
 }
 
+enum CalculationParameterScope {
+  policy
+  plan
+  product
+  benefit
+}
+
+enum CalculationParameterValueType {
+  text
+  number
+  percentage
+  amount
+  boolean
+}
+
 model Policy {
   id               String          @id @default(uuid()) @db.Uuid
   policyNo         String          @unique @map("policy_no") @db.VarChar(50)
@@ -66,6 +81,7 @@ model Policy {
   updatedAt        DateTime        @updatedAt @map("updated_at")
 
   products         PolicyProduct[]
+  coveragePlans    CoveragePlan[]
   insureds         PolicyInsured[]
 
   @@index([policyStatus], map: "idx_policy_status")
@@ -73,9 +89,30 @@ model Policy {
   @@map("policy")
 }
 
+model CoveragePlan {
+  id            String          @id @default(uuid()) @db.Uuid
+  policyId      String          @map("policy_id") @db.Uuid
+  planCode      String          @map("plan_code") @db.VarChar(50)
+  planName      String          @map("plan_name") @db.VarChar(100)
+  effectiveDate DateTime        @map("effective_date") @db.Date
+  expiryDate    DateTime        @map("expiry_date") @db.Date
+  status        ProductStatus   @default(active)
+  remark        String?         @db.Text
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+
+  policy        Policy          @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  products      PolicyProduct[]
+
+  @@unique([policyId, planCode], map: "uk_coverage_plan_policy_id_plan_code")
+  @@index([policyId], map: "idx_coverage_plan_policy_id")
+  @@map("coverage_plan")
+}
+
 model PolicyProduct {
   id            String         @id @default(uuid()) @db.Uuid
   policyId      String         @map("policy_id") @db.Uuid
+  coveragePlanId String?       @map("coverage_plan_id") @db.Uuid
   productNo     String         @unique @map("product_no") @db.VarChar(50)
   productCode   String         @map("product_code") @db.VarChar(50)
   productName   String         @map("product_name") @db.VarChar(100)
@@ -90,12 +127,50 @@ model PolicyProduct {
   updatedAt     DateTime       @updatedAt @map("updated_at")
 
   policy        Policy         @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  coveragePlan  CoveragePlan?  @relation(fields: [coveragePlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
   benefits      PolicyBenefit[]
 
   @@unique([policyId, productCode], map: "uk_policy_product_policy_id_product_code")
   @@index([policyId], map: "idx_policy_product_policy_id")
+  @@index([coveragePlanId], map: "idx_policy_product_coverage_plan_id")
   @@index([productStatus], map: "idx_policy_product_status")
   @@map("policy_product")
+}
+
+model CalculationParameter {
+  id             String                        @id @default(uuid()) @db.Uuid
+  scope          CalculationParameterScope
+  targetId       String                        @map("target_id") @db.Uuid
+  definitionId   String                        @map("definition_id") @db.Uuid
+  parameterValue String                        @map("parameter_value") @db.Text
+  description    String?                       @db.Text
+  enabled        Boolean                       @default(true)
+  createdAt      DateTime                      @default(now()) @map("created_at")
+  updatedAt      DateTime                      @updatedAt @map("updated_at")
+
+  definition     CalculationParameterDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([scope, targetId, definitionId], map: "uk_calculation_parameter_scope_target_definition")
+  @@index([scope, targetId], map: "idx_calculation_parameter_scope_target")
+  @@index([definitionId], map: "idx_calculation_parameter_definition_id")
+  @@map("calculation_parameter")
+}
+
+model CalculationParameterDefinition {
+  id               String                        @id @default(uuid()) @db.Uuid
+  parameterCode    String                        @unique @map("parameter_code") @db.VarChar(80)
+  parameterName    String                        @unique @map("parameter_name") @db.VarChar(100)
+  valueType        CalculationParameterValueType @map("value_type")
+  unit             String?                       @db.VarChar(30)
+  applicableScopes Json                          @map("applicable_scopes")
+  description      String?                       @db.Text
+  enabled          Boolean                       @default(true)
+  createdAt        DateTime                      @default(now()) @map("created_at")
+  updatedAt        DateTime                      @updatedAt @map("updated_at")
+
+  parameters       CalculationParameter[]
+
+  @@map("calculation_parameter_definition")
 }
 
 model PolicyBenefit {

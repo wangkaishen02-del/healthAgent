@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatToolCall, type AssistantPlan, type AssistantToolCall } from "../src/assistant/policy-query-assistant";
 import type { PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
+import CalculationConfigPage from "./components/CalculationConfigPage";
 
-type MainTab = "policy" | "claim";
+type MainTab = "policy" | "claim" | "calculation_config";
 type DrawerTab = "basic" | "benefits" | "insureds";
+type LlmProvider = "ollama" | "deepseek";
 type PolicyFilters = {
   policyNo: string;
   applicantName: string;
@@ -17,12 +19,19 @@ type AssistantMessage = {
   id: string;
   role: "assistant" | "user";
   content: string;
+  source?: string;
+  systemNote?: string;
   steps?: string[];
 };
 
 const POLICY_PAGE_SIZE = 10;
 const INSURED_PAGE_SIZE = 10;
 const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
+const LLM_PROVIDER_STORAGE_KEY = "health-agent-llm-provider";
+const llmProviderOptions: Array<{ value: LlmProvider; label: string }> = [
+  { value: "ollama", label: "本地模型" },
+  { value: "deepseek", label: "DeepSeek" },
+];
 const EMPTY_POLICY_FILTERS: PolicyFilters = {
   policyNo: "",
   applicantName: "",
@@ -275,6 +284,7 @@ export default function Page() {
   const [mainTab, setMainTab] = useState<MainTab>("policy");
   const [openTabs, setOpenTabs] = useState<MainTab[]>(["policy"]);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
   const [policies, setPolicies] = useState<PolicyListItem[]>([]);
@@ -289,6 +299,8 @@ export default function Page() {
   const [insuredPage, setInsuredPage] = useState(1);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>("ollama");
+  const [modelSelectOpen, setModelSelectOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantProgress, setAssistantProgress] = useState<string | null>(null);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
@@ -301,6 +313,8 @@ export default function Page() {
   ]);
   const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
   const selectRef = useRef<HTMLDivElement | null>(null);
+  const modelSelectRef = useRef<HTMLDivElement | null>(null);
+  const assistantMessagesRef = useRef<HTMLDivElement | null>(null);
   const filtersRef = useRef<PolicyFilters>(EMPTY_POLICY_FILTERS);
 
   function openMainTab(tab: MainTab) {
@@ -327,13 +341,27 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    const savedProvider = window.localStorage.getItem(LLM_PROVIDER_STORAGE_KEY);
+    if (savedProvider === "ollama" || savedProvider === "deepseek") setLlmProvider(savedProvider);
+  }, []);
+
+  useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
+
+  useEffect(() => {
+    if (!assistantOpen) return;
+    const messages = assistantMessagesRef.current;
+    if (messages) messages.scrollTo({ top: messages.scrollHeight, behavior: "smooth" });
+  }, [assistantOpen, assistantMessages, assistantProgress, assistantRecognized]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (selectRef.current && !selectRef.current.contains(event.target as Node)) {
         setStatusOpen(false);
+      }
+      if (modelSelectRef.current && !modelSelectRef.current.contains(event.target as Node)) {
+        setModelSelectOpen(false);
       }
     }
     document.addEventListener("click", handleClickOutside);
@@ -393,7 +421,11 @@ export default function Page() {
     setAssistantMessages((current) => [...current, message]);
   }
 
-  async function executeAssistantTools(toolCalls: AssistantToolCall[], initialTab: MainTab = mainTab) {
+  async function executeAssistantTools(
+    toolCalls: AssistantToolCall[],
+    initialTab: MainTab = mainTab,
+    executionOpenTabs = new Set(openTabs),
+  ) {
     const nextFilters: PolicyFilters = { ...filtersRef.current };
     let currentPolicies = policies;
     let executionTab = initialTab;
@@ -403,22 +435,49 @@ export default function Page() {
 
     for (const toolCall of toolCalls) {
       // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
-      if (toolCall.tool !== "open_page" && toolCall.args.pageId === "policy_query" && executionTab !== "policy") {
+      if (
+        toolCall.tool !== "open_page"
+        && toolCall.args.pageId === "policy_query"
+        && (executionTab !== "policy" || !executionOpenTabs.has("policy"))
+      ) {
         openMainTab("policy");
         executionTab = "policy";
+        executionOpenTabs.add("policy");
         steps.push("打开保单信息查询页");
         await delay(120);
       }
 
       if (toolCall.tool === "open_page") {
-        const targetTab = toolCall.args.pageId === "policy_query" ? "policy" : "claim";
-        if (executionTab === targetTab) {
-          continue;
-        }
+        const targetTab: MainTab = toolCall.args.pageId === "policy_query"
+          ? "policy"
+          : toolCall.args.pageId === "calculation_config"
+            ? "calculation_config"
+            : "claim";
         steps.push(formatToolCall(toolCall));
+
+        // 显式 open_page 始终按“重新打开”处理，确保页面回到初始状态。
+        setOpenTabs((tabs) => tabs.filter((tab) => tab !== targetTab));
+        executionOpenTabs.delete(targetTab);
+
+        if (targetTab === "policy") {
+          const initialFilters = { ...EMPTY_POLICY_FILTERS };
+          Object.assign(nextFilters, initialFilters);
+          filtersRef.current = initialFilters;
+          setFilters(initialFilters);
+          setPolicyPage(1);
+          setActivePolicyId(null);
+          setDrawerOpen(false);
+          setDrawerData(null);
+          setInsureds([]);
+          setInsuredTotal(0);
+          setInsuredPage(1);
+        }
+
+        await delay(120);
         openMainTab(targetTab);
         executionTab = targetTab;
-        await delay(120);
+        executionOpenTabs.add(targetTab);
+        if (targetTab === "policy") await loadPolicies({ ...EMPTY_POLICY_FILTERS });
         continue;
       }
 
@@ -494,6 +553,7 @@ export default function Page() {
     return {
       steps,
       currentPage: executionTab,
+      openTabs: executionOpenTabs,
       openedPageId,
       executionResult: lastOperationResult ?? {
         executedActions: toolCalls.map(formatToolCall),
@@ -504,6 +564,8 @@ export default function Page() {
   async function handleAssistantSubmit() {
     const text = assistantInput.trim();
     if (!text || assistantBusy) return;
+    const selectedProvider = llmProvider;
+    const selectedProviderLabel = llmProviderOptions.find((option) => option.value === selectedProvider)?.label ?? selectedProvider;
 
     appendAssistantMessage({
       id: `user-${Date.now()}`,
@@ -529,7 +591,12 @@ export default function Page() {
       }> = [];
       let currentPageRegistry: unknown = undefined;
       let currentPage: MainTab = mainTab;
-      let currentPagePath = mainTab === "policy" ? ["综合查询", "保单信息查询"] : ["综合查询", "案件查询"];
+      let currentOpenTabs = new Set(openTabs);
+      let currentPagePath = mainTab === "policy"
+        ? ["综合查询", "保单信息查询"]
+        : mainTab === "calculation_config"
+          ? ["理赔配置", "保单理算配置"]
+          : ["综合查询", "案件查询"];
       let plan: AssistantPlan | null = null;
       let allSteps: string[] = [];
       let lastExecutedPlan: AssistantPlan | null = null;
@@ -540,7 +607,7 @@ export default function Page() {
         const response = await fetch("/api/assistant/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text, context }),
+          body: JSON.stringify({ text, provider: selectedProvider, context }),
         });
 
         if (!response.ok) {
@@ -550,8 +617,8 @@ export default function Page() {
           appendAssistantMessage({
             id: `assistant-${Date.now()}`,
             role: "assistant",
-            content: errorPayload?.detail ?? "本地模型当前不可用，请稍后再试。",
-            steps: ["当前模式：仅使用本地 LLM", "未启用规则回退"],
+            content: errorPayload?.detail ?? `${selectedProviderLabel}当前不可用，请稍后再试。`,
+            steps: [`当前模型：${selectedProviderLabel}`, "未启用规则回退"],
           });
           return;
         }
@@ -565,9 +632,10 @@ export default function Page() {
 
         if (plan.toolCalls.length > 0) {
           setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
-          const execution = await executeAssistantTools(plan.toolCalls, currentPage);
+          const execution = await executeAssistantTools(plan.toolCalls, currentPage, currentOpenTabs);
           lastExecutionResult = execution;
           currentPage = execution.currentPage;
+          currentOpenTabs = execution.openTabs;
           allSteps = [...allSteps, ...execution.steps];
           operationHistory.push({
             toolCalls: plan.toolCalls,
@@ -616,7 +684,9 @@ export default function Page() {
       appendAssistantMessage({
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        content: `${lastExecutedPlan.reply}${resultSummary}（由本地模型 Agent 生成执行计划）`,
+        content: lastExecutedPlan.reply,
+        source: `${selectedProviderLabel} 回复`,
+        systemNote: resultSummary,
         steps: allSteps,
       });
     } finally {
@@ -636,7 +706,7 @@ export default function Page() {
           <div className="topbar-brand">healthAgent 承保管理系统</div>
           <nav className="topnav">
             <div className="menu-item active">
-              <button className="menu-trigger" onClick={() => setMenuOpen((value) => !value)}>
+              <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setConfigMenuOpen(false); }}>
                 综合查询 ▾
               </button>
               <div className={`dropdown ${menuOpen ? "" : "hidden"}`}>
@@ -645,6 +715,16 @@ export default function Page() {
                 </button>
                 <button className="dropdown-item" onClick={() => { openMainTab("claim"); setMenuOpen(false); }}>
                   案件查询
+                </button>
+              </div>
+            </div>
+            <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setConfigMenuOpen((value) => !value); setMenuOpen(false); }}>
+                理赔配置 ▾
+              </button>
+              <div className={`dropdown ${configMenuOpen ? "" : "hidden"}`}>
+                <button className="dropdown-item" onClick={() => { openMainTab("calculation_config"); setConfigMenuOpen(false); }}>
+                  保单理算配置
                 </button>
               </div>
             </div>
@@ -667,7 +747,7 @@ export default function Page() {
       <main className="workspace">
         <div className="tabs-bar">
           {openTabs.map((tab) => {
-            const label = tab === "policy" ? "保单信息查询" : "案件查询";
+            const label = tab === "policy" ? "保单信息查询" : tab === "claim" ? "案件查询" : "保单理算配置";
             return (
               <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
                 <button className="tab-button" onClick={() => setMainTab(tab)}>{label}</button>
@@ -851,6 +931,10 @@ export default function Page() {
             <p className="muted">后续会在这里承接理赔受理、案件检索、详情查看和理算结果联查。</p>
           </section>
         </section>
+
+        <section className={`page-section ${openTabs.includes("calculation_config") && mainTab === "calculation_config" ? "" : "hidden"}`}>
+          <CalculationConfigPage />
+        </section>
       </main>
 
       <section className={`assistant-panel ${assistantOpen ? "open" : ""}`} aria-hidden={!assistantOpen}>
@@ -858,25 +942,68 @@ export default function Page() {
           <div>
             <div className="assistant-title">智能助手</div>
             <div className="assistant-subtitle">输入自然语言，我会理解后自动操作页面</div>
+            <div className="assistant-model-select-label" ref={modelSelectRef}>
+              <span>模型</span>
+              <div className="assistant-model-select">
+                <button
+                  type="button"
+                  className="assistant-model-select-trigger"
+                  aria-haspopup="listbox"
+                  aria-expanded={modelSelectOpen}
+                  disabled={assistantBusy}
+                  onClick={() => setModelSelectOpen((open) => !open)}
+                >
+                  <span>{llmProviderOptions.find((option) => option.value === llmProvider)?.label}</span>
+                  <span className="select-arrow">▾</span>
+                </button>
+                <div className={`assistant-model-select-menu ${modelSelectOpen ? "" : "hidden"}`} role="listbox">
+                  {llmProviderOptions.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="option"
+                      aria-selected={llmProvider === option.value}
+                      className={llmProvider === option.value ? "active" : ""}
+                      onClick={() => {
+                        setLlmProvider(option.value);
+                        setModelSelectOpen(false);
+                        window.localStorage.setItem(LLM_PROVIDER_STORAGE_KEY, option.value);
+                      }}
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
           <button className="assistant-close" type="button" onClick={() => setAssistantOpen(false)}>
             收起
           </button>
         </div>
 
-        <div className="assistant-messages">
+        <div className="assistant-messages" ref={assistantMessagesRef}>
           {assistantMessages.map((message) => (
             <article key={message.id} className={`assistant-message ${message.role}`}>
               <div className="assistant-message-role">
-                {message.role === "assistant" ? "助手" : "我"}
+                {message.role === "assistant" ? (message.source ?? "助手") : "我"}
               </div>
               <div className="assistant-message-content">{message.content}</div>
+              {message.systemNote ? (
+                <div className="assistant-system-note">
+                  <strong>系统结果</strong>
+                  <span>{message.systemNote}</span>
+                </div>
+              ) : null}
               {message.steps && message.steps.length > 0 ? (
-                <ul className="assistant-steps">
-                  {message.steps.map((step, index) => (
-                    <li key={`${message.id}-step-${index}`}>{step}</li>
-                  ))}
-                </ul>
+                <div className="assistant-execution-log">
+                  <div>页面执行记录</div>
+                  <ul className="assistant-steps">
+                    {message.steps.map((step, index) => (
+                      <li key={`${message.id}-step-${index}`}>{step}</li>
+                    ))}
+                  </ul>
+                </div>
               ) : null}
             </article>
           ))}
@@ -906,6 +1033,12 @@ export default function Page() {
             placeholder="例如：查张三有哪些保单"
             value={assistantInput}
             onChange={(e) => setAssistantInput(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && assistantInput.trim()) {
+                event.preventDefault();
+                void handleAssistantSubmit();
+              }
+            }}
           />
           <button type="button" onClick={() => void handleAssistantSubmit()} disabled={assistantBusy}>
             {assistantBusy ? "执行中..." : "执行"}

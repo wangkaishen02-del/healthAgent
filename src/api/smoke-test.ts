@@ -1,4 +1,10 @@
 import { handleGetRequest } from "./server.ts";
+import {
+  createCalculationParameter,
+  deleteCalculationParameter,
+  getCalculationConfigCatalog,
+  listCalculationParameters,
+} from "../underwriting/service.ts";
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(message);
@@ -44,3 +50,21 @@ assert(detail.insuredCount === 20, "详情接口应返回被保人总数");
 assert(detail.insureds === undefined, "详情接口不应携带全量被保人清单");
 
 console.log("pagination assertions passed");
+
+const calculationCatalog = getCalculationConfigCatalog();
+assert(calculationCatalog.policy.length === 3, "理算配置应提供保单配置对象");
+assert(calculationCatalog.plan.length === 4, "理算配置应提供保障计划配置对象");
+assert(calculationCatalog.product.length === 8, "理算配置应提供险种配置对象");
+assert(calculationCatalog.benefit.length === 16, "理算配置应提供责任配置对象");
+
+const smokeParameter = createCalculationParameter({
+  scope: "benefit",
+  targetId: "benefit-001",
+  definitionCode: "MAX_PAYMENT_DAYS",
+  parameterValue: "1",
+  enabled: true,
+});
+assert(listCalculationParameters("benefit", "benefit-001").some((item) => item.id === smokeParameter.id), "理算参数应能保存");
+assert(deleteCalculationParameter(smokeParameter.id), "理算参数应能删除");
+
+console.log("calculation configuration assertions passed");

@@ -1,4 +1,7 @@
 import {
+  calculationParameterDefinitions,
+  calculationParameters,
+  coveragePlans,
   insuredPersons,
   policies,
   policyBenefits,
@@ -6,6 +9,9 @@ import {
   policyProducts,
 } from "./mock-data.ts";
 import type {
+  CalculationConfigCatalog,
+  CalculationParameter,
+  CalculationParameterScope,
   PageResult,
   PolicyDetailView,
   PolicyFullView,
@@ -14,6 +20,15 @@ import type {
   PolicyProductView,
   PolicyStatus,
 } from "./types.ts";
+
+export type SaveCalculationParameterInput = {
+  scope: CalculationParameterScope;
+  targetId: string;
+  definitionCode: string;
+  parameterValue: string;
+  description?: string;
+  enabled: boolean;
+};
 
 export interface ListPoliciesQuery {
   policyNo?: string;
@@ -144,4 +159,140 @@ export function getPolicyFullView(policyId: string): PolicyFullView | null {
     products: detail.products,
     insureds: getPolicyInsureds(policyId),
   };
+}
+
+export function getCalculationConfigCatalog(): CalculationConfigCatalog {
+  return {
+    policy: policies.map((policy) => ({
+      id: policy.id,
+      code: policy.policyNo,
+      name: policy.policyName ?? policy.applicantName,
+      parentLabel: policy.applicantName,
+      policyId: policy.id,
+    })),
+    plan: coveragePlans.map((plan) => ({
+      id: plan.id,
+      code: plan.planCode,
+      name: plan.planName,
+      parentLabel: policies.find((policy) => policy.id === plan.policyId)?.policyNo,
+      policyId: plan.policyId,
+      planId: plan.id,
+    })),
+    product: policyProducts.map((product) => {
+      const plan = coveragePlans.find((item) => item.id === product.coveragePlanId);
+      return {
+        id: product.id,
+        code: product.productCode,
+        name: product.productName,
+        parentLabel: plan?.planName,
+        policyId: product.policyId,
+        planId: plan?.id,
+        productId: product.id,
+      };
+    }),
+    benefit: policyBenefits.map((benefit) => {
+      const product = policyProducts.find((item) => item.id === benefit.policyProductId)!;
+      const plan = coveragePlans.find((item) => item.id === product.coveragePlanId);
+      return {
+        id: benefit.id,
+        code: benefit.benefitCode,
+        name: benefit.benefitName,
+        parentLabel: product.productName,
+        policyId: product.policyId,
+        planId: plan?.id,
+        productId: product.id,
+      };
+    }),
+  };
+}
+
+export function getCalculationConfigPolicies() {
+  return policies;
+}
+
+export function getCalculationParameterDefinitions() {
+  return calculationParameterDefinitions;
+}
+
+function resolveParameterDefinition(scope: CalculationParameterScope, definitionCode: string) {
+  return calculationParameterDefinitions.find((definition) =>
+    definition.parameterCode === definitionCode
+    && definition.applicableScopes.includes(scope),
+  );
+}
+
+function calculationTargetExists(scope: CalculationParameterScope, targetId: string) {
+  const catalog = getCalculationConfigCatalog();
+  return catalog[scope].some((target) => target.id === targetId);
+}
+
+export function listCalculationParameters(scope?: CalculationParameterScope, targetId?: string) {
+  return calculationParameters
+    .filter((item) => (!scope || item.scope === scope) && (!targetId || item.targetId === targetId))
+    .sort((a, b) => a.parameterCode.localeCompare(b.parameterCode));
+}
+
+export function createCalculationParameter(input: SaveCalculationParameterInput) {
+  if (!calculationTargetExists(input.scope, input.targetId)) throw new Error("calculation_target_not_found");
+  const definition = resolveParameterDefinition(input.scope, input.definitionCode);
+  if (!definition) throw new Error("parameter_definition_not_found");
+  const duplicate = calculationParameters.some((item) =>
+    item.scope === input.scope
+    && item.targetId === input.targetId
+    && item.parameterCode === definition.parameterCode,
+  );
+  if (duplicate) throw new Error("parameter_code_exists");
+
+  const item: CalculationParameter = {
+    id: `calc-param-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    scope: input.scope,
+    targetId: input.targetId,
+    parameterCode: definition.parameterCode,
+    parameterName: definition.parameterName,
+    valueType: definition.valueType,
+    parameterValue: input.parameterValue.trim(),
+    unit: definition.unit,
+    description: input.description?.trim() || undefined,
+    enabled: input.enabled,
+    updatedAt: new Date().toISOString(),
+  };
+  calculationParameters.push(item);
+  return item;
+}
+
+export function updateCalculationParameter(id: string, input: SaveCalculationParameterInput) {
+  const index = calculationParameters.findIndex((item) => item.id === id);
+  if (index < 0) return null;
+  if (!calculationTargetExists(input.scope, input.targetId)) throw new Error("calculation_target_not_found");
+  const definition = resolveParameterDefinition(input.scope, input.definitionCode);
+  if (!definition) throw new Error("parameter_definition_not_found");
+  const duplicate = calculationParameters.some((item) =>
+    item.id !== id
+    && item.scope === input.scope
+    && item.targetId === input.targetId
+    && item.parameterCode === definition.parameterCode,
+  );
+  if (duplicate) throw new Error("parameter_code_exists");
+
+  calculationParameters[index] = {
+    id,
+    scope: input.scope,
+    targetId: input.targetId,
+    parameterCode: definition.parameterCode,
+    parameterName: definition.parameterName,
+    valueType: definition.valueType,
+    parameterValue: input.parameterValue.trim(),
+    unit: definition.unit,
+    description: input.description?.trim() || undefined,
+    enabled: input.enabled,
+    updatedAt: new Date().toISOString(),
+  };
+  return calculationParameters[index];
+}
+
+export function deleteCalculationParameter(id: string) {
+  const index = calculationParameters.findIndex((item) => item.id === id);
+  if (index < 0) return false;
+  calculationParameters.splice(index, 1);
+  return true;
 }

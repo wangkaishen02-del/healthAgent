@@ -1,5 +1,5 @@
-export type AssistantMenuId = "comprehensive_query" | "claim_processing";
-export type RegisteredPageId = "policy_query" | "policy_detail" | "claim_query";
+export type AssistantMenuId = "comprehensive_query" | "claim_processing" | "underwriting_config";
+export type RegisteredPageId = "policy_query" | "policy_detail" | "claim_query" | "calculation_config";
 
 export type RegisteredField = {
   fieldId: string;
@@ -56,6 +56,12 @@ const menus: MenuRegistration[] = [
     label: "理赔处理",
     description: "承接理赔受理、案件检索、详情查看和理算结果联查。",
     pages: [{ pageId: "claim_query", label: "案件查询", description: "案件查询入口，当前仅提供页面占位。" }],
+  },
+  {
+    menuId: "underwriting_config",
+    label: "理赔配置",
+    description: "维护理赔和理算相关的业务配置。",
+    pages: [{ pageId: "calculation_config", label: "保单理算配置", description: "按保单、保障计划、险种和责任维护理算参数。" }],
   },
 ];
 
@@ -137,6 +143,30 @@ const pages: PageRegistration[] = [
     menuId: "comprehensive_query",
     pagePath: ["综合查询", "案件查询"],
     regions: [],
+  },
+  {
+    pageId: "calculation_config",
+    label: "保单理算配置",
+    description: "为保单、保障计划、险种和责任维护可扩展的理算参数。",
+    menuId: "underwriting_config",
+    pagePath: ["理赔配置", "保单理算配置"],
+    regions: [
+      {
+        regionId: "calculation_policy_search",
+        label: "保单查询",
+        description: "按保单号、保单名称或投保单位查询需要维护理算配置的保单。",
+      },
+      {
+        regionId: "calculation_policy_hierarchy",
+        label: "保单配置对象列表",
+        description: "展示保单基本信息以及保单、保障计划、险种、责任四级配置对象。",
+      },
+      {
+        regionId: "calculation_parameters",
+        label: "对象参数配置页",
+        description: "点击配置对象的配置按钮后，新增、编辑或删除该对象的理算参数。",
+      },
+    ],
   },
 ];
 

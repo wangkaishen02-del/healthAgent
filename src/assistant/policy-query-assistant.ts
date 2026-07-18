@@ -1,4 +1,4 @@
-export type AssistantPageId = "policy_query" | "claim_query";
+export type AssistantPageId = "policy_query" | "claim_query" | "calculation_config";
 export type AssistantFieldId =
   | "policyNo"
   | "applicantName"
@@ -188,7 +188,9 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
 
 export function formatToolCall(call: AssistantToolCall) {
   if (call.tool === "open_page") {
-    return call.args.pageId === "policy_query" ? "打开保单信息查询页" : "打开案件查询页";
+    if (call.args.pageId === "policy_query") return "打开保单信息查询页";
+    if (call.args.pageId === "calculation_config") return "打开保单理算配置页";
+    return "打开案件查询页";
   }
 
   if (call.tool === "set_field") {
@@ -223,7 +225,7 @@ export function isAssistantToolCall(value: unknown): value is AssistantToolCall 
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
 
   if (candidate.tool === "open_page") {
-    return candidate.args?.pageId === "policy_query" || candidate.args?.pageId === "claim_query";
+    return ["policy_query", "claim_query", "calculation_config"].includes(String(candidate.args?.pageId));
   }
 
   if (candidate.tool === "set_field") {
