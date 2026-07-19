@@ -114,6 +114,7 @@ export interface InsuredPerson {
 export interface PolicyInsured {
   id: string;
   policyId: string;
+  coveragePlanId?: string;
   insuredPersonId: string;
   effectiveDate: string;
   expiryDate: string;
@@ -140,6 +141,7 @@ export interface PolicyProductView extends PolicyProduct {
 
 export interface PolicyInsuredView extends PolicyInsured {
   insuredPerson: InsuredPerson;
+  coveragePlan?: CoveragePlan;
 }
 
 export interface PolicyFullView {
@@ -150,6 +152,7 @@ export interface PolicyFullView {
 
 export interface PolicyDetailView {
   policy: Policy;
+  coveragePlans: CoveragePlan[];
   products: PolicyProductView[];
   insuredCount: number;
 }

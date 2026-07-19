@@ -8,9 +8,15 @@
     "build": "next build",
     "start": "next start",
     "dev:api": "node --experimental-strip-types src/api/server.ts",
-    "test:api": "node --experimental-strip-types src/api/smoke-test.ts"
+    "test:api": "node --experimental-strip-types src/api/smoke-test.ts",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:logs": "docker compose logs -f postgres",
+    "db:push": "prisma db push",
+    "db:seed": "prisma db seed"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.0",
     "next": "^16.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
@@ -19,6 +25,10 @@
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "prisma": "^6.19.0",
     "typescript": "^5.8.0"
+  },
+  "prisma": {
+    "seed": "node --experimental-strip-types prisma/seed.ts"
   }
 }

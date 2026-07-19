@@ -68,6 +68,9 @@ export function handleGetRequest(url: string): ApiResponse {
   const policyInsuredsMatch = pathname.match(/^\/api\/policies\/([^/]+)\/insureds$/);
   if (policyInsuredsMatch) {
     const result = listPolicyInsureds(policyInsuredsMatch[1], {
+      coveragePlanId: requestUrl.searchParams.get("coveragePlanId") ?? undefined,
+      insuredName: requestUrl.searchParams.get("insuredName") ?? undefined,
+      insuredIdNo: requestUrl.searchParams.get("insuredIdNo") ?? undefined,
       page: Number(requestUrl.searchParams.get("page") ?? 1),
       pageSize: Number(requestUrl.searchParams.get("pageSize") ?? 10),
     });

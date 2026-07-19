@@ -1,17 +1,38 @@
-export type AssistantPageId = "policy_query" | "claim_query" | "calculation_config";
-export type AssistantFieldId =
+import {
+  getMenuPages,
+  getNavigationRegistry,
+  getPageRegistration,
+  getRegisteredAction,
+  getRegisteredField,
+  isNavigablePage,
+  type RegisteredPageId,
+} from "./page-registry.ts";
+
+export type AssistantPageId = RegisteredPageId;
+export type AssistantFieldId = string;
+type PolicyQueryFieldId =
   | "policyNo"
   | "applicantName"
   | "insuredName"
   | "insuredIdNo"
   | "policyStatus";
-export type AssistantButtonId = "search" | "reset";
-export type AssistantResultActionId = "view_detail" | "view_benefits" | "view_insureds";
+export type AssistantButtonId = string;
+export type AssistantResultActionId = string;
 
 export type AssistantDiscoveryCall =
   | { tool: "get_navigation_registry"; args: Record<string, never> }
   | { tool: "get_menu_pages"; args: { menuId: string } }
   | { tool: "get_page_registry"; args: { pageId: string } };
+
+export type AssistantBackendCall = {
+  tool: "query_underwriting";
+  args: { policyNo?: string; insuredName?: string; insuredIdNo?: string };
+};
+
+export type AssistantUserInputCall = {
+  tool: "ask_user";
+  args: { question: string; requestedFields: string[] };
+};
 
 export type AssistantFinishCall = {
   tool: "finish_task";
@@ -28,7 +49,7 @@ export type AssistantToolCall =
   | {
       tool: "set_field";
       args: {
-        pageId: "policy_query";
+        pageId: AssistantPageId;
         fieldId: AssistantFieldId;
         value: string;
       };
@@ -36,20 +57,20 @@ export type AssistantToolCall =
   | {
       tool: "click_button";
       args: {
-        pageId: "policy_query";
+        pageId: AssistantPageId;
         actionId: AssistantButtonId;
       };
     }
   | {
       tool: "click_list_row_action";
       args: {
-        pageId: "policy_query";
+        pageId: AssistantPageId;
         actionId: AssistantResultActionId;
         row: number;
       };
     };
 
-export type AssistantModelToolCall = AssistantToolCall | AssistantDiscoveryCall | AssistantFinishCall;
+export type AssistantModelToolCall = AssistantToolCall | AssistantDiscoveryCall | AssistantBackendCall | AssistantUserInputCall | AssistantFinishCall;
 
 export interface AssistantPlan {
   reply: string;
@@ -60,6 +81,8 @@ export interface AssistantPlan {
   decision?: "continue" | "finish";
   discoverySteps?: string[];
   discoveryResults?: unknown[];
+  backendToolResults?: unknown[];
+  userInputRequest?: AssistantUserInputCall["args"];
 }
 
 function looksLikeCompanyName(value: string) {
@@ -100,6 +123,15 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
   const normalized = userText.replace(/\s+/g, "");
   if (!normalized) return null;
 
+  if (/(受理|立案|报案)/.test(normalized)) {
+    return {
+      reply: "我先为你打开受理立案页面。",
+      recognized: ["目标页面：受理立案"],
+      source: "rule",
+      toolCalls: [{ tool: "open_page", args: { pageId: "claim_registration" } }],
+    };
+  }
+
   if (normalized.includes("案件")) {
     return {
       reply: "我先为你打开案件查询页，后续案件能力接上后就可以继续自动执行。",
@@ -119,7 +151,7 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
   const insuredIdNo = detectIdNo(normalized);
   const subject = detectSubject(normalized);
 
-  const filters: Array<{ field: AssistantFieldId; value: string; label: string }> = [];
+  const filters: Array<{ field: PolicyQueryFieldId; value: string; label: string }> = [];
 
   if (policyNo) {
     filters.push({ field: "policyNo", value: policyNo, label: `保单号 = ${policyNo}` });
@@ -186,38 +218,72 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
   };
 }
 
+export function formatToolInvocation(tool: string, args: Record<string, unknown>) {
+  const toolLabels: Record<string, string> = {
+    get_navigation_registry: "查询系统导航",
+    get_menu_pages: "查询菜单页面",
+    get_page_registry: "查询页面信息",
+    query_underwriting: "查询承保信息",
+    ask_user: "询问用户",
+    finish_task: "完成任务",
+    open_page: "打开页面",
+    set_field: "填写字段",
+    click_button: "执行页面操作",
+    click_list_row_action: "执行列表操作",
+  };
+  const pageId = typeof args.pageId === "string" ? args.pageId : "";
+  const fieldId = typeof args.fieldId === "string" ? args.fieldId : "";
+  const actionId = typeof args.actionId === "string" ? args.actionId : "";
+  const field = pageId && fieldId ? getRegisteredField(pageId, fieldId) : null;
+  const action = pageId && actionId ? getRegisteredAction(pageId, actionId) : null;
+  const globallyRegisteredFieldLabel = (candidate: unknown) => {
+    if (typeof candidate !== "string") return String(candidate ?? "");
+    for (const menu of getNavigationRegistry().menus) {
+      for (const page of menu.pages) {
+        const registeredField = getRegisteredField(page.pageId, candidate);
+        if (registeredField) return registeredField.label;
+      }
+    }
+    return candidate;
+  };
+  const valueLabel = (key: string, value: unknown) => {
+    if (key === "pageId" && typeof value === "string") return getPageRegistration(value)?.label ?? value;
+    if (key === "menuId" && typeof value === "string") return getMenuPages(value)?.label ?? value;
+    if (key === "fieldId") return field?.label ?? globallyRegisteredFieldLabel(value);
+    if (key === "actionId") return action?.label ?? String(value ?? "");
+    if (key === "requestedFields" && Array.isArray(value)) return value.map(globallyRegisteredFieldLabel).join("、");
+    if (key === "value" && field?.options) {
+      const option = field.options.find((item) => item.value === value);
+      if (option) return option.label;
+    }
+    if (Array.isArray(value)) return value.join("、");
+    if (typeof value === "boolean") return value ? "是" : "否";
+    if (value && typeof value === "object") return JSON.stringify(value);
+    return String(value ?? "");
+  };
+  const parameterLabels: Record<string, string> = {
+    menuId: "菜单",
+    pageId: "页面",
+    fieldId: "字段",
+    actionId: "操作",
+    value: "值",
+    row: "行号",
+    policyNo: "保单号",
+    insuredName: "被保人姓名",
+    insuredIdNo: "被保人证件号",
+    question: "问题",
+    requestedFields: "需补充信息",
+    reason: "原因",
+  };
+  const parameters = Object.entries(args)
+    .filter(([, value]) => value !== undefined)
+    .map(([key, value]) => `${parameterLabels[key] ?? "参数"}：${valueLabel(key, value)}`)
+    .join("，");
+  return `${toolLabels[tool] ?? "执行工具"}{${parameters}}`;
+}
+
 export function formatToolCall(call: AssistantToolCall) {
-  if (call.tool === "open_page") {
-    if (call.args.pageId === "policy_query") return "打开保单信息查询页";
-    if (call.args.pageId === "calculation_config") return "打开保单理算配置页";
-    return "打开案件查询页";
-  }
-
-  if (call.tool === "set_field") {
-    const labelMap: Record<AssistantFieldId, string> = {
-      policyNo: "保单号",
-      applicantName: "投保单位",
-      insuredName: "被保人姓名",
-      insuredIdNo: "被保人证件号",
-      policyStatus: "保单状态",
-    };
-    const valueMap: Record<string, string> = {
-      enabled: "启用",
-      disabled: "停用",
-    };
-    return `填写${labelMap[call.args.fieldId]}：${valueMap[call.args.value] ?? call.args.value}`;
-  }
-
-  if (call.tool === "click_list_row_action") {
-    const labels: Record<AssistantResultActionId, string> = {
-      view_detail: "详细信息",
-      view_benefits: "责任信息",
-      view_insureds: "被保人信息",
-    };
-    return `点击保单列表第${call.args.row}行的${labels[call.args.actionId]}`;
-  }
-
-  return call.args.actionId === "search" ? "点击查询按钮" : "点击重置按钮";
+  return formatToolInvocation(call.tool, call.args);
 }
 
 export function isAssistantToolCall(value: unknown): value is AssistantToolCall {
@@ -225,30 +291,31 @@ export function isAssistantToolCall(value: unknown): value is AssistantToolCall 
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
 
   if (candidate.tool === "open_page") {
-    return ["policy_query", "claim_query", "calculation_config"].includes(String(candidate.args?.pageId));
+    return typeof candidate.args?.pageId === "string" && isNavigablePage(candidate.args.pageId);
   }
 
   if (candidate.tool === "set_field") {
     return (
-      candidate.args?.pageId === "policy_query" &&
-      ["policyNo", "applicantName", "insuredName", "insuredIdNo", "policyStatus"].includes(
-        String(candidate.args?.fieldId),
-      ) &&
+      typeof candidate.args?.pageId === "string" &&
+      typeof candidate.args?.fieldId === "string" &&
+      getRegisteredField(candidate.args.pageId, candidate.args.fieldId) !== null &&
       typeof candidate.args?.value === "string"
     );
   }
 
   if (candidate.tool === "click_button") {
     return (
-      candidate.args?.pageId === "policy_query" &&
-      (candidate.args?.actionId === "search" || candidate.args?.actionId === "reset")
+      typeof candidate.args?.pageId === "string" &&
+      typeof candidate.args?.actionId === "string" &&
+      getRegisteredAction(candidate.args.pageId, candidate.args.actionId, "page") !== null
     );
   }
 
   if (candidate.tool === "click_list_row_action") {
     return (
-      candidate.args?.pageId === "policy_query" &&
-      ["view_detail", "view_benefits", "view_insureds"].includes(String(candidate.args?.actionId)) &&
+      typeof candidate.args?.pageId === "string" &&
+      typeof candidate.args?.actionId === "string" &&
+      getRegisteredAction(candidate.args.pageId, candidate.args.actionId, "row") !== null &&
       typeof candidate.args?.row === "number" &&
       Number.isInteger(candidate.args?.row) &&
       candidate.args.row > 0
@@ -268,7 +335,24 @@ export function isAssistantDiscoveryCall(value: unknown): value is AssistantDisc
 }
 
 export function isAssistantModelToolCall(value: unknown): value is AssistantModelToolCall {
-  return isAssistantToolCall(value) || isAssistantDiscoveryCall(value) || isAssistantFinishCall(value);
+  return isAssistantToolCall(value) || isAssistantDiscoveryCall(value) || isAssistantBackendCall(value) || isAssistantUserInputCall(value) || isAssistantFinishCall(value);
+}
+
+export function isAssistantBackendCall(value: unknown): value is AssistantBackendCall {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { tool?: string; args?: Record<string, unknown> };
+  if (candidate.tool !== "query_underwriting") return false;
+  return [candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
+}
+
+export function isAssistantUserInputCall(value: unknown): value is AssistantUserInputCall {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { tool?: string; args?: Record<string, unknown> };
+  return candidate.tool === "ask_user"
+    && typeof candidate.args?.question === "string"
+    && candidate.args.question.trim().length > 0
+    && Array.isArray(candidate.args?.requestedFields)
+    && candidate.args.requestedFields.every((item) => typeof item === "string");
 }
 
 export function isAssistantFinishCall(value: unknown): value is AssistantFinishCall {
@@ -280,6 +364,29 @@ export function isAssistantFinishCall(value: unknown): value is AssistantFinishC
 export function normalizeAssistantModelToolCall(value: unknown): AssistantModelToolCall | null {
   if (!value || typeof value !== "object") return null;
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
+
+  if (candidate.tool === "query_underwriting") {
+    const normalizedCall: AssistantBackendCall = {
+      tool: "query_underwriting",
+      args: {
+        policyNo: typeof candidate.args?.policyNo === "string" ? candidate.args.policyNo : undefined,
+        insuredName: typeof candidate.args?.insuredName === "string" ? candidate.args.insuredName : undefined,
+        insuredIdNo: typeof candidate.args?.insuredIdNo === "string" ? candidate.args.insuredIdNo : undefined,
+      },
+    };
+    return isAssistantBackendCall(normalizedCall) ? normalizedCall : null;
+  }
+
+  if (candidate.tool === "ask_user") {
+    const normalizedCall: AssistantUserInputCall = {
+      tool: "ask_user",
+      args: {
+        question: typeof candidate.args?.question === "string" ? candidate.args.question : "",
+        requestedFields: Array.isArray(candidate.args?.requestedFields) ? candidate.args.requestedFields.filter((item): item is string => typeof item === "string") : [],
+      },
+    };
+    return isAssistantUserInputCall(normalizedCall) ? normalizedCall : null;
+  }
 
   if (candidate.tool === "get_page_registry" && typeof candidate.args?.page === "string") {
     return {
@@ -303,7 +410,7 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
   }
 
   if (candidate.tool === "set_field") {
-    const fieldAliases: Record<string, AssistantFieldId> = {
+    const fieldAliases: Record<string, string> = {
       policy_no: "policyNo",
       applicant_name: "applicantName",
       insured_name: "insuredName",
@@ -313,12 +420,12 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
     const rawField = String(candidate.args?.fieldId ?? candidate.args?.field ?? "");
     const normalizedField = fieldAliases[rawField] ?? rawField;
     const pageId = candidate.args?.pageId ?? candidate.args?.page;
-    if (pageId === "policy_query" && typeof candidate.args?.value === "string") {
+    if (typeof pageId === "string" && typeof candidate.args?.value === "string") {
       const normalizedCall = {
         tool: "set_field" as const,
         args: {
-          pageId: "policy_query" as const,
-          fieldId: normalizedField as AssistantFieldId,
+          pageId: pageId as AssistantPageId,
+          fieldId: normalizedField,
           value: candidate.args.value,
         },
       };

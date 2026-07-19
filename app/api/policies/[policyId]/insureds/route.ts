@@ -8,6 +8,9 @@ export async function GET(
   const { policyId } = await context.params;
   const { searchParams } = new URL(request.url);
   const result = listPolicyInsureds(policyId, {
+    coveragePlanId: searchParams.get("coveragePlanId") ?? undefined,
+    insuredName: searchParams.get("insuredName") ?? undefined,
+    insuredIdNo: searchParams.get("insuredIdNo") ?? undefined,
     page: Number(searchParams.get("page") ?? 1),
     pageSize: Number(searchParams.get("pageSize") ?? 10),
   });

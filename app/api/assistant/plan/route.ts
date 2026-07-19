@@ -4,20 +4,26 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   isAssistantDiscoveryCall,
+  isAssistantBackendCall,
   isAssistantFinishCall,
+  isAssistantUserInputCall,
+  formatToolInvocation,
   normalizeAssistantModelToolCall,
   type AssistantDiscoveryCall,
+  type AssistantBackendCall,
   type AssistantModelToolCall,
   type AssistantToolCall,
 } from "../../../../src/assistant/policy-query-assistant";
 import {
   getAssistantActionToolCatalog,
+  getAssistantBackendToolCatalog,
   getAssistantControlToolCatalog,
   getAssistantDiscoveryToolCatalog,
   getMenuPages,
   getNavigationRegistry,
   getPageRegistration,
 } from "../../../../src/assistant/page-registry";
+import { queryUnderwriting } from "../../../../src/underwriting/service";
 
 type LlmProvider = "ollama" | "deepseek";
 
@@ -49,6 +55,7 @@ type AssistantContinuationContext = {
     toolCalls: AssistantToolCall[];
   }>;
   lastOperationResult?: unknown;
+  backendToolResults?: unknown[];
 };
 
 type AssistantLogEntry =
@@ -98,9 +105,11 @@ async function writeAssistantLog(entry: AssistantLogEntry) {
 }
 
 function buildSystemPrompt() {
+  const currentDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   return `
 你是健康险承保查询系统里的页面操作 Agent。你必须先通过注册信息理解系统能力，再选择页面动作。
 你只能输出 JSON，不要输出 markdown、解释或代码块。
+当前系统日期（Asia/Shanghai）：${currentDate}。
 
 当前系统导航信息（已直接提供，无需调用工具）：
 ${JSON.stringify(getNavigationRegistry())}
@@ -111,6 +120,9 @@ ${JSON.stringify(getAssistantDiscoveryToolCatalog())}
 页面操作工具：
 ${JSON.stringify(getAssistantActionToolCatalog())}
 
+后台数据工具：
+${JSON.stringify(getAssistantBackendToolCatalog())}
+
 任务控制工具：
 ${JSON.stringify(getAssistantControlToolCatalog())}
 
@@ -119,13 +131,18 @@ ${JSON.stringify(getAssistantControlToolCatalog())}
 2. 不要猜测注册ID。菜单、页面、字段、按钮和结果操作的参数都必须填写注册中心返回的ID，不要把面向用户的中文名称当作ID。
 3. 注册信息查询和页面动作可以按任务需要分多轮进行，每一轮根据上一步结果决定继续发现、执行动作还是结束。
 4. 如果上下文中已经提供历史操作记录和上一次操作结果，应优先使用这些信息，不要恢复或猜测更早的查询结果。
-5. 原始用户请求中如果包含明确的姓名、保单号、证件号、投保单位或状态等查询条件，执行 search 前必须先为这些条件生成对应的 set_field；不能只根据 recognized 描述条件而省略 set_field。
-6. “张三有哪些保单”应使用注册信息中与被保人姓名对应的字段ID；公司、集团、科技、医院等通常使用投保单位对应的字段ID。
-7. 保单状态的值必须使用注册字段声明的值，不要自行创造业务值。
+5. 原始用户请求中如果包含明确的筛选值，执行查询动作前必须使用注册字段生成对应的 set_field；不能只在 recognized 中描述而省略字段动作。
+6. 字段选择必须依据注册字段的标签、描述和所在区域，不要根据字段ID命名习惯猜测用途。
+7. select 字段必须使用当前页面注册信息声明的 options 值；运行时选项会随页面上下文提供，不要自行创造选项值。
 8. 如果已经可以执行页面动作，返回 open_page、set_field、click_button、click_list_row_action；如果任务已经完成或无法继续，返回 finish_task。
 9. 一次页面计划最多选择一个结果行操作，因为当前页面一次只能展示一个结果详情区域；需要处理其他结果时，等待执行结果后再继续。
 10. decision=continue 表示 Agent 还需要下一轮，decision=finish 表示结束本次任务。
 11. 每轮必须输出 thought，简短说明当前判断和下一步计划；不要输出冗长逐字推理。
+12. 对新增、修改、删除等数据变更请求，打开页面、选中对象、打开编辑器或填写字段都只是中间步骤；只有上一次操作结果明确返回成功的 mutation_result 后，才可以 finish_task。否则必须 decision=continue 并继续完成保存或确认动作。
+13. 用户只提供姓名、名称等可查询条件时，不要立即要求用户补充系统能够查询到的编号或证件信息。优先使用后台数据工具，不要为了取数操作前端查询页面；查询结果唯一时直接打开目标业务页面继续。只有结果为空或存在多个无法消歧的对象时，才使用 ask_user 请求补充定位信息。
+14. 不得编造用户没有提供且系统结果中不存在的日期、地点、医院、诊断、账号等事实。页面已有默认值时保留默认值；可选字段缺失时保持为空。可以把用户原话整理为必填的简短事件描述，但不得添加原话没有表达的具体事实。
+15. 当任务缺少系统无法查询且用户未提供的必填信息时，使用 ask_user 明确询问并列出 requestedFields。ask_user 会暂停任务，用户回答后继续原任务；不要用普通 reply 或 finish_task 代替追问。
+16. 不要规范或限制用户的表达方式。追问时使用自然语言，不要求用户提供页面字段ID、枚举值或 YYYY-MM-DD 等技术格式；应理解用户的原始回答，并只在内部工具参数中转换为页面需要的值。引用用户描述时保留原意和措辞，不把改写后的文本冒充用户原话。
 
 输出结构：
 {"thought":"不超过40字的当前判断与下一步计划","reply":"给用户的简短说明","recognized":["识别出的信息"],"decision":"continue 或 finish","toolCalls":[{"tool":"工具名","args":{}}]}
@@ -165,16 +182,20 @@ function executeDiscovery(call: AssistantDiscoveryCall) {
   return getPageRegistration(call.args.pageId) ?? { error: "page_not_found" };
 }
 
+function executeBackendTool(call: AssistantBackendCall) {
+  if (call.tool === "query_underwriting") {
+    const result = queryUnderwriting(call.args);
+    return {
+      type: "underwriting_query_result",
+      ...result,
+      resolvedFields: result.total === 1 ? ["policyNo", "insuredName", "insuredIdNo"] : [],
+    };
+  }
+  return { type: "backend_tool_error", reason: "tool_not_supported" };
+}
+
 function formatDiscoveryStep(call: AssistantDiscoveryCall) {
-  if (call.tool === "get_menu_pages") {
-    const menu = getMenuPages(call.args.menuId);
-    return `查询菜单页面：${menu?.label ?? call.args.menuId}`;
-  }
-  if (call.tool === "get_page_registry") {
-    const page = getPageRegistration(call.args.pageId);
-    return `查询页面注册信息：${page?.label ?? call.args.pageId}`;
-  }
-  return "查询系统导航信息";
+  return formatToolInvocation(call.tool, call.args);
 }
 
 function hasExplicitQueryCondition(userText: string) {
@@ -197,17 +218,69 @@ function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizeP
   return plan.toolCalls.filter((call) => call.tool === "click_list_row_action").length > 1;
 }
 
+function asksForResolvedFields(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  backendToolResults: unknown[],
+) {
+  const resolvedFields = new Set(
+    backendToolResults.flatMap((result) => {
+      if (!result || typeof result !== "object") return [];
+      const fields = (result as { resolvedFields?: unknown }).resolvedFields;
+      return Array.isArray(fields) ? fields.filter((field): field is string => typeof field === "string") : [];
+    }),
+  );
+  return plan.toolCalls
+    .filter(isAssistantUserInputCall)
+    .some((call) => call.args.requestedFields.some((field) => resolvedFields.has(field)));
+}
+
+function isDataMutationRequest(userText: string) {
+  return /(新增|创建|立案|配置|修改|更新|删除|撤件|提交|保存|关联|上传|办理|登记)/.test(userText);
+}
+
+function prematurelyStopsBeforeLookup(
+  userText: string,
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  context?: AssistantContinuationContext,
+) {
+  if (!isDataMutationRequest(userText)) return false;
+  if (plan.toolCalls.some(isAssistantUserInputCall)) return false;
+  const lastResult = context?.lastOperationResult as { type?: unknown; success?: unknown; operation?: unknown; reason?: unknown } | undefined;
+  if (lastResult?.type === "mutation_result" && lastResult.success === true && lastResult.operation !== "create_event") return false;
+  if (lastResult?.type === "operation_error" && typeof lastResult.reason === "string" && /(ambiguous|not_found)/.test(lastResult.reason)) return false;
+  const hasDiscovery = plan.toolCalls.some(isAssistantDiscoveryCall);
+  const hasExecutableAction = plan.toolCalls.some((call) => !isAssistantDiscoveryCall(call) && !isAssistantFinishCall(call));
+  const hasCompletionAction = plan.toolCalls.some((call) => {
+    if (isAssistantDiscoveryCall(call) || isAssistantFinishCall(call)) return false;
+    if (call.tool !== "click_button") return false;
+    return /^(save_|submit_|cancel_|delete_|remove_)/.test(call.args.actionId) && call.args.actionId !== "create_event";
+  });
+  if (!hasExecutableAction && !hasDiscovery) return true;
+  return plan.decision === "finish" && !hasDiscovery && !hasCompletionAction;
+}
+
 function formatLastOperationResult(result: unknown) {
   const serialized = JSON.stringify(result ?? null);
   if (!result || typeof result !== "object") return serialized;
 
   const candidate = result as {
     type?: unknown;
+    total?: unknown;
+    returnedItemCount?: unknown;
+    contextLimit?: unknown;
+    truncated?: unknown;
     matchedPolicyCount?: unknown;
     returnedPolicyCount?: unknown;
     policyListContextLimit?: unknown;
     policyListTruncated?: unknown;
   };
+  if (candidate.type === "list_result" && typeof candidate.total === "number") {
+    const returnedCount = typeof candidate.returnedItemCount === "number" ? candidate.returnedItemCount : 0;
+    const limit = typeof candidate.contextLimit === "number" ? candidate.contextLimit : returnedCount;
+    return `${serialized}
+
+列表结果上下文说明：本次完整命中 ${candidate.total} 条。items 仅提供前 ${returnedCount} 条（最大 ${limit} 条）作为上下文${candidate.truncated === true ? "，仍有其他结果未传入" : "，已包含全部结果"}。不得把 items 长度当作完整结果数。`;
+  }
   if (candidate.type !== "policy_search" || typeof candidate.matchedPolicyCount !== "number") return serialized;
 
   const returnedCount = typeof candidate.returnedPolicyCount === "number" ? candidate.returnedPolicyCount : 0;
@@ -299,6 +372,9 @@ ${JSON.stringify(context.currentPageRegistry ?? null)}
 上一次操作结果：
 ${formatLastOperationResult(context.lastOperationResult)}
 
+本任务已取得的后台工具结果：
+${JSON.stringify(context.backendToolResults ?? [])}
+
 当前页面路径：
 ${context.currentPagePath?.join(" -> ") ?? "未知"}`
     : userText;
@@ -308,6 +384,7 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
   ];
   const discoverySteps: string[] = [];
   const discoveredResources: unknown[] = [];
+  const backendToolResults: unknown[] = [...(context?.backendToolResults ?? [])];
   const rawReplies: string[] = [];
   let lastPlan: ReturnType<typeof normalizePayload> = null;
 
@@ -328,6 +405,24 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
     if (!plan) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
     lastPlan = plan;
 
+    if (asksForResolvedFields(plan, backendToolResults)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：当前 ask_user 请求的字段已经由后台工具唯一确定。请直接使用后台结果填写页面，不要再次询问用户；仅追问后台结果和用户原始输入中都不存在、且完成任务必需的信息。",
+      });
+      continue;
+    }
+
+    if (prematurelyStopsBeforeLookup(userText, plan, context)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：这是尚未完成的数据变更任务。查询、打开页面、锁定对象、填写字段或新增关联对象都只是中间步骤，不能 decision=finish。请利用上一次结果继续执行，直到最终保存动作明确返回成功；如果尚未定位对象，先根据用户提供的姓名或名称执行系统查询。当前计划必须 decision=continue，除非本轮包含最终保存动作。",
+      });
+      continue;
+    }
+
     if (hasExplicitQueryCondition(userText) && hasSearchAction(plan) && !hasSetFieldAction(plan, context)) {
       messages.push({ role: "assistant", content: result.content });
       messages.push({
@@ -347,9 +442,12 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
     }
 
     const discoveryCalls = plan.toolCalls.filter(isAssistantDiscoveryCall);
+    const backendCalls = plan.toolCalls.filter(isAssistantBackendCall);
+    const userInputCalls = plan.toolCalls.filter(isAssistantUserInputCall);
     const finishCalls = plan.toolCalls.filter(isAssistantFinishCall);
-    const actionCalls = plan.toolCalls.filter((call): call is AssistantToolCall => !isAssistantDiscoveryCall(call) && !isAssistantFinishCall(call));
-    if (discoveryCalls.length === 0) {
+    const actionCalls = plan.toolCalls.filter((call): call is AssistantToolCall => !isAssistantDiscoveryCall(call) && !isAssistantBackendCall(call) && !isAssistantUserInputCall(call) && !isAssistantFinishCall(call));
+    if (discoveryCalls.length === 0 && backendCalls.length === 0) {
+      const userInputRequest = userInputCalls[0]?.args;
       return {
         ok: true as const,
         rawReplies,
@@ -357,19 +455,24 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
           ...plan,
           toolCalls: actionCalls,
           decision: finishCalls.length > 0 ? "finish" : plan.decision,
-          discoverySteps,
+          userInputRequest,
+          discoverySteps: userInputRequest ? [...discoverySteps, formatToolInvocation("ask_user", userInputRequest)] : discoverySteps,
           discoveryResults: discoveredResources,
+          backendToolResults,
         },
       };
     }
 
     const discoveryResults = discoveryCalls.map(executeDiscovery);
+    const backendResults = backendCalls.map(executeBackendTool);
+    backendToolResults.push(...backendResults);
     discoveredResources.push(...discoveryResults);
     discoveryCalls.forEach((call) => discoverySteps.push(formatDiscoveryStep(call)));
+    backendCalls.forEach((call) => discoverySteps.push(formatToolInvocation(call.tool, call.args)));
     messages.push({ role: "assistant", content: result.content });
     messages.push({
       role: "user",
-      content: `当前页面注册信息如下：${JSON.stringify(discoveryResults)}。请根据这些注册信息继续下一步，只输出新的 JSON 计划。`,
+      content: `工具执行结果如下：${JSON.stringify([...discoveryResults, ...backendResults])}。请根据这些结果继续下一步，只输出新的 JSON 计划。`,
     });
   }
 
@@ -383,6 +486,7 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
       toolCalls: [] as AssistantToolCall[],
       discoverySteps,
       discoveryResults: discoveredResources,
+      backendToolResults,
     },
   };
 }

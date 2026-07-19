@@ -45,6 +45,18 @@ export interface PageQuery {
   pageSize?: number;
 }
 
+export interface ListPolicyInsuredsQuery extends PageQuery {
+  coveragePlanId?: string;
+  insuredName?: string;
+  insuredIdNo?: string;
+}
+
+export interface QueryUnderwritingInput {
+  policyNo?: string;
+  insuredName?: string;
+  insuredIdNo?: string;
+}
+
 function resolvePage(query: PageQuery = {}) {
   const page = Number.isInteger(query.page) && query.page! > 0 ? query.page! : 1;
   const pageSize = Number.isInteger(query.pageSize) && query.pageSize! > 0
@@ -80,13 +92,22 @@ function getPolicyProducts(policyId: string): PolicyProductView[] {
     }));
 }
 
-function getPolicyInsureds(policyId: string): PolicyInsuredView[] {
-  return policyInsureds
+function getPolicyCoveragePlans(policyId: string) {
+  return coveragePlans
     .filter((item) => item.policyId === policyId)
+    .sort((a, b) => a.planCode.localeCompare(b.planCode));
+}
+
+function getPolicyInsureds(policyId: string, query: Pick<ListPolicyInsuredsQuery, "coveragePlanId" | "insuredName" | "insuredIdNo"> = {}): PolicyInsuredView[] {
+  return policyInsureds
+    .filter((item) => item.policyId === policyId && (!query.coveragePlanId || item.coveragePlanId === query.coveragePlanId))
     .map((policyInsured) => ({
       ...policyInsured,
       insuredPerson: insuredPersons.find((person) => person.id === policyInsured.insuredPersonId)!,
-    }));
+      coveragePlan: coveragePlans.find((plan) => plan.id === policyInsured.coveragePlanId),
+    }))
+    .filter((item) => !query.insuredName || item.insuredPerson.name.includes(query.insuredName))
+    .filter((item) => !query.insuredIdNo || (item.insuredPerson.idNo ?? "").includes(query.insuredIdNo));
 }
 
 export function listPolicies(query: ListPoliciesQuery = {}): PageResult<PolicyListItem> {
@@ -134,20 +155,65 @@ export function getPolicyDetailView(policyId: string): PolicyDetailView | null {
 
   return {
     policy,
+    coveragePlans: getPolicyCoveragePlans(policyId),
     products: getPolicyProducts(policyId),
     insuredCount: policy.insuredCount ?? policyInsureds.filter((item) => item.policyId === policyId).length,
   };
 }
 
-export function listPolicyInsureds(policyId: string, query: PageQuery = {}) {
+export function listPolicyInsureds(policyId: string, query: ListPolicyInsuredsQuery = {}) {
   const policy = policies.find((item) => item.id === policyId);
   if (!policy) return null;
 
   return {
     policyId: policy.id,
     policyNo: policy.policyNo,
-    ...toPageResult(getPolicyInsureds(policyId), query),
+    ...toPageResult(getPolicyInsureds(policyId, query), query),
   };
+}
+
+export function queryUnderwriting(input: QueryUnderwritingInput) {
+  const policyNo = input.policyNo?.trim();
+  const insuredName = input.insuredName?.trim();
+  const insuredIdNo = input.insuredIdNo?.trim().toUpperCase();
+  if (!policyNo && !insuredName && !insuredIdNo) return { total: 0, matches: [], reason: "query_condition_required" };
+
+  const matches = policies
+    .filter((policy) => !policyNo || policy.policyNo === policyNo)
+    .flatMap((policy) => getPolicyInsureds(policy.id, { insuredName, insuredIdNo }).map((item) => ({
+      policy: {
+        id: policy.id,
+        policyNo: policy.policyNo,
+        policyName: policy.policyName,
+        applicantName: policy.applicantName,
+        policyStatus: policy.policyStatus,
+        effectiveDate: policy.effectiveDate,
+        expiryDate: policy.expiryDate,
+      },
+      policyInsured: {
+        id: item.id,
+        effectiveDate: item.effectiveDate,
+        expiryDate: item.expiryDate,
+        coveragePlanId: item.coveragePlanId,
+      },
+      insuredPerson: {
+        id: item.insuredPerson.id,
+        insuredNo: item.insuredPerson.insuredNo,
+        name: item.insuredPerson.name,
+        gender: item.insuredPerson.gender,
+        birthDate: item.insuredPerson.birthDate,
+        idType: item.insuredPerson.idType,
+        idNo: item.insuredPerson.idNo,
+        phone: item.insuredPerson.phone,
+      },
+      coveragePlan: item.coveragePlan ? {
+        id: item.coveragePlan.id,
+        planCode: item.coveragePlan.planCode,
+        planName: item.coveragePlan.planName,
+      } : undefined,
+    })));
+
+  return { total: matches.length, matches: matches.slice(0, 10), truncated: matches.length > 10 };
 }
 
 export function getPolicyFullView(policyId: string): PolicyFullView | null {

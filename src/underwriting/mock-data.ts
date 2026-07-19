@@ -510,6 +510,7 @@ export const policyInsureds: PolicyInsured[] = [
   ...insuredPersons.slice(0, 20).map((insuredPerson, index) => ({
     id: `policy-insured-${String(index + 1).padStart(3, "0")}`,
     policyId: "policy-001",
+    coveragePlanId: index < 14 ? "plan-001" : "plan-004",
     insuredPersonId: insuredPerson.id,
     effectiveDate: "2026-01-01",
     expiryDate: "2026-12-31",
@@ -519,6 +520,7 @@ export const policyInsureds: PolicyInsured[] = [
   ...insuredPersons.slice(20, 28).map((insuredPerson, index) => ({
     id: `policy-insured-${String(index + 21).padStart(3, "0")}`,
     policyId: "policy-002",
+    coveragePlanId: "plan-002",
     insuredPersonId: insuredPerson.id,
     effectiveDate: "2026-02-01",
     expiryDate: "2027-01-31",
@@ -528,6 +530,7 @@ export const policyInsureds: PolicyInsured[] = [
   ...insuredPersons.slice(28, 34).map((insuredPerson, index) => ({
     id: `policy-insured-${String(index + 29).padStart(3, "0")}`,
     policyId: "policy-003",
+    coveragePlanId: "plan-003",
     insuredPersonId: insuredPerson.id,
     effectiveDate: "2026-03-01",
     expiryDate: "2027-02-28",

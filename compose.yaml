@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: healthagent-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: healthagent
+      POSTGRES_USER: healthagent
+      POSTGRES_PASSWORD: healthagent_local
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - healthagent_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U healthagent -d healthagent"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+volumes:
+  healthagent_postgres_data:
+    name: healthagent_postgres_data
