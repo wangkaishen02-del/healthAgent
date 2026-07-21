@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { changeClaimCaseStatus, createClaimCase, listClaimCases, updateClaimCase } from "../../../src/claims/service";
+import { changeClaimCaseStatusDb, createClaimCaseDb, listClaimCasesDb, updateClaimCaseDb } from "../../../src/claims/prisma-service";
 import type { CreateClaimCaseInput } from "../../../src/claims/types";
 
 function isCreateInput(value: unknown): value is CreateClaimCaseInput {
@@ -24,14 +24,14 @@ function isCreateInput(value: unknown): value is CreateClaimCaseInput {
 }
 
 export async function GET() {
-  return NextResponse.json({ items: listClaimCases() });
+  return NextResponse.json({ items: await listClaimCasesDb() });
 }
 
 export async function POST(request: NextRequest) {
   const body = await request.json().catch(() => null);
   if (!isCreateInput(body)) return NextResponse.json({ message: "invalid_claim_case" }, { status: 400 });
   try {
-    return NextResponse.json(createClaimCase(body), { status: 201 });
+    return NextResponse.json(await createClaimCaseDb(body), { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "claim_registration_failed";
     const status = message.endsWith("_not_found") ? 404 : 400;
@@ -45,7 +45,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ message: "invalid_claim_case" }, { status: 400 });
   }
   try {
-    const result = updateClaimCase(body.id, body);
+    const result = await updateClaimCaseDb(body.id, body);
     return result ? NextResponse.json(result) : NextResponse.json({ message: "claim_case_not_found" }, { status: 404 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "claim_update_failed";
@@ -59,7 +59,7 @@ export async function PATCH(request: NextRequest) {
     return NextResponse.json({ message: "invalid_claim_action" }, { status: 400 });
   }
   try {
-    const result = changeClaimCaseStatus(body.id, body.action === "submit" ? "submitted" : "cancelled");
+    const result = await changeClaimCaseStatusDb(body.id, body.action === "submit" ? "submitted" : "cancelled");
     return result ? NextResponse.json(result) : NextResponse.json({ message: "claim_case_not_found" }, { status: 404 });
   } catch (error) {
     const message = error instanceof Error ? error.message : "claim_status_update_failed";

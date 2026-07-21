@@ -12,25 +12,21 @@ import {
 
 const prisma = new PrismaClient();
 
-function stableUuid(sequence: number) {
-  return `00000000-0000-4000-8000-${String(sequence).padStart(12, "0")}`;
-}
-
-function idMap(items: Array<{ id: string }>, offset: number) {
-  return new Map(items.map((item, index) => [item.id, stableUuid(offset + index + 1)]));
+function idMap(items: Array<{ id: string }>) {
+  return new Map(items.map((item) => [item.id, item.id]));
 }
 
 function date(value?: string) {
   return value ? new Date(`${value}T00:00:00.000Z`) : undefined;
 }
 
-const policyIds = idMap(policies, 0);
-const planIds = idMap(coveragePlans, 1000);
-const productIds = idMap(policyProducts, 2000);
-const benefitIds = idMap(policyBenefits, 3000);
-const personIds = idMap(insuredPersons, 4000);
-const policyInsuredIds = idMap(policyInsureds, 5000);
-const definitionIds = new Map(calculationParameterDefinitions.map((item, index) => [item.parameterCode, stableUuid(6001 + index)]));
+const policyIds = idMap(policies);
+const planIds = idMap(coveragePlans);
+const productIds = idMap(policyProducts);
+const benefitIds = idMap(policyBenefits);
+const personIds = idMap(insuredPersons);
+const policyInsuredIds = idMap(policyInsureds);
+const definitionIds = new Map(calculationParameterDefinitions.map((item) => [item.parameterCode, `definition-${item.parameterCode.toLowerCase()}`]));
 
 async function seed() {
   for (const item of policies) {
@@ -123,14 +119,14 @@ async function seed() {
   }
 
   const targetIds = { policy: policyIds, plan: planIds, product: productIds, benefit: benefitIds };
-  for (const [index, item] of calculationParameters.entries()) {
+  for (const item of calculationParameters) {
     const definitionId = definitionIds.get(item.parameterCode)!;
     const targetId = targetIds[item.scope].get(item.targetId)!;
     await prisma.calculationParameter.upsert({
       where: { scope_targetId_definitionId: { scope: item.scope, targetId, definitionId } },
       update: { parameterValue: item.parameterValue, description: item.description, enabled: item.enabled },
       create: {
-        id: stableUuid(7001 + index), scope: item.scope, targetId, definitionId,
+        id: item.id, scope: item.scope, targetId, definitionId,
         parameterValue: item.parameterValue, description: item.description, enabled: item.enabled,
       },
     });
@@ -138,8 +134,8 @@ async function seed() {
 
   const insuredPersonId = personIds.get("insured-001")!;
   const initialEvents = [
-    { id: stableUuid(8001), eventNo: "EV202606120001", eventType: "disease" as const, occurredDate: "2026-06-12", administrativeArea: "上海市 / 上海市 / 黄浦区", detailedAddress: "中山东一路附近", hospitalName: "上海市第一人民医院", diagnosis: "急性上呼吸道感染", description: "发热咳嗽后前往门诊就医。" },
-    { id: stableUuid(8002), eventNo: "EV202604080001", eventType: "accident" as const, occurredDate: "2026-04-08", administrativeArea: "上海市 / 上海市 / 徐汇区", detailedAddress: "漕溪北路附近", diagnosis: "踝关节扭伤", description: "步行时不慎扭伤，完成门诊检查。" },
+    { id: "claim-event-001", eventNo: "EV202606120001", eventType: "disease" as const, occurredDate: "2026-06-12", administrativeArea: "上海市 / 上海市 / 黄浦区", detailedAddress: "中山东一路附近", hospitalName: "上海市第一人民医院", diagnosis: "急性上呼吸道感染", description: "发热咳嗽后前往门诊就医。" },
+    { id: "claim-event-002", eventNo: "EV202604080001", eventType: "accident" as const, occurredDate: "2026-04-08", administrativeArea: "上海市 / 上海市 / 徐汇区", detailedAddress: "漕溪北路附近", diagnosis: "踝关节扭伤", description: "步行时不慎扭伤，完成门诊检查。" },
   ];
   for (const item of initialEvents) {
     await prisma.claimEvent.upsert({

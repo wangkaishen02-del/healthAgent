@@ -1,14 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  createCalculationParameter,
-  deleteCalculationParameter,
-  getCalculationConfigCatalog,
-  getCalculationConfigPolicies,
-  getCalculationParameterDefinitions,
-  listCalculationParameters,
-  updateCalculationParameter,
-  type SaveCalculationParameterInput,
-} from "../../../src/underwriting/service";
+import { type SaveCalculationParameterInput } from "../../../src/underwriting/service";
+import { createCalculationParameterDb, deleteCalculationParameterDb, getCalculationParameterDefinitionsDb, listCalculationParametersDb, updateCalculationParameterDb } from "../../../src/underwriting/prisma-calculation-service";
+import { getCalculationConfigDataDb } from "../../../src/underwriting/prisma-service";
 import type { CalculationParameterScope } from "../../../src/underwriting/types";
 
 const scopes: CalculationParameterScope[] = ["policy", "plan", "product", "benefit"];
@@ -53,11 +46,12 @@ export async function GET(request: NextRequest) {
     ? rawScope as CalculationParameterScope
     : undefined;
   const targetId = searchParams.get("targetId") ?? undefined;
+  const configData = await getCalculationConfigDataDb();
   return NextResponse.json({
-    catalog: getCalculationConfigCatalog(),
-    policies: getCalculationConfigPolicies(),
-    definitions: getCalculationParameterDefinitions(),
-    items: listCalculationParameters(scope, targetId),
+    catalog: configData.catalog,
+    policies: configData.policies,
+    definitions: await getCalculationParameterDefinitionsDb(),
+    items: await listCalculationParametersDb(scope, targetId),
   });
 }
 
@@ -65,7 +59,7 @@ export async function POST(request: NextRequest) {
   const input = parseInput(await request.json().catch(() => null));
   if (!input) return NextResponse.json({ message: "invalid_parameter" }, { status: 400 });
   try {
-    return NextResponse.json(createCalculationParameter(input), { status: 201 });
+    return NextResponse.json(await createCalculationParameterDb(input), { status: 201 });
   } catch (error) {
     return mutationError(error);
   }
@@ -78,7 +72,7 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json({ message: "invalid_parameter" }, { status: 400 });
   }
   try {
-    const item = updateCalculationParameter(body.id, input);
+    const item = await updateCalculationParameterDb(body.id, input);
     return item
       ? NextResponse.json(item)
       : NextResponse.json({ message: "parameter_not_found" }, { status: 404 });
@@ -90,7 +84,7 @@ export async function PUT(request: NextRequest) {
 export async function DELETE(request: NextRequest) {
   const id = new URL(request.url).searchParams.get("id");
   if (!id) return NextResponse.json({ message: "id is required" }, { status: 400 });
-  return deleteCalculationParameter(id)
+  return await deleteCalculationParameterDb(id)
     ? NextResponse.json({ success: true })
     : NextResponse.json({ message: "parameter_not_found" }, { status: 404 });
 }

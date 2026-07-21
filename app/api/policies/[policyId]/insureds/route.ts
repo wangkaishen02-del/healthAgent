@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { listPolicyInsureds } from "../../../../../src/underwriting/service";
+import { listPolicyInsuredsDb } from "../../../../../src/underwriting/prisma-service";
 
 export async function GET(
   request: NextRequest,
@@ -7,7 +7,7 @@ export async function GET(
 ) {
   const { policyId } = await context.params;
   const { searchParams } = new URL(request.url);
-  const result = listPolicyInsureds(policyId, {
+  const result = await listPolicyInsuredsDb(policyId, {
     coveragePlanId: searchParams.get("coveragePlanId") ?? undefined,
     insuredName: searchParams.get("insuredName") ?? undefined,
     insuredIdNo: searchParams.get("insuredIdNo") ?? undefined,

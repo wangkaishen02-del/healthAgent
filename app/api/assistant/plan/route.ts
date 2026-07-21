@@ -23,7 +23,7 @@ import {
   getNavigationRegistry,
   getPageRegistration,
 } from "../../../../src/assistant/page-registry";
-import { queryUnderwriting } from "../../../../src/underwriting/service";
+import { queryUnderwritingDb } from "../../../../src/underwriting/prisma-service";
 
 type LlmProvider = "ollama" | "deepseek";
 
@@ -182,9 +182,9 @@ function executeDiscovery(call: AssistantDiscoveryCall) {
   return getPageRegistration(call.args.pageId) ?? { error: "page_not_found" };
 }
 
-function executeBackendTool(call: AssistantBackendCall) {
+async function executeBackendTool(call: AssistantBackendCall) {
   if (call.tool === "query_underwriting") {
-    const result = queryUnderwriting(call.args);
+    const result = await queryUnderwritingDb(call.args);
     return {
       type: "underwriting_query_result",
       ...result,
@@ -464,7 +464,7 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
     }
 
     const discoveryResults = discoveryCalls.map(executeDiscovery);
-    const backendResults = backendCalls.map(executeBackendTool);
+    const backendResults = await Promise.all(backendCalls.map(executeBackendTool));
     backendToolResults.push(...backendResults);
     discoveredResources.push(...discoveryResults);
     discoveryCalls.forEach((call) => discoverySteps.push(formatDiscoveryStep(call)));
