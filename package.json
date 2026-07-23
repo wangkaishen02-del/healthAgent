@@ -4,11 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "dev:api": "node --experimental-strip-types src/api/server.ts",
-    "test:api": "node --experimental-strip-types src/api/smoke-test.ts",
+    "dev": "concurrently -k -n web,api \"npm:dev:web\" \"npm:dev:api\"",
+    "dev:web": "next dev",
+    "dev:api": "tsx watch --tsconfig apps/api/tsconfig.json apps/api/src/main.ts",
+    "build": "npm run build:web && npm run build:api",
+    "build:web": "next build",
+    "build:api": "tsc -p apps/api/tsconfig.json",
+    "start": "concurrently -k -n web,api \"npm:start:web\" \"npm:start:api\"",
+    "start:web": "next start",
+    "start:api": "node dist/nest/apps/api/src/main.js",
+    "test:api": "tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
@@ -16,16 +21,25 @@
     "db:seed": "prisma db seed"
   },
   "dependencies": {
+    "@nestjs/common": "^11.0.0",
+    "@nestjs/core": "^11.0.0",
+    "@nestjs/platform-express": "^11.0.0",
     "@prisma/client": "^6.19.0",
+    "concurrently": "^9.2.0",
+    "dotenv": "^17.2.0",
     "next": "^16.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/multer": "^2.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "prisma": "^6.19.0",
+    "tsx": "^4.20.0",
     "typescript": "^5.8.0"
   },
   "prisma": {

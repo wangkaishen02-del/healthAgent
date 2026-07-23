@@ -50,7 +50,7 @@ const menus: MenuRegistration[] = [
     description: "查询承保和案件相关的业务信息。",
     pages: [
       { pageId: "policy_query", label: "保单信息查询", description: "按保单或被保人条件查询保单。" },
-      { pageId: "claim_query", label: "案件查询", description: "案件查询入口，当前仅提供页面占位。" },
+      { pageId: "claim_query", label: "案件查询", description: "只读查询案件及其关系人、事件和影像信息。" },
     ],
   },
   {
@@ -59,7 +59,6 @@ const menus: MenuRegistration[] = [
     description: "承接理赔受理、案件检索、详情查看和理算结果联查。",
     pages: [
       { pageId: "claim_registration", label: "受理立案", description: "登记出险人员、申请与领款信息、事件经过和影像资料。" },
-      { pageId: "claim_query", label: "案件查询", description: "案件查询入口，当前仅提供页面占位。" },
     ],
   },
   {
@@ -158,10 +157,37 @@ const pages: PageRegistration[] = [
   {
     pageId: "claim_query",
     label: "案件查询",
-    description: "案件查询页面当前为空白占位页，尚未注册可执行的查询动作。",
+    description: "按案件号、保单号、被保人、案件状态和报案日期查询案件，仅支持查看，不提供新增、修改、提交或撤件操作。",
     menuId: "comprehensive_query",
     pagePath: ["综合查询", "案件查询"],
-    regions: [],
+    regions: [
+      {
+        regionId: "claim_query_filters",
+        label: "案件查询条件",
+        description: "组合条件检索理赔案件；条件均可为空。",
+        fields: [
+          { fieldId: "caseNo", label: "案件号", type: "text", description: "完整案件号，例如 CL202607190001。" },
+          { fieldId: "policyNo", label: "保单号", type: "text", description: "完整保单号。" },
+          { fieldId: "insuredName", label: "被保人姓名", type: "text", description: "支持姓名模糊匹配。" },
+          { fieldId: "insuredIdNo", label: "被保人证件号", type: "text", description: "按完整证件号匹配。" },
+          { fieldId: "status", label: "案件状态", type: "select", description: "按案件状态筛选；空值表示全部。", options: [{ value: "", label: "全部状态" }, { value: "registered", label: "已立案" }, { value: "submitted", label: "已提交" }, { value: "cancelled", label: "已撤件" }] },
+          { fieldId: "reportDateFrom", label: "报案日期起", type: "text", description: "报案日期范围开始，格式 YYYY-MM-DD。" },
+          { fieldId: "reportDateTo", label: "报案日期止", type: "text", description: "报案日期范围结束，格式 YYYY-MM-DD。" },
+        ],
+        actions: [
+          { actionId: "search", label: "查询", description: "按当前条件刷新案件列表。", kind: "query", target: "page" },
+          { actionId: "reset", label: "重置", description: "清空条件并查询全部案件。", kind: "view", target: "page" },
+        ],
+      },
+      {
+        regionId: "claim_query_results",
+        label: "案件查询结果",
+        description: "展示匹配案件；详情页中的案件、关系人、事件与影像数据全部只读。",
+        actions: [
+          { actionId: "view_case", label: "查看详情", description: "打开指定案件的只读详情。", kind: "view", target: "row" },
+        ],
+      },
+    ],
   },
   {
     pageId: "claim_registration",
@@ -190,19 +216,50 @@ const pages: PageRegistration[] = [
         regionId: "claim_case_list",
         label: "已立案案件",
         description: "展示当前可见案件及状态，打开案件后可在允许的状态下修改、撤件或提交。",
-        actions: [{ actionId: "edit_case", label: "打开案件", description: "打开列表指定行的案件进行查看或维护。", kind: "view", target: "row" }],
+        actions: [
+          { actionId: "new_case", label: "新建立案", description: "清空当前案件上下文并进入新建立案状态。", kind: "input", target: "page" },
+          { actionId: "edit_case", label: "打开案件", description: "选中并打开列表中的指定案件进行查看或维护，效果与人工双击案件行一致；可按行号或后台返回的稳定对象标识执行。", kind: "view", target: "row" },
+        ],
       },
       {
         regionId: "claim_party_information",
-        label: "申请人与领款人信息",
-        description: "默认复用被保人资料，也可以补充或覆盖申请人与领款信息。",
+        label: "被保人、申请人与领款人信息",
+        description: "被保人信息由承保关系带出并允许补充；申请人和领款人可复用已有资料或独立填写。",
         fields: [
+          { fieldId: "insuredName", label: "被保人姓名", type: "text", description: "案件被保人姓名。" },
+          { fieldId: "insuredGender", label: "被保人性别", type: "select", description: "被保人性别。", options: [{ value: "unknown", label: "未知" }, { value: "male", label: "男" }, { value: "female", label: "女" }] },
+          { fieldId: "insuredBirthDate", label: "被保人出生日期", type: "text", description: "被保人出生日期，格式 YYYY-MM-DD。" },
+          { fieldId: "insuredIdType", label: "被保人证件类型", type: "select", description: "被保人的证件类型。", options: [{ value: "id_card", label: "身份证" }, { value: "passport", label: "护照" }, { value: "other", label: "其他" }] },
+          { fieldId: "insuredPartyIdNo", label: "被保人信息中的证件号", type: "text", description: "关系人快照中的被保人证件号码；锁定承保关系应使用立案基本信息中的 insuredIdNo。" },
+          { fieldId: "insuredIdValidFrom", label: "被保人证件有效期起", type: "text", description: "被保人证件有效期起始日期。" },
+          { fieldId: "insuredIdValidTo", label: "被保人证件有效期止", type: "text", description: "被保人证件有效期截止日期；填写后自动取消长期有效。" },
+          { fieldId: "insuredIdLongTerm", label: "被保人证件长期有效", type: "boolean", description: "与证件有效期止互斥；设为 true 时自动清空有效期止。" },
+          { fieldId: "insuredPhone", label: "被保人电话", type: "text", description: "被保人联系电话。" },
+          { fieldId: "insuredAddress", label: "被保人联系地址", type: "text", description: "被保人联系地址。" },
+          { fieldId: "applicantSameAsInsured", label: "申请人同被保人", type: "boolean", description: "设为 true 时自动复制被保人资料到申请人。", options: [{ value: "true", label: "同被保人" }, { value: "false", label: "独立填写" }] },
           { fieldId: "applicantName", label: "申请人姓名", type: "text", description: "理赔申请人姓名。" },
+          { fieldId: "applicantRelationToInsured", label: "申请人与被保人关系", type: "text", description: "申请人与被保人的关系。" },
+          { fieldId: "applicantGender", label: "申请人性别", type: "select", description: "申请人性别。", options: [{ value: "unknown", label: "未知" }, { value: "male", label: "男" }, { value: "female", label: "女" }] },
+          { fieldId: "applicantBirthDate", label: "申请人出生日期", type: "text", description: "申请人出生日期；完整日期使用 YYYY-MM-DD。" },
+          { fieldId: "applicantIdType", label: "申请人证件类型", type: "select", description: "申请人的证件类型。", options: [{ value: "id_card", label: "身份证" }, { value: "passport", label: "护照" }, { value: "other", label: "其他" }] },
           { fieldId: "applicantIdNo", label: "申请人证件号", type: "text", description: "理赔申请人证件号码。" },
+          { fieldId: "applicantIdValidFrom", label: "申请人证件有效期起", type: "text", description: "申请人证件有效期起始日期。可填写完整日期；已有日期时也可只填写年份，系统保留原月日。" },
+          { fieldId: "applicantIdValidTo", label: "申请人证件有效期止", type: "text", description: "与长期有效互斥；填写后自动取消长期有效。可填写完整日期，已有日期时也可只填写年份并保留原月日。" },
+          { fieldId: "applicantIdLongTerm", label: "申请人证件长期有效", type: "boolean", description: "与证件有效期止互斥；设为 true 时自动清空有效期止。" },
           { fieldId: "applicantPhone", label: "申请人电话", type: "text", description: "理赔申请人联系电话。" },
+          { fieldId: "applicantAddress", label: "申请人联系地址", type: "text", description: "申请人的联系地址。" },
+          { fieldId: "payeeSource", label: "领款人信息来源", type: "select", description: "选择复用被保人、申请人资料，或另行填写。", options: [{ value: "insured", label: "同被保人" }, { value: "applicant", label: "同申请人" }, { value: "other", label: "另行填写" }] },
           { fieldId: "payeeName", label: "领款人姓名", type: "text", description: "赔款领取人姓名。" },
+          { fieldId: "payeeRelationToInsured", label: "领款人与被保人关系", type: "text", description: "领款人与被保人的关系。" },
+          { fieldId: "payeeGender", label: "领款人性别", type: "select", description: "领款人性别。", options: [{ value: "unknown", label: "未知" }, { value: "male", label: "男" }, { value: "female", label: "女" }] },
+          { fieldId: "payeeBirthDate", label: "领款人出生日期", type: "text", description: "领款人出生日期；完整日期使用 YYYY-MM-DD。" },
+          { fieldId: "payeeIdType", label: "领款人证件类型", type: "select", description: "领款人的证件类型。", options: [{ value: "id_card", label: "身份证" }, { value: "passport", label: "护照" }, { value: "other", label: "其他" }] },
           { fieldId: "payeeIdNo", label: "领款人证件号", type: "text", description: "赔款领取人证件号码。" },
+          { fieldId: "payeeIdValidFrom", label: "领款人证件有效期起", type: "text", description: "领款人证件有效期起始日期。可填写完整日期；已有日期时也可只填写年份，系统保留原月日；两位年份 00 表示 2000 年。" },
+          { fieldId: "payeeIdValidTo", label: "领款人证件有效期止", type: "text", description: "与长期有效互斥；填写后自动取消长期有效。可填写完整日期，已有日期时也可只填写年份并保留原月日。" },
+          { fieldId: "payeeIdLongTerm", label: "领款人证件长期有效", type: "boolean", description: "与证件有效期止互斥；设为 true 时自动清空有效期止。" },
           { fieldId: "payeePhone", label: "领款人电话", type: "text", description: "赔款领取人联系电话。" },
+          { fieldId: "payeeAddress", label: "领款人联系地址", type: "text", description: "领款人的联系地址。" },
           { fieldId: "payeePaymentMethod", label: "领款方式", type: "select", description: "赔款领取方式；立案时尚未确定可使用 pending。", options: [{ value: "pending", label: "待确定" }, { value: "bank_transfer", label: "银行转账" }, { value: "cash", label: "现金领取" }, { value: "other", label: "其他方式" }] },
           { fieldId: "payeeBankName", label: "开户银行", type: "text", description: "领款账户开户银行。" },
           { fieldId: "payeeBankAccountName", label: "账户名称", type: "text", description: "领款银行账户名称。" },
@@ -212,7 +269,7 @@ const pages: PageRegistration[] = [
       {
         regionId: "claim_event_information",
         label: "事件信息",
-        description: "展示当前人员的事件列表；可选择已有事件关联案件、新增事件，或打开已有事件进行编辑。",
+        description: "仅展示当前被保人的事件列表，列表包含被保人姓名；可选择已有事件关联案件、新增事件，或打开已有事件进行编辑。",
         fields: [
           { fieldId: "eventKeyword", label: "事件关键词", type: "text", description: "按事件号、地点、医院、诊断或事件经过筛选当前人员事件。" },
           { fieldId: "eventTypeFilter", label: "事件类型筛选", type: "select", description: "筛选当前人员事件；all 表示全部。", options: [{ value: "all", label: "全部类型" }, { value: "disease", label: "疾病" }, { value: "accident", label: "意外" }, { value: "other", label: "其他" }] },
@@ -228,6 +285,7 @@ const pages: PageRegistration[] = [
         actions: [
           { actionId: "reset_event_filters", label: "清空事件筛选", description: "清空事件列表的关键词、类型和日期筛选条件。", kind: "input", target: "page" },
           { actionId: "open_event_editor", label: "新增事件", description: "打开当前人员的事件新增区域。", kind: "input", target: "page" },
+          { actionId: "close_event_editor", label: "取消事件编辑", description: "关闭事件新增或编辑区域并放弃未保存内容。", kind: "input", target: "page" },
           { actionId: "create_event", label: "保存事件", description: "保存新增事件并自动关联，或保存当前正在编辑的已有事件。", kind: "input", target: "page" },
           { actionId: "select_event", label: "关联事件", description: "选择事件列表指定行并关联到当前案件。", kind: "input", target: "row" },
           { actionId: "edit_event", label: "编辑事件", description: "打开事件列表指定行并带出已有信息进行编辑。", kind: "input", target: "row" },
@@ -236,14 +294,20 @@ const pages: PageRegistration[] = [
       {
         regionId: "claim_attachments",
         label: "影像资料",
-        description: "人工选择并上传理赔申请书、身份证明、病历、发票、银行卡等影像；文件选择不由 Agent 自动完成。",
+        description: "选择影像分类、人工选择文件上传，并可删除当前影像。出于本地文件权限安全限制，文件选择仍由用户完成。",
+        fields: [
+          { fieldId: "attachmentCategory", label: "影像分类", type: "select", description: "下一次人工上传文件所使用的资料分类。", options: [{ value: "application", label: "理赔申请书" }, { value: "identity", label: "身份证明" }, { value: "medical", label: "病历资料" }, { value: "invoice", label: "发票费用清单" }, { value: "bank", label: "银行卡资料" }, { value: "other", label: "其他资料" }] },
+        ],
+        actions: [
+          { actionId: "remove_attachment", label: "删除影像", description: "删除影像列表中指定的文件；支持按行号或 uploadId 操作。", kind: "input", target: "row" },
+        ],
       },
       {
         regionId: "claim_submission",
         label: "案件操作",
         description: "保存新案件或修改，或者将已保存案件提交、撤件。",
         actions: [
-          { actionId: "save_case", label: "保存", description: "创建案件或保存当前案件修改。", kind: "input", target: "page" },
+          { actionId: "save_case", label: "保存立案/保存修改", description: "新建状态显示“保存立案”并创建案件；打开已立案案件后显示“保存修改”并保存变更。新建立案成功后页面自动清空重置。", kind: "input", target: "page" },
           { actionId: "cancel_case", label: "撤件", description: "将当前已立案且未提交的案件变更为撤件。", kind: "input", target: "page" },
           { actionId: "submit_case", label: "提交", description: "提交当前已立案案件，提交后不可继续编辑。", kind: "input", target: "page" },
         ],
@@ -322,6 +386,41 @@ export function getPageRegistration(pageId: string) {
   return pages.find((item) => item.pageId === pageId) ?? null;
 }
 
+function compactRegion(region: RegisteredRegion): Record<string, unknown> {
+  return {
+    regionId: region.regionId,
+    label: region.label,
+    ...(region.fields?.length ? {
+      fields: region.fields.map((field) => ({
+        fieldId: field.fieldId,
+        label: field.label,
+        ...(field.type !== "text" ? { type: field.type } : {}),
+        ...(field.optionSource ? { optionSource: field.optionSource } : {}),
+        ...(field.options ? { options: field.options } : {}),
+      })),
+    } : {}),
+    ...(region.actions?.length ? {
+      actions: region.actions.map((action) => ({
+        actionId: action.actionId,
+        label: action.label,
+        target: action.target,
+      })),
+    } : {}),
+    ...(region.children?.length ? { children: region.children.map(compactRegion) } : {}),
+  };
+}
+
+export function getCompactPageRegistration(pageId: string) {
+  const page = getPageRegistration(pageId);
+  if (!page) return null;
+  return {
+    pageId: page.pageId,
+    label: page.label,
+    pagePath: page.pagePath,
+    regions: page.regions.map(compactRegion),
+  };
+}
+
 function flattenRegions(regions: RegisteredRegion[]): RegisteredRegion[] {
   return regions.flatMap((region) => [region, ...flattenRegions(region.children ?? [])]);
 }
@@ -358,12 +457,14 @@ export function getAssistantActionToolCatalog() {
     { tool: "set_field", args: { pageId: "目标页面的pageId", fieldId: "目标字段的fieldId", value: "你想输入的值" }, description: "填写目标页面中已注册的字段，参数填写目标页面的pageId和目标字段的fieldId。" },
     { tool: "click_button", args: { pageId: "目标页面的pageId", actionId: "目标动作的actionId" }, description: "点击目标页面中已注册的动作，参数填写目标页面的pageId和目标动作的actionId。" },
     { tool: "click_list_row_action", args: { pageId: "目标页面的pageId", actionId: "目标列表操作的actionId", row: "例如：1" }, description: "点击目标页面列表第 row 行操作列中已注册的动作，row填写从1开始的数字，例如1表示第一行。" },
+    { tool: "click_list_item_action", args: { pageId: "目标页面的pageId", actionId: "目标列表操作的actionId", itemId: "后台查询结果返回的itemId" }, description: "使用后台查询结果返回的稳定对象标识，对页面列表中的指定对象执行已注册动作；不依赖当前排序和行号。" },
   ];
 }
 
 export function getAssistantBackendToolCatalog() {
   return [
     { tool: "query_underwriting", args: { policyNo: "可选", insuredName: "可选", insuredIdNo: "可选" }, description: "在后台查询承保关系，至少提供一个条件；返回保单、承保关系、被保人和保障计划信息，不操作前端查询页面。" },
+    { tool: "query_claim_cases", args: { caseNo: "可选", policyNo: "可选", insuredName: "可选", insuredIdNo: "可选" }, description: "在后台查询理赔案件，至少提供一个条件；案件号应使用 caseNo，返回可用于页面列表对象操作的 itemId、案件、人员及关联事件信息。" },
   ];
 }
 

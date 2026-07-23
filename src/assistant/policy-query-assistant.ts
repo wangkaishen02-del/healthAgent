@@ -24,10 +24,15 @@ export type AssistantDiscoveryCall =
   | { tool: "get_menu_pages"; args: { menuId: string } }
   | { tool: "get_page_registry"; args: { pageId: string } };
 
-export type AssistantBackendCall = {
-  tool: "query_underwriting";
-  args: { policyNo?: string; insuredName?: string; insuredIdNo?: string };
-};
+export type AssistantBackendCall =
+  | {
+      tool: "query_underwriting";
+      args: { policyNo?: string; insuredName?: string; insuredIdNo?: string };
+    }
+  | {
+      tool: "query_claim_cases";
+      args: { caseNo?: string; policyNo?: string; insuredName?: string; insuredIdNo?: string };
+    };
 
 export type AssistantUserInputCall = {
   tool: "ask_user";
@@ -67,6 +72,14 @@ export type AssistantToolCall =
         pageId: AssistantPageId;
         actionId: AssistantResultActionId;
         row: number;
+      };
+    }
+  | {
+      tool: "click_list_item_action";
+      args: {
+        pageId: AssistantPageId;
+        actionId: AssistantResultActionId;
+        itemId: string;
       };
     };
 
@@ -134,7 +147,7 @@ export function buildAssistantPlan(userText: string): AssistantPlan | null {
 
   if (normalized.includes("案件")) {
     return {
-      reply: "我先为你打开案件查询页，后续案件能力接上后就可以继续自动执行。",
+      reply: "我先为你打开只读案件查询页。",
       recognized: ["目标页面：案件查询"],
       source: "rule",
       toolCalls: [
@@ -224,12 +237,14 @@ export function formatToolInvocation(tool: string, args: Record<string, unknown>
     get_menu_pages: "查询菜单页面",
     get_page_registry: "查询页面信息",
     query_underwriting: "查询承保信息",
+    query_claim_cases: "查询案件信息",
     ask_user: "询问用户",
     finish_task: "完成任务",
     open_page: "打开页面",
     set_field: "填写字段",
     click_button: "执行页面操作",
     click_list_row_action: "执行列表操作",
+    click_list_item_action: "执行列表对象操作",
   };
   const pageId = typeof args.pageId === "string" ? args.pageId : "";
   const fieldId = typeof args.fieldId === "string" ? args.fieldId : "";
@@ -268,6 +283,8 @@ export function formatToolInvocation(tool: string, args: Record<string, unknown>
     actionId: "操作",
     value: "值",
     row: "行号",
+    itemId: "对象标识",
+    caseNo: "案件号",
     policyNo: "保单号",
     insuredName: "被保人姓名",
     insuredIdNo: "被保人证件号",
@@ -322,6 +339,16 @@ export function isAssistantToolCall(value: unknown): value is AssistantToolCall 
     );
   }
 
+  if (candidate.tool === "click_list_item_action") {
+    return (
+      typeof candidate.args?.pageId === "string" &&
+      typeof candidate.args?.actionId === "string" &&
+      getRegisteredAction(candidate.args.pageId, candidate.args.actionId, "row") !== null &&
+      typeof candidate.args?.itemId === "string" &&
+      candidate.args.itemId.trim().length > 0
+    );
+  }
+
   return false;
 }
 
@@ -341,8 +368,13 @@ export function isAssistantModelToolCall(value: unknown): value is AssistantMode
 export function isAssistantBackendCall(value: unknown): value is AssistantBackendCall {
   if (!value || typeof value !== "object") return false;
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
-  if (candidate.tool !== "query_underwriting") return false;
-  return [candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
+  if (candidate.tool === "query_underwriting") {
+    return [candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
+  }
+  if (candidate.tool === "query_claim_cases") {
+    return [candidate.args?.caseNo, candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
+  }
+  return false;
 }
 
 export function isAssistantUserInputCall(value: unknown): value is AssistantUserInputCall {
@@ -352,6 +384,7 @@ export function isAssistantUserInputCall(value: unknown): value is AssistantUser
     && typeof candidate.args?.question === "string"
     && candidate.args.question.trim().length > 0
     && Array.isArray(candidate.args?.requestedFields)
+    && candidate.args.requestedFields.length > 0
     && candidate.args.requestedFields.every((item) => typeof item === "string");
 }
 
@@ -366,9 +399,29 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
 
   if (candidate.tool === "query_underwriting") {
+    const policyNo = typeof candidate.args?.policyNo === "string" ? candidate.args.policyNo.trim().toUpperCase() : undefined;
+    if (policyNo?.startsWith("CL")) {
+      return {
+        tool: "query_claim_cases",
+        args: { caseNo: policyNo },
+      };
+    }
     const normalizedCall: AssistantBackendCall = {
       tool: "query_underwriting",
       args: {
+        policyNo,
+        insuredName: typeof candidate.args?.insuredName === "string" ? candidate.args.insuredName : undefined,
+        insuredIdNo: typeof candidate.args?.insuredIdNo === "string" ? candidate.args.insuredIdNo : undefined,
+      },
+    };
+    return isAssistantBackendCall(normalizedCall) ? normalizedCall : null;
+  }
+
+  if (candidate.tool === "query_claim_cases") {
+    const normalizedCall: AssistantBackendCall = {
+      tool: "query_claim_cases",
+      args: {
+        caseNo: typeof candidate.args?.caseNo === "string" ? candidate.args.caseNo : undefined,
         policyNo: typeof candidate.args?.policyNo === "string" ? candidate.args.policyNo : undefined,
         insuredName: typeof candidate.args?.insuredName === "string" ? candidate.args.insuredName : undefined,
         insuredIdNo: typeof candidate.args?.insuredIdNo === "string" ? candidate.args.insuredIdNo : undefined,
@@ -453,6 +506,18 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
         pageId: candidate.args?.pageId ?? candidate.args?.page,
         actionId,
         row: Number(candidate.args?.row),
+      },
+    };
+    return isAssistantToolCall(normalizedCall) ? normalizedCall : null;
+  }
+
+  if (candidate.tool === "click_list_item_action") {
+    const normalizedCall = {
+      tool: "click_list_item_action" as const,
+      args: {
+        pageId: candidate.args?.pageId ?? candidate.args?.page,
+        actionId: candidate.args?.actionId ?? candidate.args?.action,
+        itemId: candidate.args?.itemId ?? candidate.args?.id,
       },
     };
     return isAssistantToolCall(normalizedCall) ? normalizedCall : null;

@@ -11,7 +11,7 @@ function mapEvent(item: DbClaimEvent): ClaimPersonEvent {
 }
 
 function mapParty(item: DbClaimParty): ClaimPartySnapshot {
-  return { role: item.role, name: item.name, gender: item.gender, birthDate: item.birthDate ? dateOnly(item.birthDate) : "", idType: item.idType, idNo: item.idNo, idValidFrom: item.idValidFrom ? dateOnly(item.idValidFrom) : "", idValidTo: item.idValidTo ? dateOnly(item.idValidTo) : "", idLongTerm: item.idLongTerm, address: item.address ?? "", phone: item.phone, relationToInsured: item.relationToInsured ?? undefined, bankName: item.bankName ?? undefined, bankAccountName: item.bankAccountName ?? undefined, bankAccountNo: item.bankAccountNo ?? undefined, paymentMethod: item.paymentMethod ?? undefined };
+  return { role: item.role, name: item.name, gender: item.gender, birthDate: item.birthDate ? dateOnly(item.birthDate) : "", idType: item.idType, idNo: item.idNo, idValidFrom: item.idValidFrom ? dateOnly(item.idValidFrom) : "", idValidTo: item.idLongTerm ? "" : item.idValidTo ? dateOnly(item.idValidTo) : "", idLongTerm: item.idLongTerm, address: item.address ?? "", phone: item.phone, relationToInsured: item.relationToInsured ?? undefined, bankName: item.bankName ?? undefined, bankAccountName: item.bankAccountName ?? undefined, bankAccountNo: item.bankAccountNo ?? undefined, paymentMethod: item.paymentMethod ?? undefined };
 }
 
 function mapAttachment(item: ClaimAttachment): ClaimUpload {
@@ -39,6 +39,7 @@ async function validateInput(input: CreateClaimCaseInput) {
   if (!event || event.insuredPersonId !== policyInsured.insuredPersonId) throw new Error("claim_event_not_found");
   const requiredRoles = ["insured", "applicant", "payee"];
   if (!requiredRoles.every((role) => input.parties.some((party) => party.role === role)) || input.parties.some((party) => !party.name.trim() || !party.idNo.trim() || !party.phone.trim())) throw new Error("claim_parties_incomplete");
+  if (input.parties.some((party) => party.idLongTerm && Boolean(party.idValidTo))) throw new Error("claim_identity_validity_conflict");
   const payee = input.parties.find((party) => party.role === "payee");
   if (!payee?.paymentMethod) throw new Error("claim_payment_method_required");
   if (payee.paymentMethod === "bank_transfer" && (!payee.bankName?.trim() || !payee.bankAccountName?.trim() || !payee.bankAccountNo?.trim())) throw new Error("claim_bank_information_incomplete");
@@ -46,12 +47,62 @@ async function validateInput(input: CreateClaimCaseInput) {
 }
 
 function partyData(claimCaseId: string, party: ClaimPartySnapshot) {
-  return { id: randomUUID(), claimCaseId, role: party.role, name: party.name.trim(), gender: party.gender, birthDate: optionalDate(party.birthDate), idType: party.idType, idNo: party.idNo.trim(), idValidFrom: optionalDate(party.idValidFrom), idValidTo: optionalDate(party.idValidTo), idLongTerm: party.idLongTerm, address: party.address?.trim() || null, phone: party.phone.trim(), relationToInsured: party.relationToInsured?.trim() || null, bankName: party.bankName?.trim() || null, bankAccountName: party.bankAccountName?.trim() || null, bankAccountNo: party.bankAccountNo?.trim() || null, paymentMethod: party.paymentMethod ?? null };
+  return { id: randomUUID(), claimCaseId, role: party.role, name: party.name.trim(), gender: party.gender, birthDate: optionalDate(party.birthDate), idType: party.idType, idNo: party.idNo.trim(), idValidFrom: optionalDate(party.idValidFrom), idValidTo: party.idLongTerm ? null : optionalDate(party.idValidTo), idLongTerm: party.idLongTerm, address: party.address?.trim() || null, phone: party.phone.trim(), relationToInsured: party.relationToInsured?.trim() || null, bankName: party.bankName?.trim() || null, bankAccountName: party.bankAccountName?.trim() || null, bankAccountNo: party.bankAccountNo?.trim() || null, paymentMethod: party.paymentMethod ?? null };
 }
 
 export async function listClaimCasesDb() {
   const items = await prisma.claimCase.findMany({ orderBy: { updatedAt: "desc" } });
   return Promise.all(items.map(hydrateCase));
+}
+
+export async function queryClaimCasesDb(input: {
+  id?: string;
+  caseNo?: string;
+  policyNo?: string;
+  insuredName?: string;
+  insuredIdNo?: string;
+  status?: ClaimCaseStatus;
+  reportDateFrom?: string;
+  reportDateTo?: string;
+  page?: number;
+  pageSize?: number;
+}) {
+  const caseNo = input.caseNo?.trim().toUpperCase();
+  const policyNo = input.policyNo?.trim().toUpperCase();
+  const insuredName = input.insuredName?.trim();
+  const insuredIdNo = input.insuredIdNo?.trim().toUpperCase();
+  const page = Math.max(1, input.page ?? 1);
+  const pageSize = Math.min(100, Math.max(1, input.pageSize ?? 20));
+
+  const [policyIds, insuredPersonIds] = await Promise.all([
+    policyNo
+      ? prisma.policy.findMany({ where: { policyNo: { equals: policyNo, mode: "insensitive" } }, select: { id: true } }).then((items) => items.map((item) => item.id))
+      : Promise.resolve<string[] | undefined>(undefined),
+    insuredName || insuredIdNo
+      ? prisma.insuredPerson.findMany({ where: { name: insuredName ? { contains: insuredName, mode: "insensitive" } : undefined, idNo: insuredIdNo ? { equals: insuredIdNo, mode: "insensitive" } : undefined }, select: { id: true } }).then((items) => items.map((item) => item.id))
+      : Promise.resolve<string[] | undefined>(undefined),
+  ]);
+
+  if ((policyIds && policyIds.length === 0) || (insuredPersonIds && insuredPersonIds.length === 0)) {
+    return { total: 0, page, pageSize, items: [] as ClaimCase[] };
+  }
+
+  const where = {
+    id: input.id,
+    caseNo: caseNo ? { equals: caseNo, mode: "insensitive" as const } : undefined,
+    policyId: policyIds ? { in: policyIds } : undefined,
+    insuredPersonId: insuredPersonIds ? { in: insuredPersonIds } : undefined,
+    status: input.status,
+    reportDate: input.reportDateFrom || input.reportDateTo ? {
+      gte: input.reportDateFrom ? new Date(`${input.reportDateFrom}T00:00:00.000Z`) : undefined,
+      lte: input.reportDateTo ? new Date(`${input.reportDateTo}T23:59:59.999Z`) : undefined,
+    } : undefined,
+  };
+  const [total, rows] = await Promise.all([
+    prisma.claimCase.count({ where }),
+    prisma.claimCase.findMany({ where, orderBy: { updatedAt: "desc" }, skip: (page - 1) * pageSize, take: pageSize }),
+  ]);
+  return { total, page, pageSize, items: await Promise.all(rows.map(hydrateCase)) };
 }
 
 export async function createClaimCaseDb(input: CreateClaimCaseInput) {

@@ -1,7 +1,7 @@
 import type { CalculationParameter as DbCalculationParameter, CalculationParameterDefinition as DbDefinition } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
 import type { CalculationParameterScope } from "./types.ts";
-import type { SaveCalculationParameterInput } from "./service.ts";
+import type { SaveCalculationParameterInput } from "./contracts.ts";
 
 function mapDefinition(item: DbDefinition) {
   return { parameterCode: item.parameterCode, parameterName: item.parameterName, valueType: item.valueType, unit: item.unit ?? undefined, applicableScopes: item.applicableScopes as CalculationParameterScope[], description: item.description ?? undefined };

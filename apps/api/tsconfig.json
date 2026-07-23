@@ -1,0 +1,24 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": false,
+    "outDir": "../../dist/nest",
+    "rootDir": "../..",
+    "incremental": false,
+    "isolatedModules": false,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "../../src/db/**/*.ts",
+    "../../src/assistant/**/*.ts",
+    "../../src/underwriting/**/*.ts",
+    "../../src/claims/**/*.ts"
+  ],
+  "exclude": ["../../src/**/*.tsx", "../../node_modules", "../../dist"]
+}

@@ -308,6 +308,33 @@ button {
   align-items: end;
 }
 
+.claim-query-form {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.claim-query-form .app-select,
+.claim-query-form .config-select-trigger {
+  width: 100%;
+}
+
+.claim-query-party-list {
+  display: grid;
+  gap: 16px;
+}
+
+.claim-readonly-note {
+  min-height: 120px;
+  margin: 12px 0 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #f8faff;
+  color: var(--text);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 label {
   display: grid;
   gap: 6px;
@@ -740,6 +767,41 @@ td:last-child {
   padding-right: 4px;
 }
 
+.claim-success-toast {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: min(420px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  padding: 13px 18px;
+  border: 1px solid #9bd3b5;
+  border-radius: 10px;
+  background: #effaf4;
+  color: #12633d;
+  box-shadow: 0 12px 30px rgba(27, 83, 56, 0.18);
+  transform: translateX(-50%);
+  animation: claim-toast-in 180ms ease-out;
+}
+
+.claim-success-toast > span {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 50%;
+  background: #1c8050;
+  color: #fff;
+}
+
+@keyframes claim-toast-in {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
 .claim-case-list-panel {
   margin-bottom: 14px;
 }
@@ -862,6 +924,161 @@ td:last-child {
 
 .app-combobox.disabled .app-combobox-control {
   background: #f5f7fa;
+}
+
+.app-date-picker {
+  position: relative;
+  min-width: 0;
+}
+
+.app-date-picker-control {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  height: 40px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.app-date-picker-control:focus-within {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(51, 102, 255, 0.12);
+}
+
+.app-date-picker-control.invalid {
+  border-color: #d9363e;
+  box-shadow: 0 0 0 2px rgba(217, 54, 62, 0.08);
+}
+
+.claim-registration-page .app-date-picker-control input,
+.app-date-picker-control input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.app-date-picker-control button {
+  height: 38px;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-radius: 0;
+  background: #fff;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.app-date-picker.disabled .app-date-picker-control,
+.app-date-picker.disabled .app-date-picker-control button {
+  background: #f5f7fa;
+  color: #637187;
+}
+
+.app-date-picker-popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 70;
+  width: 304px;
+  padding: 12px;
+  border: 1px solid #cbd6e8;
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(31, 49, 86, 0.18);
+}
+
+.app-date-picker-header,
+.app-date-picker-jump,
+.app-date-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-date-picker-header {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.app-date-picker-header > button {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-color: var(--border);
+  background: #fff;
+  color: var(--text);
+  font-size: 21px;
+}
+
+.app-date-picker-jump select {
+  height: 32px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+}
+
+.app-date-picker-weekdays,
+.app-date-picker-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.app-date-picker-weekdays span {
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.app-date-picker-days button {
+  width: 34px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+}
+
+.app-date-picker-days button:hover {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.app-date-picker-days button.outside {
+  color: #aab3c2;
+}
+
+.app-date-picker-days button.today {
+  box-shadow: inset 0 0 0 1px #8aabe8;
+}
+
+.app-date-picker-days button.selected {
+  background: var(--primary);
+  color: #fff;
+  box-shadow: none;
+}
+
+.app-date-picker-actions {
+  justify-content: flex-end;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.app-date-picker-actions button {
+  padding: 6px 12px;
 }
 
 .claim-wide-field {
@@ -1003,7 +1220,7 @@ td:last-child {
 }
 
 .claim-event-list table {
-  min-width: 1080px;
+  min-width: 1180px;
   table-layout: fixed;
 }
 
@@ -1848,6 +2065,22 @@ td:last-child {
   gap: 10px;
 }
 
+.assistant-input-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.assistant-stop-button {
+  border-color: #d65a61;
+  background: #fff;
+  color: #b52f38;
+}
+
+.assistant-stop-button:hover:not(:disabled) {
+  background: #fff2f3;
+}
+
 .assistant-textarea {
   width: 100%;
   min-height: 90px;
@@ -1893,6 +2126,7 @@ td:last-child {
   .summary-grid,
   .kv-grid,
   .query-form,
+  .claim-query-form,
   .config-editor-grid {
     grid-template-columns: 1fr;
   }

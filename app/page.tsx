@@ -4,8 +4,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { formatToolCall, type AssistantPlan, type AssistantToolCall } from "../src/assistant/policy-query-assistant";
 import type { RegisteredPageController } from "../src/assistant/page-controller";
 import type { PageRegistration, RegisteredRegion } from "../src/assistant/page-registry";
+import { apiFetch } from "../src/api/client";
 import type { CoveragePlan, PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
 import CalculationConfigPage from "./components/CalculationConfigPage";
+import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
 
 type MainTab = "policy" | "claim" | "claim_registration" | "calculation_config";
@@ -32,6 +34,8 @@ const INSURED_PAGE_SIZE = 10;
 const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
 const ASSISTANT_LIST_CONTEXT_LIMIT = 5;
 const MAX_ASSISTANT_EXECUTION_ROUNDS = 12;
+const MAX_ASSISTANT_HISTORY_ROUNDS = 8;
+const MAX_ASSISTANT_BACKEND_RESULTS = 4;
 const LLM_PROVIDER_STORAGE_KEY = "health-agent-llm-provider";
 const llmProviderOptions: Array<{ value: LlmProvider; label: string }> = [
   { value: "ollama", label: "本地模型" },
@@ -138,6 +142,10 @@ function formatInsuredRole(value?: string) {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function throwIfAssistantAborted(signal?: AbortSignal) {
+  if (signal?.aborted) throw new DOMException("assistant_execution_aborted", "AbortError");
 }
 
 function Pagination({
@@ -506,6 +514,7 @@ export default function Page() {
   const [llmProvider, setLlmProvider] = useState<LlmProvider>("ollama");
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantStopping, setAssistantStopping] = useState(false);
   const [assistantProgress, setAssistantProgress] = useState<string | null>(null);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
     {
@@ -536,7 +545,9 @@ export default function Page() {
   const drawerDataRef = useRef<PolicyDetailView | null>(null);
   const insuredPlanIdRef = useRef("");
   const calculationConfigControllerRef = useRef<RegisteredPageController | null>(null);
+  const claimQueryControllerRef = useRef<RegisteredPageController | null>(null);
   const claimRegistrationControllerRef = useRef<RegisteredPageController | null>(null);
+  const assistantAbortControllerRef = useRef<AbortController | null>(null);
 
   function updateInsuredPlanId(value: string) {
     insuredPlanIdRef.current = value;
@@ -601,7 +612,7 @@ export default function Page() {
     });
     params.set("page", String(page));
     params.set("pageSize", String(POLICY_PAGE_SIZE));
-    const response = await fetch(`/api/policies?${params.toString()}`);
+    const response = await apiFetch(`/api/policies?${params.toString()}`);
     const data: PageResult<PolicyListItem> = await response.json();
     policiesRef.current = data.items;
     setPolicies(data.items);
@@ -620,7 +631,7 @@ export default function Page() {
   async function loadPolicyInsureds(policyId: string, page = 1, coveragePlanId = insuredPlanIdRef.current) {
     const params = new URLSearchParams({ page: String(page), pageSize: String(INSURED_PAGE_SIZE) });
     if (coveragePlanId) params.set("coveragePlanId", coveragePlanId);
-    const response = await fetch(`/api/policies/${policyId}/insureds?${params.toString()}`);
+    const response = await apiFetch(`/api/policies/${policyId}/insureds?${params.toString()}`);
     const data: PageResult<PolicyInsuredView> = await response.json();
     setInsureds(data.items);
     setInsuredTotal(data.total);
@@ -633,7 +644,7 @@ export default function Page() {
     setDrawerTab(tab);
     setInsuredPage(1);
     updateInsuredPlanId("");
-    const response = await fetch(`/api/policies/${policyId}/full-view`);
+    const response = await apiFetch(`/api/policies/${policyId}/full-view`);
     const data: PolicyDetailView = await response.json();
     drawerDataRef.current = data;
     setDrawerData(data);
@@ -644,8 +655,8 @@ export default function Page() {
     return { detail: data, insuredResult };
   }
 
-  async function loadAssistantPageRegistry(pageId: string) {
-    const response = await fetch(`/api/assistant/registry?resource=page&pageId=${encodeURIComponent(pageId)}`);
+  async function loadAssistantPageRegistry(pageId: string, signal?: AbortSignal) {
+    const response = await apiFetch(`/api/assistant/registry?resource=page&view=compact&pageId=${encodeURIComponent(pageId)}`, { signal });
     const data = (await response.json()) as { page?: unknown };
     return data.page;
   }
@@ -659,16 +670,20 @@ export default function Page() {
     initialTab: MainTab = mainTab,
     executionOpenTabs = new Set(openTabs),
     previousOperationResult: unknown = null,
+    signal?: AbortSignal,
   ) {
+    throwIfAssistantAborted(signal);
     const nextFilters: PolicyFilters = { ...filtersRef.current };
     let currentPolicies = policiesRef.current;
     let executionTab = initialTab;
     let lastOperationResult: unknown = previousOperationResult;
     let openedPageId: string | null = null;
     const steps: string[] = [];
-    const registeredPageControllers: Record<string, RegisteredPageController | null> = {
-      calculation_config: calculationConfigControllerRef.current,
-      claim_registration: claimRegistrationControllerRef.current,
+    const getRegisteredPageController = (pageId: string) => {
+      if (pageId === "calculation_config") return calculationConfigControllerRef.current;
+      if (pageId === "claim_query") return claimQueryControllerRef.current;
+      if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
+      return null;
     };
 
     const fieldExecutors: Record<string, (value: string) => Promise<unknown>> = {};
@@ -717,7 +732,7 @@ export default function Page() {
           if (nextFilters.insuredName) params.set("insuredName", nextFilters.insuredName);
           if (nextFilters.insuredIdNo) params.set("insuredIdNo", nextFilters.insuredIdNo);
           const matchedInsureds = nextFilters.insuredName || nextFilters.insuredIdNo
-            ? await fetch(`/api/policies/${encodeURIComponent(policy.id)}/insureds?${params.toString()}`).then((response) => response.json() as Promise<PageResult<PolicyInsuredView>>)
+            ? await apiFetch(`/api/policies/${encodeURIComponent(policy.id)}/insureds?${params.toString()}`).then((response) => response.json() as Promise<PageResult<PolicyInsuredView>>)
             : null;
           return {
             policyId: policy.id,
@@ -788,6 +803,7 @@ export default function Page() {
     };
 
     for (const toolCall of toolCalls) {
+      throwIfAssistantAborted(signal);
       // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
       const requiredTab = toolCall.tool === "open_page" ? null : pageIdToMainTab(toolCall.args.pageId);
       if (requiredTab && (executionTab !== requiredTab || !executionOpenTabs.has(requiredTab))) {
@@ -796,6 +812,7 @@ export default function Page() {
         executionOpenTabs.add(requiredTab);
         steps.push(formatToolCall({ tool: "open_page", args: { pageId: toolCall.args.pageId } }));
         await delay(120);
+        throwIfAssistantAborted(signal);
       }
 
       if (toolCall.tool === "open_page") {
@@ -821,13 +838,17 @@ export default function Page() {
           setInsuredPage(1);
         }
         if (targetTab === "calculation_config") {
-          await registeredPageControllers.calculation_config?.executeAction("reset");
+          await getRegisteredPageController("calculation_config")?.executeAction("reset");
+        }
+        if (targetTab === "claim") {
+          await getRegisteredPageController("claim_query")?.executeAction("reset");
         }
         if (targetTab === "claim_registration") {
-          await registeredPageControllers.claim_registration?.executeAction("reset");
+          await getRegisteredPageController("claim_registration")?.executeAction("reset");
         }
 
         await delay(120);
+        throwIfAssistantAborted(signal);
         openMainTab(targetTab);
         executionTab = targetTab;
         executionOpenTabs.add(targetTab);
@@ -840,33 +861,36 @@ export default function Page() {
 
       if (toolCall.tool === "set_field") {
         const executor = fieldExecutors[`${toolCall.args.pageId}.${toolCall.args.fieldId}`];
-        const controller = registeredPageControllers[toolCall.args.pageId];
+        const controller = getRegisteredPageController(toolCall.args.pageId);
         lastOperationResult = executor
           ? await executor(toolCall.args.value)
           : controller
             ? await controller.setField(toolCall.args.fieldId, toolCall.args.value)
             : { type: "operation_error", reason: "field_executor_not_bound", pageId: toolCall.args.pageId, fieldId: toolCall.args.fieldId };
         await delay(180);
+        throwIfAssistantAborted(signal);
         continue;
       }
 
       if (toolCall.tool === "click_button") {
         const executor = pageActionExecutors[`${toolCall.args.pageId}.${toolCall.args.actionId}`];
-        const controller = registeredPageControllers[toolCall.args.pageId];
+        const controller = getRegisteredPageController(toolCall.args.pageId);
         lastOperationResult = executor
           ? await executor()
           : controller
             ? await controller.executeAction(toolCall.args.actionId)
             : { type: "operation_error", reason: "action_executor_not_bound", pageId: toolCall.args.pageId, actionId: toolCall.args.actionId };
         await delay(220);
+        throwIfAssistantAborted(signal);
         continue;
       }
 
       if (toolCall.tool === "click_list_row_action") {
-        const controller = registeredPageControllers[toolCall.args.pageId];
+        const controller = getRegisteredPageController(toolCall.args.pageId);
         if (controller) {
           lastOperationResult = await controller.executeRowAction(toolCall.args.actionId, toolCall.args.row);
           await delay(220);
+          throwIfAssistantAborted(signal);
           continue;
         }
         const selectedPolicy = currentPolicies[toolCall.args.row - 1];
@@ -895,7 +919,63 @@ export default function Page() {
             listResult: insuredResult ? buildInsuredListContext(insuredResult) : undefined,
           };
           await delay(220);
+          throwIfAssistantAborted(signal);
         }
+      }
+
+      if (toolCall.tool === "click_list_item_action") {
+        const controller = getRegisteredPageController(toolCall.args.pageId);
+        if (controller?.executeItemAction) {
+          lastOperationResult = await controller.executeItemAction(toolCall.args.actionId, toolCall.args.itemId);
+        } else if (toolCall.args.pageId === "policy_query") {
+          const selectedPolicy = currentPolicies.find((policy) => policy.id === toolCall.args.itemId);
+          const drawerTabMap = {
+            view_detail: "basic",
+            view_benefits: "benefits",
+            view_insureds: "insureds",
+          } as const;
+          const targetTab = drawerTabMap[toolCall.args.actionId as keyof typeof drawerTabMap];
+          if (!targetTab) {
+            lastOperationResult = {
+              type: "operation_error",
+              reason: "item_action_executor_not_bound",
+              pageId: toolCall.args.pageId,
+              actionId: toolCall.args.actionId,
+              itemId: toolCall.args.itemId,
+            };
+          } else if (!selectedPolicy) {
+            lastOperationResult = {
+              type: "operation_error",
+              reason: "item_not_found",
+              pageId: toolCall.args.pageId,
+              itemId: toolCall.args.itemId,
+            };
+          } else {
+            const { detail, insuredResult } = await openPolicyDrawer(selectedPolicy.id, targetTab);
+            openedPageId = "policy_detail";
+            lastOperationResult = {
+              type: "open_policy_drawer",
+              policyId: selectedPolicy.id,
+              tab: toolCall.args.actionId,
+              policyNo: detail.policy.policyNo,
+              policyName: detail.policy.policyName,
+              coveragePlanCount: detail.coveragePlans.length,
+              coveragePlans: detail.coveragePlans.map((plan) => ({ id: plan.id, code: plan.planCode, name: plan.planName })),
+              insuredCount: detail.insuredCount,
+              listResult: insuredResult ? buildInsuredListContext(insuredResult) : undefined,
+            };
+          }
+        } else {
+          lastOperationResult = {
+            type: "operation_error",
+            reason: "item_action_executor_not_bound",
+            pageId: toolCall.args.pageId,
+            actionId: toolCall.args.actionId,
+            itemId: toolCall.args.itemId,
+          };
+        }
+        await delay(220);
+        throwIfAssistantAborted(signal);
       }
     }
 
@@ -912,6 +992,7 @@ export default function Page() {
       Object.entries(runtimeOptionProviders).map(([fieldKey, provider]) => [fieldKey, provider()]),
     ) satisfies RuntimeFieldOptions;
     Object.assign(runtimeFieldOptions, calculationConfigControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, claimQueryControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimRegistrationControllerRef.current?.getRuntimeFieldOptions() ?? {});
 
     return {
@@ -935,6 +1016,8 @@ export default function Page() {
       : text;
     const selectedProvider = llmProvider;
     const selectedProviderLabel = llmProviderOptions.find((option) => option.value === selectedProvider)?.label ?? selectedProvider;
+    const abortController = new AbortController();
+    assistantAbortControllerRef.current = abortController;
 
     appendAssistantMessage({
       id: `user-${Date.now()}`,
@@ -945,6 +1028,7 @@ export default function Page() {
     setAssistantPendingTask(null);
 
     setAssistantBusy(true);
+    setAssistantStopping(false);
     setAssistantProgress("正在等待 LLM 生成本轮计划。");
 
     try {
@@ -959,7 +1043,7 @@ export default function Page() {
       } | undefined = pendingTask?.context;
       const operationHistory: Array<{
         toolCalls: AssistantToolCall[];
-      }> = [...(context?.history ?? [])];
+      }> = [...(context?.history ?? [])].slice(-MAX_ASSISTANT_HISTORY_ROUNDS);
       let currentPageRegistry: unknown = context?.currentPageRegistry;
       let currentPage: MainTab = mainTab;
       let currentOpenTabs = new Set(openTabs);
@@ -980,14 +1064,16 @@ export default function Page() {
         steps: string[];
       } | null = null;
       let executionRoundLimitReached = false;
-      let backendToolResults: unknown[] = [...(context?.backendToolResults ?? [])];
+      let backendToolResults: unknown[] = [...(context?.backendToolResults ?? [])].slice(-MAX_ASSISTANT_BACKEND_RESULTS);
 
       // 复杂配置通常需要页面发现、查询、选择对象、打开编辑器、填写及保存等多个阶段。
       for (let round = 0; round < MAX_ASSISTANT_EXECUTION_ROUNDS; round += 1) {
-        const response = await fetch("/api/assistant/plan", {
+        throwIfAssistantAborted(abortController.signal);
+        const response = await apiFetch("/api/assistant/plan", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: effectiveText, provider: selectedProvider, context }),
+          signal: abortController.signal,
         });
 
         if (!response.ok) {
@@ -1004,7 +1090,7 @@ export default function Page() {
         }
 
         plan = (await response.json()) as AssistantPlan;
-        backendToolResults = plan.backendToolResults ?? backendToolResults;
+        backendToolResults = (plan.backendToolResults ?? backendToolResults).slice(-MAX_ASSISTANT_BACKEND_RESULTS);
         lastExecutedPlan = plan;
         setAssistantRecognized(plan.recognized ?? []);
         const thought = plan.thought ?? plan.reply;
@@ -1013,7 +1099,8 @@ export default function Page() {
 
         if (plan.toolCalls.length > 0) {
           setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
-          const execution = await executeAssistantTools(plan.toolCalls, currentPage, currentOpenTabs, lastExecutionResult?.executionResult);
+          const execution = await executeAssistantTools(plan.toolCalls, currentPage, currentOpenTabs, lastExecutionResult?.executionResult, abortController.signal);
+          throwIfAssistantAborted(abortController.signal);
           lastExecutionResult = execution;
           currentPage = execution.currentPage;
           currentOpenTabs = execution.openTabs;
@@ -1028,7 +1115,7 @@ export default function Page() {
             );
           }
           if (execution.openedPageId) {
-            const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId);
+            const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId, abortController.signal);
             if (openedPageRegistry && typeof openedPageRegistry === "object") {
               currentPageRegistry = applyRuntimeFieldOptions(openedPageRegistry, execution.runtimeFieldOptions);
               const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
@@ -1050,9 +1137,9 @@ export default function Page() {
             context: {
               currentPagePath,
               currentPageRegistry,
-              history: operationHistory,
+              history: operationHistory.slice(-MAX_ASSISTANT_HISTORY_ROUNDS),
               lastOperationResult: lastExecutionResult?.executionResult,
-              backendToolResults,
+              backendToolResults: backendToolResults.slice(-MAX_ASSISTANT_BACKEND_RESULTS),
             },
           });
           break;
@@ -1069,9 +1156,9 @@ export default function Page() {
         context = {
           currentPagePath,
           currentPageRegistry,
-          history: operationHistory,
+          history: operationHistory.slice(-MAX_ASSISTANT_HISTORY_ROUNDS),
           lastOperationResult: lastExecutionResult.executionResult,
-          backendToolResults,
+          backendToolResults: backendToolResults.slice(-MAX_ASSISTANT_BACKEND_RESULTS),
         };
       }
 
@@ -1094,6 +1181,8 @@ export default function Page() {
             ? "已更新页面筛选字段并刷新对应结果。"
           : lastToolCall?.tool === "click_list_row_action"
             ? `已执行：${formatToolCall(lastToolCall)}。`
+            : lastToolCall?.tool === "click_list_item_action"
+              ? `已执行：${formatToolCall(lastToolCall)}。`
             : lastExecutedPlan.decision === "finish"
               ? "任务已结束。"
               : "已执行当前步骤。";
@@ -1106,10 +1195,37 @@ export default function Page() {
         systemNote: resultSummary,
         steps: allSteps,
       });
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") {
+        setAssistantRecognized([]);
+        appendAssistantMessage({
+          id: `assistant-stopped-${Date.now()}`,
+          role: "assistant",
+          content: "已手动停止本次任务。已完成的页面操作会保留，后续步骤不再执行。",
+          source: "系统",
+        });
+        return;
+      }
+      appendAssistantMessage({
+        id: `assistant-error-${Date.now()}`,
+        role: "assistant",
+        content: "执行过程中出现异常，本次任务已停止。",
+        source: "系统",
+      });
     } finally {
+      if (assistantAbortControllerRef.current === abortController) assistantAbortControllerRef.current = null;
       setAssistantBusy(false);
+      setAssistantStopping(false);
       setAssistantProgress(null);
     }
+  }
+
+  function stopAssistantExecution() {
+    const controller = assistantAbortControllerRef.current;
+    if (!controller || controller.signal.aborted) return;
+    setAssistantStopping(true);
+    setAssistantProgress("正在停止当前任务，已完成的操作将保留。");
+    controller.abort();
   }
 
   const totalPolicyPages = Math.max(1, Math.ceil(policyTotal / POLICY_PAGE_SIZE));
@@ -1151,7 +1267,6 @@ export default function Page() {
               </button>
               <div className={`dropdown ${claimMenuOpen ? "" : "hidden"}`}>
                 <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>
-                <button className="dropdown-item" onClick={() => { openMainTab("claim"); setClaimMenuOpen(false); }}>案件查询</button>
               </div>
             </div>
           </nav>
@@ -1360,11 +1475,7 @@ export default function Page() {
         </section>
 
         <section className={`page-section ${openTabs.includes("claim") && mainTab === "claim" ? "" : "hidden"}`}>
-          <section className="panel empty-state">
-            <h3>案件查询</h3>
-            <p>该功能入口已预留，当前阶段暂未接入案件数据与查询条件。</p>
-            <p className="muted">后续会在这里承接理赔受理、案件检索、详情查看和理算结果联查。</p>
-          </section>
+          <ClaimQueryPage ref={claimQueryControllerRef} />
         </section>
 
         <section className={`page-section ${openTabs.includes("claim_registration") && mainTab === "claim_registration" ? "" : "hidden"}`}>
@@ -1479,9 +1590,12 @@ export default function Page() {
               }
             }}
           />
-          <button type="button" onClick={() => void handleAssistantSubmit()} disabled={assistantBusy}>
-            {assistantBusy ? "执行中..." : "执行"}
-          </button>
+          <div className="assistant-input-actions">
+            {assistantBusy ? <button type="button" className="assistant-stop-button" onClick={stopAssistantExecution} disabled={assistantStopping}>{assistantStopping ? "停止中…" : "停止"}</button> : null}
+            <button type="button" onClick={() => void handleAssistantSubmit()} disabled={assistantBusy}>
+              {assistantBusy ? "执行中..." : "执行"}
+            </button>
+          </div>
         </div>
       </section>
     </>

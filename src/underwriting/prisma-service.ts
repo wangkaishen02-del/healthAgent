@@ -1,7 +1,7 @@
 import type { CoveragePlan as DbCoveragePlan, InsuredPerson as DbInsuredPerson, Policy as DbPolicy, PolicyBenefit as DbPolicyBenefit, PolicyInsured as DbPolicyInsured, PolicyProduct as DbPolicyProduct } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
 import type { CalculationConfigCatalog, CoveragePlan, InsuredPerson, PageResult, Policy, PolicyBenefit, PolicyDetailView, PolicyInsuredView, PolicyListItem, PolicyProduct, PolicyProductView, PolicyStatus } from "./types.ts";
-import type { ListPoliciesQuery, ListPolicyInsuredsQuery, QueryUnderwritingInput } from "./service.ts";
+import type { ListPoliciesQuery, ListPolicyInsuredsQuery, QueryUnderwritingInput } from "./contracts.ts";
 
 function dateOnly(value: Date) { return value.toISOString().slice(0, 10); }
 function optionalDate(value: Date | null) { return value ? dateOnly(value) : undefined; }

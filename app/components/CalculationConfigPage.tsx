@@ -2,6 +2,7 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
+import { apiFetch } from "../../src/api/client";
 import type {
   CalculationConfigCatalog,
   CalculationConfigTarget,
@@ -297,7 +298,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
 
   useEffect(() => {
     dataReadyRef.current = (async () => {
-      const response = await fetch("/api/calculation-parameters", { cache: "no-store" });
+      const response = await apiFetch("/api/calculation-parameters", { cache: "no-store" });
       const data = await response.json() as {
         catalog: CalculationConfigCatalog;
         policies: Policy[];
@@ -436,7 +437,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     }
     setBusy(true);
     setMessage("");
-    const response = await fetch("/api/calculation-parameters", {
+    const response = await apiFetch("/api/calculation-parameters", {
       method: currentEditor.id ? "PUT" : "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...currentEditor, scope: target.scope, targetId: target.target.id }),
@@ -465,7 +466,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
 
   async function removeParameter(id: string) {
     setBusy(true);
-    const response = await fetch(`/api/calculation-parameters?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/calculation-parameters?id=${encodeURIComponent(id)}`, { method: "DELETE" });
     setBusy(false);
     if (!response.ok) {
       setMessage("删除失败，请稍后重试。");
