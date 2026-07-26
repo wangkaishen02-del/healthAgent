@@ -28,7 +28,7 @@ export class ClaimRegistrationsController {
   async list(@Query() query: Record<string, string | undefined>) {
     const filterKeys = ["id", "caseNo", "policyNo", "insuredName", "insuredIdNo", "status", "reportDateFrom", "reportDateTo", "page", "pageSize"];
     if (!filterKeys.some((key) => query[key] !== undefined)) return { items: await this.claims.listCases() };
-    if (query.status && !["registered", "submitted", "cancelled"].includes(query.status)) {
+    if (query.status && !["registered", "processing", "completed", "cancelled"].includes(query.status)) {
       throw new BadRequestException("invalid_claim_status");
     }
     return this.claims.queryCases({
@@ -79,7 +79,7 @@ export class ClaimRegistrationsController {
     @Body() body: { id?: unknown; action?: unknown },
     @Headers("idempotency-key") operationKey?: string,
   ) {
-    if (!body || typeof body.id !== "string" || (body.action !== "submit" && body.action !== "cancel")) {
+    if (!body || typeof body.id !== "string" || !["submit", "complete", "cancel"].includes(String(body.action))) {
       throw new BadRequestException("invalid_claim_action");
     }
     try {
@@ -87,7 +87,10 @@ export class ClaimRegistrationsController {
         `claim_case:${body.action}`,
         operationKey,
         body,
-        () => this.claims.changeCaseStatus(body.id as string, body.action === "submit" ? "submitted" : "cancelled"),
+        () => this.claims.changeCaseStatus(
+          body.id as string,
+          body.action === "submit" ? "processing" : body.action === "complete" ? "completed" : "cancelled",
+        ),
       );
       if (!result) throw new NotFoundException("claim_case_not_found");
       return result;

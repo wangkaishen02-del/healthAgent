@@ -1,5 +1,6 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Inject, InternalServerErrorException, NotFoundException, Post, Put, Query } from "@nestjs/common";
 import type { SaveCalculationParameterInput } from "../../../../src/underwriting/contracts.ts";
+import type { FormulaStep, CalculationVariableCategory, AutomationValueType } from "../../../../src/calculation/automation-types.ts";
 import type { CalculationParameterScope } from "../../../../src/underwriting/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { UnderwritingService } from "../underwriting/underwriting.service.ts";
@@ -102,5 +103,91 @@ export class CalculationController {
         return { success: true };
       },
     );
+  }
+}
+
+const variableCategories: CalculationVariableCategory[] = ["bill", "event", "case", "ledger", "benefit", "custom"];
+const automationValueTypes: AutomationValueType[] = ["number", "boolean"];
+
+@Controller("automatic-calculation")
+export class AutomaticCalculationController {
+  constructor(@Inject(CalculationService) private readonly calculation: CalculationService) {}
+
+  @Get()
+  configuration(@Query("policyId") policyId?: string, @Query("claimCaseId") claimCaseId?: string) {
+    if (!policyId) throw new BadRequestException("policyId is required");
+    return this.calculation.automationConfiguration(policyId, claimCaseId);
+  }
+
+  @Post("variables")
+  saveVariable(@Body() body: Record<string, unknown>) {
+    if (typeof body.policyId !== "string"
+      || !variableCategories.includes(body.category as CalculationVariableCategory)
+      || typeof body.variableName !== "string"
+      || !body.variableName.trim()
+      || !automationValueTypes.includes(body.valueType as AutomationValueType)) {
+      throw new BadRequestException("invalid_variable");
+    }
+    return this.calculation.saveAutomationVariable({
+      id: typeof body.id === "number" ? body.id : undefined,
+      policyId: body.policyId,
+      category: body.category as CalculationVariableCategory,
+      variableName: body.variableName,
+      valueType: body.valueType as AutomationValueType,
+      timeRange: ["year", "month", "day"].includes(body.timeRange as string) ? body.timeRange as "year" | "month" | "day" : undefined,
+      responsibilityRange: ["benefit", "product", "plan", "event"].includes(body.responsibilityRange as string) ? body.responsibilityRange as "benefit" | "product" | "plan" | "event" : undefined,
+      defaultValue: typeof body.defaultValue === "string" ? body.defaultValue : undefined,
+      enabled: body.enabled !== false,
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "variable_save_failed"); });
+  }
+
+  @Post("formulas")
+  saveFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.policyId !== "string"
+      || typeof body.benefitId !== "string"
+      || typeof body.matchExpression !== "string"
+      || !Array.isArray(body.steps)) throw new BadRequestException("invalid_formula");
+    return this.calculation.saveBenefitFormula({
+      policyId: body.policyId,
+      benefitId: body.benefitId,
+      matchExpression: body.matchExpression,
+      steps: body.steps as FormulaStep[],
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "formula_save_failed"); });
+  }
+
+  @Delete("formulas")
+  async removeFormula(@Query("policyId") policyId?: string, @Query("benefitId") benefitId?: string) {
+    if (!policyId || !benefitId) throw new BadRequestException("policyId and benefitId are required");
+    await this.calculation.deleteBenefitFormula(policyId, benefitId);
+    return { success: true };
+  }
+
+  @Post("bills")
+  saveBill(@Body() body: Record<string, unknown>) {
+    if (typeof body.claimCaseId !== "string"
+      || !body.billData || typeof body.billData !== "object" || Array.isArray(body.billData)
+      || !body.customValues || typeof body.customValues !== "object" || Array.isArray(body.customValues)
+      || !Array.isArray(body.selectedBenefitIds)) throw new BadRequestException("invalid_claim_bill");
+    return this.calculation.saveClaimBill({
+      id: typeof body.id === "string" ? body.id : undefined,
+      claimCaseId: body.claimCaseId,
+      billData: body.billData as Record<string, unknown>,
+      customValues: body.customValues as Record<string, unknown>,
+      selectedBenefitIds: body.selectedBenefitIds.filter((item): item is string => typeof item === "string"),
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "bill_save_failed"); });
+  }
+
+  @Delete("bills")
+  async removeBill(@Query("id") id?: string) {
+    if (!id) throw new BadRequestException("id is required");
+    if (!await this.calculation.deleteClaimBill(id)) throw new NotFoundException("claim_bill_not_found");
+    return { success: true };
+  }
+
+  @Post("run")
+  run(@Body() body: Record<string, unknown>) {
+    if (typeof body.claimCaseId !== "string") throw new BadRequestException("claimCaseId is required");
+    return this.calculation.runAutomaticCalculation(body.claimCaseId, body.commit === true)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "automatic_calculation_failed"); });
   }
 }

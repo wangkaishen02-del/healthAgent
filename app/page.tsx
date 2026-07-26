@@ -7,10 +7,11 @@ import type { PageRegistration, RegisteredRegion } from "../src/assistant/page-r
 import { apiFetch } from "../src/api/client";
 import type { CoveragePlan, PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
 import CalculationConfigPage from "./components/CalculationConfigPage";
+import ClaimEntryCalculationPage from "./components/ClaimEntryCalculationPage";
 import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
 
-type MainTab = "policy" | "claim" | "claim_registration" | "calculation_config";
+type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "calculation_config";
 type DrawerTab = "basic" | "benefits" | "insureds";
 type LlmProvider = "ollama" | "deepseek";
 type PolicyFilters = {
@@ -1307,6 +1308,7 @@ export default function Page() {
               </button>
               <div className={`dropdown ${claimMenuOpen ? "" : "hidden"}`}>
                 <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>
+                <button className="dropdown-item" onClick={() => { openMainTab("claim_entry_calculation"); setClaimMenuOpen(false); }}>录入与理算</button>
               </div>
             </div>
           </nav>
@@ -1331,6 +1333,8 @@ export default function Page() {
                 ? "案件查询"
                 : tab === "claim_registration"
                   ? "受理立案"
+                  : tab === "claim_entry_calculation"
+                    ? "录入与理算"
                   : "保单理算配置";
             return (
               <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
@@ -1474,7 +1478,7 @@ export default function Page() {
                   <span className={`status-badge ${drawerData?.policy.policyStatus ?? ""}`}>
                     {formatPolicyStatus(drawerData?.policy.policyStatus)}
                   </span>
-                  <button className="secondary-button" onClick={() => setDrawerOpen(false)}>关闭</button>
+                  <button className="page-back-button" onClick={() => setDrawerOpen(false)}>返回上一页</button>
                 </div>
               </div>
               <div className="drawer-body">
@@ -1520,6 +1524,10 @@ export default function Page() {
 
         <section className={`page-section ${openTabs.includes("claim_registration") && mainTab === "claim_registration" ? "" : "hidden"}`}>
           <ClaimRegistrationPage ref={claimRegistrationControllerRef} />
+        </section>
+
+        <section className={`page-section ${openTabs.includes("claim_entry_calculation") && mainTab === "claim_entry_calculation" ? "" : "hidden"}`}>
+          <ClaimEntryCalculationPage />
         </section>
 
         <section className={`page-section ${openTabs.includes("calculation_config") && mainTab === "calculation_config" ? "" : "hidden"}`}>

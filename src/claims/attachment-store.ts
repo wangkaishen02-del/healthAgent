@@ -28,3 +28,7 @@ export function storeClaimUpload(input: {
 export function removeClaimUpload(uploadId: string) {
   return uploadedFiles.delete(uploadId);
 }
+
+export function getClaimUpload(uploadId: string) {
+  return uploadedFiles.get(uploadId);
+}

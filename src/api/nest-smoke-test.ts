@@ -64,6 +64,10 @@ try {
   });
   assert.equal(uploadResponse.status, 201, "attachment upload should return 201");
   const upload = await uploadResponse.json() as { uploadId: string };
+  const previewResponse = await fetch(`${baseUrl}/api/claim-attachments?uploadId=${encodeURIComponent(upload.uploadId)}`);
+  assert.equal(previewResponse.status, 200, "attachment preview should return 200");
+  assert.equal(previewResponse.headers.get("content-type"), "image/png", "attachment preview should preserve content type");
+  assert.equal((await previewResponse.arrayBuffer()).byteLength, 3, "attachment preview should return original bytes");
   const deleteUrl = `${baseUrl}/api/claim-attachments?uploadId=${encodeURIComponent(upload.uploadId)}`;
   const deleteResponse = await fetch(deleteUrl, {
     method: "DELETE",

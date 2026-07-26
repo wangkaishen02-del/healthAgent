@@ -16,6 +16,7 @@
     "test:assistant-graph": "LANGGRAPH_CHECKPOINTER=memory node --import tsx src/assistant/assistant-graph-smoke-test.ts",
     "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",
     "test:api": "tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
+    "test:auto-calculation": "tsx --tsconfig apps/api/tsconfig.json src/api/automatic-calculation-smoke-test.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",

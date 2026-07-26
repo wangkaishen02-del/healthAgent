@@ -65,7 +65,8 @@ enum CalculationParameterValueType {
 
 enum ClaimCaseStatus {
   registered
-  submitted
+  processing
+  completed
   cancelled
 }
 
@@ -369,6 +370,108 @@ model ClaimAttachment {
   @@index([claimCaseId], map: "idx_claim_attachment_case_id")
   @@index([category], map: "idx_claim_attachment_category")
   @@map("claim_attachment")
+}
+
+model CalculationVariableDefinition {
+  id           Int      @id @default(autoincrement())
+  policyId     String   @map("policy_id") @db.VarChar(50)
+  category     String   @db.VarChar(30)
+  variableName String   @map("variable_name") @db.VarChar(100)
+  valueType    String   @map("value_type") @db.VarChar(30)
+  unit         String?  @db.VarChar(30)
+  timeRange    String?  @map("time_range") @db.VarChar(20)
+  responsibilityRange String? @map("responsibility_range") @db.VarChar(30)
+  baseName     String?  @map("base_name") @db.VarChar(100)
+  defaultValue String?  @map("default_value") @db.Text
+  description  String?  @db.Text
+  custom       Boolean  @default(true)
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([policyId, variableName], map: "uk_calc_variable_policy_name")
+  @@index([policyId, category], map: "idx_calc_variable_policy_category")
+  @@map("calculation_variable_definition")
+}
+
+model BenefitCalculationFormula {
+  id              Int      @id @default(autoincrement())
+  policyId        String   @map("policy_id") @db.VarChar(50)
+  benefitId       String   @unique @map("benefit_id") @db.VarChar(50)
+  formulaName     String   @map("formula_name") @db.VarChar(150)
+  matchExpression String?  @map("match_expression") @db.Text
+  steps           Json
+  enabled         Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([policyId], map: "idx_benefit_formula_policy")
+  @@map("benefit_calculation_formula")
+}
+
+model ClaimBill {
+  id                 String   @id @default(uuid()) @db.VarChar(50)
+  claimCaseId        String   @map("claim_case_id") @db.VarChar(50)
+  billData           Json     @map("bill_data")
+  customValues       Json     @map("custom_values")
+  selectedBenefitIds Json     @map("selected_benefit_ids")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([claimCaseId], map: "idx_claim_bill_case")
+  @@map("claim_bill")
+}
+
+model ClaimCalculationRun {
+  id           String    @id @default(uuid()) @db.VarChar(50)
+  claimCaseId  String    @map("claim_case_id") @db.VarChar(50)
+  runNo        String    @unique @map("run_no") @db.VarChar(50)
+  status       String    @db.VarChar(30)
+  totalAmount  Decimal   @map("total_amount") @db.Decimal(18, 2)
+  resultData   Json      @map("result_data")
+  committedAt  DateTime? @map("committed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([claimCaseId, createdAt], map: "idx_calc_run_case_created")
+  @@map("claim_calculation_run")
+}
+
+model ClaimLedgerBalance {
+  id              String   @id @default(uuid()) @db.VarChar(50)
+  policyId        String   @map("policy_id") @db.VarChar(50)
+  insuredPersonId String   @map("insured_person_id") @db.VarChar(50)
+  benefitId       String   @map("benefit_id") @db.VarChar(50)
+  ledgerCode      String   @map("ledger_code") @db.VarChar(80)
+  ledgerName      String   @map("ledger_name") @db.VarChar(100)
+  periodYear      Int      @map("period_year")
+  usedAmount      Decimal  @default(0) @map("used_amount") @db.Decimal(18, 2)
+  updatedAt       DateTime @updatedAt @map("updated_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([policyId, insuredPersonId, benefitId, ledgerCode, periodYear], map: "uk_claim_ledger_balance")
+  @@index([insuredPersonId, periodYear], map: "idx_claim_ledger_person_year")
+  @@map("claim_ledger_balance")
+}
+
+model ClaimLedgerEntry {
+  id              String   @id @default(uuid()) @db.VarChar(50)
+  calculationRunId String  @map("calculation_run_id") @db.VarChar(50)
+  claimCaseId     String   @map("claim_case_id") @db.VarChar(50)
+  billId          String?  @map("bill_id") @db.VarChar(50)
+  policyId        String   @map("policy_id") @db.VarChar(50)
+  insuredPersonId String   @map("insured_person_id") @db.VarChar(50)
+  benefitId       String   @map("benefit_id") @db.VarChar(50)
+  ledgerCode      String   @map("ledger_code") @db.VarChar(80)
+  ledgerName      String   @map("ledger_name") @db.VarChar(100)
+  periodYear      Int      @map("period_year")
+  openingAmount   Decimal  @map("opening_amount") @db.Decimal(18, 2)
+  changeAmount    Decimal  @map("change_amount") @db.Decimal(18, 2)
+  closingAmount   Decimal  @map("closing_amount") @db.Decimal(18, 2)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([claimCaseId], map: "idx_claim_ledger_entry_case")
+  @@index([insuredPersonId, benefitId, periodYear], map: "idx_claim_ledger_entry_person_benefit")
+  @@map("claim_ledger_entry")
 }
 
 model IdempotencyRecord {

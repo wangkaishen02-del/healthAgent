@@ -1,6 +1,6 @@
 import type { Gender } from "../underwriting/types.ts";
 
-export type ClaimCaseStatus = "registered" | "submitted" | "cancelled";
+export type ClaimCaseStatus = "registered" | "processing" | "completed" | "cancelled";
 export type ClaimPartyRole = "insured" | "applicant" | "payee";
 export type ClaimEventType = "disease" | "accident" | "other";
 export type ClaimReportChannel = "online" | "phone" | "counter" | "other";

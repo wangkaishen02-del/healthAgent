@@ -1,6 +1,7 @@
-import { BadRequestException, Body, Controller, Delete, Headers, Inject, NotFoundException, Post, Query, UploadedFile, UseInterceptors } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Inject, NotFoundException, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
-import { removeClaimUpload, storeClaimUpload } from "../../../../src/claims/attachment-store.ts";
+import type { Response } from "express";
+import { getClaimUpload, removeClaimUpload, storeClaimUpload } from "../../../../src/claims/attachment-store.ts";
 import type { ClaimAttachmentCategory } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 
@@ -9,6 +10,23 @@ const categories: ClaimAttachmentCategory[] = ["application", "identity", "medic
 @Controller("claim-attachments")
 export class AttachmentsController {
   constructor(@Inject(IdempotencyService) private readonly idempotency: IdempotencyService) {}
+
+  @Get()
+  preview(
+    @Query("uploadId") uploadId: string | undefined,
+    @Res({ passthrough: true }) response: Response,
+  ) {
+    if (!uploadId) throw new BadRequestException("uploadId is required");
+    const stored = getClaimUpload(uploadId);
+    if (!stored) throw new NotFoundException("attachment_not_found");
+    response.set({
+      "Content-Type": stored.upload.mimeType,
+      "Content-Length": stored.data.byteLength,
+      "Content-Disposition": `inline; filename*=UTF-8''${encodeURIComponent(stored.upload.fileName)}`,
+      "Cache-Control": "private, max-age=300",
+    });
+    return new StreamableFile(Buffer.from(stored.data));
+  }
 
   @Post()
   @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))

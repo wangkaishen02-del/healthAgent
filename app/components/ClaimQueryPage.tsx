@@ -21,8 +21,8 @@ type DetailTab = "basic" | "parties" | "event" | "attachments";
 
 const PAGE_SIZE = 10;
 const EMPTY_FILTERS: ClaimFilters = { caseNo: "", policyNo: "", insuredName: "", insuredIdNo: "", status: "", reportDateFrom: "", reportDateTo: "" };
-const statusLabels: Record<ClaimCaseStatus, string> = { registered: "已立案", submitted: "已提交", cancelled: "已撤件" };
-const statusOptions: AppSelectOption<ClaimFilters["status"]>[] = [{ value: "", label: "全部状态" }, { value: "registered", label: "已立案" }, { value: "submitted", label: "已提交" }, { value: "cancelled", label: "已撤件" }];
+const statusLabels: Record<ClaimCaseStatus, string> = { registered: "受理中", processing: "处理中", completed: "已结案", cancelled: "已撤件" };
+const statusOptions: AppSelectOption<ClaimFilters["status"]>[] = [{ value: "", label: "全部状态" }, { value: "registered", label: "受理中" }, { value: "processing", label: "处理中" }, { value: "completed", label: "已结案" }, { value: "cancelled", label: "已撤件" }];
 const roleLabels: Record<ClaimPartySnapshot["role"], string> = { insured: "被保人", applicant: "申请人", payee: "领款人" };
 const eventTypeLabels = { disease: "疾病", accident: "意外", other: "其他" } as const;
 const reportChannelLabels = { online: "线上报案", phone: "电话报案", counter: "柜面报案", other: "其他" } as const;
@@ -163,7 +163,7 @@ const ClaimQueryPage = forwardRef<RegisteredPageController>(function ClaimQueryP
       <div className="pagination"><span className="pagination-info">第 {page} / {totalPages} 页，共 {total} 条</span><button className="page-btn" disabled={page <= 1 || busy} onClick={() => void search(filters, page - 1)}>上一页</button><button className="page-btn" disabled={page >= totalPages || busy} onClick={() => void search(filters, page + 1)}>下一页</button></div></div>
     </section>
 
-    <div className={`drawer-overlay ${detail ? "open" : ""}`} aria-hidden={!detail}><aside className="drawer-panel"><div className="drawer-header"><div><div className="section-title">案件详情（只读）</div><div className="muted">{detail ? `${detail.caseNo} ｜ ${statusLabels[detail.status]}` : ""}</div></div><button className="secondary-button" type="button" onClick={() => setDetail(null)}>关闭</button></div>
+    <div className={`drawer-overlay ${detail ? "open" : ""}`} aria-hidden={!detail}><aside className="drawer-panel"><div className="drawer-header"><div><div className="section-title">案件详情（只读）</div><div className="muted">{detail ? `${detail.caseNo} ｜ ${statusLabels[detail.status]}` : ""}</div></div><button className="page-back-button" type="button" onClick={() => setDetail(null)}>返回上一页</button></div>
       {detail ? <div className="drawer-body"><div className="drawer-tabs">{([['basic', '基本信息'], ['parties', '关系人'], ['event', '事件信息'], ['attachments', '影像资料']] as Array<[DetailTab, string]>).map(([value, label]) => <button type="button" className={`detail-tab ${detailTab === value ? "active" : ""}`} key={value} onClick={() => setDetailTab(value)}>{label}</button>)}</div><div className="drawer-content"><CaseDetail item={detail} tab={detailTab} /></div></div> : null}
     </aside></div>
   </>;

@@ -121,7 +121,7 @@ export async function createClaimCaseDb(input: CreateClaimCaseInput) {
 export async function updateClaimCaseDb(id: string, input: CreateClaimCaseInput) {
   const current = await prisma.claimCase.findUnique({ where: { id } });
   if (!current) return null;
-  if (current.status !== "registered") throw new Error("claim_case_not_editable");
+  if (current.status !== "registered" && current.status !== "processing") throw new Error("claim_case_not_editable");
   const { policy, policyInsured } = await validateInput(input);
   await prisma.$transaction(async (tx) => {
     await tx.claimCase.update({ where: { id }, data: { policyId: policy.id, policyInsuredId: policyInsured.id, insuredPersonId: policyInsured.insuredPersonId, eventId: input.eventId, reportDate: new Date(`${input.reportDate}T00:00:00.000Z`), reportChannel: input.reportChannel, remark: input.remark?.trim() || null } });
@@ -136,7 +136,12 @@ export async function updateClaimCaseDb(id: string, input: CreateClaimCaseInput)
 export async function changeClaimCaseStatusDb(id: string, status: ClaimCaseStatus) {
   const current = await prisma.claimCase.findUnique({ where: { id } });
   if (!current) return null;
-  if (current.status !== "registered") throw new Error("claim_case_status_locked");
+  const allowed = current.status === "registered"
+    ? ["processing", "cancelled"]
+    : current.status === "processing"
+      ? ["completed", "cancelled"]
+      : [];
+  if (!allowed.includes(status)) throw new Error("claim_case_status_locked");
   return hydrateCase(await prisma.claimCase.update({ where: { id }, data: { status } }));
 }
 
