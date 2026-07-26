@@ -428,7 +428,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     return { type: "editor_opened", mode: "edit", parameterId: item.id, parameterCode: item.parameterCode };
   }
 
-  async function saveParameter() {
+  async function saveParameter(operationId?: string) {
     const target = configTargetRef.current;
     const currentEditor = editorRef.current;
     if (!target || !currentEditor.definitionCode || !currentEditor.parameterValue.trim()) {
@@ -439,7 +439,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     setMessage("");
     const response = await apiFetch("/api/calculation-parameters", {
       method: currentEditor.id ? "PUT" : "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "Idempotency-Key": operationId ?? crypto.randomUUID() },
       body: JSON.stringify({ ...currentEditor, scope: target.scope, targetId: target.target.id }),
     });
     const result = await response.json() as CalculationParameter & { message?: string };
@@ -464,9 +464,12 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     };
   }
 
-  async function removeParameter(id: string) {
+  async function removeParameter(id: string, operationId?: string) {
     setBusy(true);
-    const response = await apiFetch(`/api/calculation-parameters?id=${encodeURIComponent(id)}`, { method: "DELETE" });
+    const response = await apiFetch(`/api/calculation-parameters?id=${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": operationId ?? crypto.randomUUID() },
+    });
     setBusy(false);
     if (!response.ok) {
       setMessage("删除失败，请稍后重试。");
@@ -535,7 +538,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       }
       return { type: "operation_error", reason: "field_executor_not_bound", fieldId };
     },
-    async executeAction(actionId) {
+    async executeAction(actionId, options) {
       await dataReadyRef.current;
       if (actionId === "search") return searchPolicies();
       if (actionId === "reset") {
@@ -549,7 +552,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
         return { type: "page_action", pageId: "calculation_config", actionId };
       }
       if (actionId === "create_parameter") return startCreate();
-      if (actionId === "save_parameter") return saveParameter();
+      if (actionId === "save_parameter") return saveParameter(options?.operationId);
       if (actionId === "cancel_edit") {
         updateEditorOpen(false);
         return { type: "page_action", pageId: "calculation_config", actionId };
@@ -563,7 +566,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       }
       if (actionId === "confirm_delete_parameter") {
         const id = pendingDeleteIdRef.current;
-        return id ? removeParameter(id) : { type: "operation_error", reason: "delete_confirmation_not_pending" };
+        return id ? removeParameter(id, options?.operationId) : { type: "operation_error", reason: "delete_confirmation_not_pending" };
       }
       if (actionId === "cancel_delete_parameter") {
         updatePendingDeleteId(null);

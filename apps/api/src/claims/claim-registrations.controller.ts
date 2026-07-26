@@ -1,5 +1,6 @@
-import { BadRequestException, Body, ConflictException, Controller, Get, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Get, Headers, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
 import type { ClaimCaseStatus, CreateClaimCaseInput } from "../../../../src/claims/types.ts";
+import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
 import { isClaimCaseInput } from "./claim-validation.ts";
 
@@ -9,6 +10,7 @@ function positiveNumber(value: string | undefined, fallback: number) {
 }
 
 function throwClaimError(error: unknown, mutation = false): never {
+  if (error instanceof ConflictException) throw error;
   const message = error instanceof Error ? error.message : "claim_operation_failed";
   if (message.endsWith("_not_found")) throw new NotFoundException(message);
   if (mutation && (message.endsWith("_locked") || message.endsWith("_editable"))) throw new ConflictException(message);
@@ -17,7 +19,10 @@ function throwClaimError(error: unknown, mutation = false): never {
 
 @Controller("claim-registrations")
 export class ClaimRegistrationsController {
-  constructor(@Inject(ClaimsService) private readonly claims: ClaimsService) {}
+  constructor(
+    @Inject(ClaimsService) private readonly claims: ClaimsService,
+    @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
+  ) {}
 
   @Get()
   async list(@Query() query: Record<string, string | undefined>) {
@@ -41,19 +46,26 @@ export class ClaimRegistrationsController {
   }
 
   @Post()
-  async create(@Body() body: unknown) {
+  async create(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!isClaimCaseInput(body)) throw new BadRequestException("invalid_claim_case");
-    try { return await this.claims.createCase(body); } catch (error) { throwClaimError(error); }
+    try {
+      return await this.idempotency.execute("claim_case:create", operationKey, body, () => this.claims.createCase(body));
+    } catch (error) { throwClaimError(error); }
   }
 
   @Put()
-  async update(@Body() body: unknown) {
+  async update(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { id?: unknown }).id !== "string" || !isClaimCaseInput(body)) {
       throw new BadRequestException("invalid_claim_case");
     }
     try {
       const input = body as CreateClaimCaseInput & { id: string };
-      const result = await this.claims.updateCase(input.id, input);
+      const result = await this.idempotency.execute(
+        "claim_case:update",
+        operationKey,
+        input,
+        () => this.claims.updateCase(input.id, input),
+      );
       if (!result) throw new NotFoundException("claim_case_not_found");
       return result;
     } catch (error) {
@@ -63,12 +75,20 @@ export class ClaimRegistrationsController {
   }
 
   @Patch()
-  async changeStatus(@Body() body: { id?: unknown; action?: unknown }) {
+  async changeStatus(
+    @Body() body: { id?: unknown; action?: unknown },
+    @Headers("idempotency-key") operationKey?: string,
+  ) {
     if (!body || typeof body.id !== "string" || (body.action !== "submit" && body.action !== "cancel")) {
       throw new BadRequestException("invalid_claim_action");
     }
     try {
-      const result = await this.claims.changeCaseStatus(body.id, body.action === "submit" ? "submitted" : "cancelled");
+      const result = await this.idempotency.execute(
+        `claim_case:${body.action}`,
+        operationKey,
+        body,
+        () => this.claims.changeCaseStatus(body.id as string, body.action === "submit" ? "submitted" : "cancelled"),
+      );
       if (!result) throw new NotFoundException("claim_case_not_found");
       return result;
     } catch (error) {

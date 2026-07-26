@@ -13,6 +13,8 @@
     "start": "concurrently -k -n web,api \"npm:start:web\" \"npm:start:api\"",
     "start:web": "next start",
     "start:api": "node dist/nest/apps/api/src/main.js",
+    "test:assistant-graph": "LANGGRAPH_CHECKPOINTER=memory node --import tsx src/assistant/assistant-graph-smoke-test.ts",
+    "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",
     "test:api": "tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
@@ -21,6 +23,8 @@
     "db:seed": "prisma db seed"
   },
   "dependencies": {
+    "@langchain/langgraph": "^1.4.8",
+    "@langchain/langgraph-checkpoint-postgres": "^1.0.4",
     "@nestjs/common": "^11.0.0",
     "@nestjs/core": "^11.0.0",
     "@nestjs/platform-express": "^11.0.0",
@@ -34,8 +38,8 @@
     "rxjs": "^7.8.0"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
     "@types/multer": "^2.0.0",
+    "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "prisma": "^6.19.0",

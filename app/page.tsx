@@ -28,12 +28,26 @@ type AssistantMessage = {
   systemNote?: string;
   steps?: string[];
 };
+type AssistantContinuationContext = {
+  currentPagePath?: string[];
+  currentPageRegistry?: unknown;
+  history?: Array<{ toolCalls: AssistantToolCall[] }>;
+  lastOperationResult?: unknown;
+  backendToolResults?: unknown[];
+};
+type AssistantTaskResponse = {
+  taskId: string;
+  status: "running" | "waiting_page" | "waiting_user" | "completed" | "cancelled";
+  plan: AssistantPlan | null;
+  context?: AssistantContinuationContext;
+  question?: string;
+  requestedFields?: string[];
+};
 
 const POLICY_PAGE_SIZE = 10;
 const INSURED_PAGE_SIZE = 10;
 const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
 const ASSISTANT_LIST_CONTEXT_LIMIT = 5;
-const MAX_ASSISTANT_EXECUTION_ROUNDS = 12;
 const MAX_ASSISTANT_HISTORY_ROUNDS = 8;
 const MAX_ASSISTANT_BACKEND_RESULTS = 4;
 const LLM_PROVIDER_STORAGE_KEY = "health-agent-llm-provider";
@@ -526,16 +540,9 @@ export default function Page() {
   ]);
   const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
   const [assistantPendingTask, setAssistantPendingTask] = useState<{
-    taskText: string;
+    taskId: string;
     question: string;
     requestedFields: string[];
-    context?: {
-      currentPagePath?: string[];
-      currentPageRegistry?: unknown;
-      history?: Array<{ toolCalls: AssistantToolCall[] }>;
-      lastOperationResult?: unknown;
-      backendToolResults?: unknown[];
-    };
   } | null>(null);
   const selectRef = useRef<HTMLDivElement | null>(null);
   const modelSelectRef = useRef<HTMLDivElement | null>(null);
@@ -548,6 +555,7 @@ export default function Page() {
   const claimQueryControllerRef = useRef<RegisteredPageController | null>(null);
   const claimRegistrationControllerRef = useRef<RegisteredPageController | null>(null);
   const assistantAbortControllerRef = useRef<AbortController | null>(null);
+  const assistantTaskIdRef = useRef<string | null>(null);
 
   function updateInsuredPlanId(value: string) {
     insuredPlanIdRef.current = value;
@@ -670,6 +678,7 @@ export default function Page() {
     initialTab: MainTab = mainTab,
     executionOpenTabs = new Set(openTabs),
     previousOperationResult: unknown = null,
+    operationNamespace?: string,
     signal?: AbortSignal,
   ) {
     throwIfAssistantAborted(signal);
@@ -802,8 +811,11 @@ export default function Page() {
       },
     };
 
-    for (const toolCall of toolCalls) {
+    for (const [toolIndex, toolCall] of toolCalls.entries()) {
       throwIfAssistantAborted(signal);
+      const actionOptions = operationNamespace
+        ? { operationId: `${operationNamespace}:${toolIndex}` }
+        : undefined;
       // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
       const requiredTab = toolCall.tool === "open_page" ? null : pageIdToMainTab(toolCall.args.pageId);
       if (requiredTab && (executionTab !== requiredTab || !executionOpenTabs.has(requiredTab))) {
@@ -878,7 +890,7 @@ export default function Page() {
         lastOperationResult = executor
           ? await executor()
           : controller
-            ? await controller.executeAction(toolCall.args.actionId)
+            ? await controller.executeAction(toolCall.args.actionId, actionOptions)
             : { type: "operation_error", reason: "action_executor_not_bound", pageId: toolCall.args.pageId, actionId: toolCall.args.actionId };
         await delay(220);
         throwIfAssistantAborted(signal);
@@ -888,7 +900,7 @@ export default function Page() {
       if (toolCall.tool === "click_list_row_action") {
         const controller = getRegisteredPageController(toolCall.args.pageId);
         if (controller) {
-          lastOperationResult = await controller.executeRowAction(toolCall.args.actionId, toolCall.args.row);
+          lastOperationResult = await controller.executeRowAction(toolCall.args.actionId, toolCall.args.row, actionOptions);
           await delay(220);
           throwIfAssistantAborted(signal);
           continue;
@@ -926,7 +938,7 @@ export default function Page() {
       if (toolCall.tool === "click_list_item_action") {
         const controller = getRegisteredPageController(toolCall.args.pageId);
         if (controller?.executeItemAction) {
-          lastOperationResult = await controller.executeItemAction(toolCall.args.actionId, toolCall.args.itemId);
+          lastOperationResult = await controller.executeItemAction(toolCall.args.actionId, toolCall.args.itemId, actionOptions);
         } else if (toolCall.args.pageId === "policy_query") {
           const selectedPolicy = currentPolicies.find((policy) => policy.id === toolCall.args.itemId);
           const drawerTabMap = {
@@ -1011,9 +1023,6 @@ export default function Page() {
     const text = assistantInput.trim();
     if (!text || assistantBusy) return;
     const pendingTask = assistantPendingTask;
-    const effectiveText = pendingTask
-      ? `${pendingTask.taskText}\n用户补充信息：${text}`
-      : text;
     const selectedProvider = llmProvider;
     const selectedProviderLabel = llmProviderOptions.find((option) => option.value === selectedProvider)?.label ?? selectedProvider;
     const abortController = new AbortController();
@@ -1032,29 +1041,15 @@ export default function Page() {
     setAssistantProgress("正在等待 LLM 生成本轮计划。");
 
     try {
-      let context: {
-        currentPagePath?: string[];
-        currentPageRegistry?: unknown;
-        history?: Array<{
-          toolCalls: AssistantToolCall[];
-        }>;
-        lastOperationResult?: unknown;
-        backendToolResults?: unknown[];
-      } | undefined = pendingTask?.context;
-      const operationHistory: Array<{
-        toolCalls: AssistantToolCall[];
-      }> = [...(context?.history ?? [])].slice(-MAX_ASSISTANT_HISTORY_ROUNDS);
-      let currentPageRegistry: unknown = context?.currentPageRegistry;
       let currentPage: MainTab = mainTab;
       let currentOpenTabs = new Set(openTabs);
-      let currentPagePath = context?.currentPagePath ?? (mainTab === "policy"
+      let currentPagePath = mainTab === "policy"
         ? ["综合查询", "保单信息查询"]
         : mainTab === "calculation_config"
           ? ["理赔配置", "保单理算配置"]
           : mainTab === "claim_registration"
             ? ["理赔处理", "受理立案"]
-          : ["综合查询", "案件查询"]);
-      let plan: AssistantPlan | null = null;
+            : ["综合查询", "案件查询"];
       let allSteps: string[] = [];
       let lastExecutedPlan: AssistantPlan | null = null;
       let lastExecutionResult: {
@@ -1063,118 +1058,154 @@ export default function Page() {
         runtimeFieldOptions: RuntimeFieldOptions;
         steps: string[];
       } | null = null;
-      let executionRoundLimitReached = false;
-      let backendToolResults: unknown[] = [...(context?.backendToolResults ?? [])].slice(-MAX_ASSISTANT_BACKEND_RESULTS);
+      const initialPageId = mainTab === "policy"
+        ? "policy_query"
+        : mainTab === "calculation_config"
+          ? "calculation_config"
+          : mainTab === "claim_registration"
+            ? "claim_registration"
+            : "claim_query";
 
-      // 复杂配置通常需要页面发现、查询、选择对象、打开编辑器、填写及保存等多个阶段。
-      for (let round = 0; round < MAX_ASSISTANT_EXECUTION_ROUNDS; round += 1) {
-        throwIfAssistantAborted(abortController.signal);
-        const response = await apiFetch("/api/assistant/plan", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: effectiveText, provider: selectedProvider, context }),
-          signal: abortController.signal,
-        });
-
+      async function parseTaskResponse(response: Response) {
         if (!response.ok) {
           const errorPayload = (await response.json().catch(() => null)) as
             | { detail?: string; message?: string }
             | null;
-          appendAssistantMessage({
-            id: `assistant-${Date.now()}`,
-            role: "assistant",
-            content: errorPayload?.detail ?? `${selectedProviderLabel}当前不可用，请稍后再试。`,
-            steps: [`当前模型：${selectedProviderLabel}`, "未启用规则回退"],
-          });
-          return;
+          throw new Error(errorPayload?.detail ?? errorPayload?.message ?? "assistant_task_failed");
         }
+        return response.json() as Promise<AssistantTaskResponse>;
+      }
 
-        plan = (await response.json()) as AssistantPlan;
-        backendToolResults = (plan.backendToolResults ?? backendToolResults).slice(-MAX_ASSISTANT_BACKEND_RESULTS);
+      let task: AssistantTaskResponse;
+      if (pendingTask) {
+        assistantTaskIdRef.current = pendingTask.taskId;
+        task = await parseTaskResponse(await apiFetch(`/api/assistant/tasks/${encodeURIComponent(pendingTask.taskId)}/resume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "user_input", text }),
+          signal: abortController.signal,
+        }));
+      } else {
+        const taskId = crypto.randomUUID();
+        assistantTaskIdRef.current = taskId;
+        const initialRegistry = await loadAssistantPageRegistry(initialPageId, abortController.signal);
+        task = await parseTaskResponse(await apiFetch("/api/assistant/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            taskId,
+            text,
+            provider: selectedProvider,
+            context: {
+              currentPagePath,
+              currentPageRegistry: initialRegistry,
+              history: [],
+              backendToolResults: [],
+            },
+          }),
+          signal: abortController.signal,
+        }));
+      }
+
+      for (let pageResumeCount = 0; task.status === "waiting_page" && pageResumeCount < 16; pageResumeCount += 1) {
+        throwIfAssistantAborted(abortController.signal);
+        const plan = task.plan;
+        if (!plan) throw new Error("assistant_task_plan_missing");
         lastExecutedPlan = plan;
         setAssistantRecognized(plan.recognized ?? []);
         const thought = plan.thought ?? plan.reply;
         setAssistantProgress(`LLM 思路：${thought}`);
         allSteps = [...allSteps, ...(plan.discoverySteps ?? [])];
+        setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
+        const execution = await executeAssistantTools(
+          plan.toolCalls,
+          currentPage,
+          currentOpenTabs,
+          lastExecutionResult?.executionResult,
+          `${task.taskId}:${pageResumeCount}`,
+          abortController.signal,
+        );
+        throwIfAssistantAborted(abortController.signal);
+        lastExecutionResult = execution;
+        currentPage = execution.currentPage;
+        currentOpenTabs = execution.openTabs;
+        allSteps = [...allSteps, ...execution.steps];
 
-        if (plan.toolCalls.length > 0) {
-          setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
-          const execution = await executeAssistantTools(plan.toolCalls, currentPage, currentOpenTabs, lastExecutionResult?.executionResult, abortController.signal);
-          throwIfAssistantAborted(abortController.signal);
-          lastExecutionResult = execution;
-          currentPage = execution.currentPage;
-          currentOpenTabs = execution.openTabs;
-          allSteps = [...allSteps, ...execution.steps];
-          operationHistory.push({
-            toolCalls: plan.toolCalls,
-          });
-          if (plan.discoveryResults && plan.discoveryResults.length > 0) {
-            currentPageRegistry = applyRuntimeFieldOptions(
-              plan.discoveryResults[plan.discoveryResults.length - 1],
-              execution.runtimeFieldOptions,
-            );
-          }
-          if (execution.openedPageId) {
-            const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId, abortController.signal);
-            if (openedPageRegistry && typeof openedPageRegistry === "object") {
-              currentPageRegistry = applyRuntimeFieldOptions(openedPageRegistry, execution.runtimeFieldOptions);
-              const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
-              if (Array.isArray(pagePath) && pagePath.every((item) => typeof item === "string")) {
-                currentPagePath = pagePath;
-              }
+        const previousContext = task.context ?? {};
+        let currentPageRegistry = previousContext.currentPageRegistry;
+        if (plan.discoveryResults && plan.discoveryResults.length > 0) {
+          currentPageRegistry = applyRuntimeFieldOptions(
+            plan.discoveryResults[plan.discoveryResults.length - 1],
+            execution.runtimeFieldOptions,
+          );
+        }
+        if (execution.openedPageId) {
+          const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId, abortController.signal);
+          if (openedPageRegistry && typeof openedPageRegistry === "object") {
+            currentPageRegistry = applyRuntimeFieldOptions(openedPageRegistry, execution.runtimeFieldOptions);
+            const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
+            if (Array.isArray(pagePath) && pagePath.every((item) => typeof item === "string")) {
+              currentPagePath = pagePath;
             }
           }
-          if (currentPageRegistry && typeof currentPageRegistry === "object") {
-            currentPageRegistry = applyRuntimeFieldOptions(currentPageRegistry, execution.runtimeFieldOptions);
-          }
+        }
+        if (currentPageRegistry && typeof currentPageRegistry === "object") {
+          currentPageRegistry = applyRuntimeFieldOptions(currentPageRegistry, execution.runtimeFieldOptions);
         }
 
-        if (plan.userInputRequest) {
-          setAssistantPendingTask({
-            taskText: effectiveText,
-            question: plan.userInputRequest.question,
-            requestedFields: plan.userInputRequest.requestedFields,
-            context: {
-              currentPagePath,
-              currentPageRegistry,
-              history: operationHistory.slice(-MAX_ASSISTANT_HISTORY_ROUNDS),
-              lastOperationResult: lastExecutionResult?.executionResult,
-              backendToolResults: backendToolResults.slice(-MAX_ASSISTANT_BACKEND_RESULTS),
-            },
-          });
-          break;
-        }
-
-        if (plan.decision !== "continue" || plan.toolCalls.length === 0 || !lastExecutionResult) {
-          break;
-        }
-
-        if (round === MAX_ASSISTANT_EXECUTION_ROUNDS - 1) {
-          executionRoundLimitReached = true;
-        }
-
-        context = {
+        const nextContext: AssistantContinuationContext = {
           currentPagePath,
           currentPageRegistry,
-          history: operationHistory.slice(-MAX_ASSISTANT_HISTORY_ROUNDS),
-          lastOperationResult: lastExecutionResult.executionResult,
-          backendToolResults: backendToolResults.slice(-MAX_ASSISTANT_BACKEND_RESULTS),
+          history: [
+            ...(previousContext.history ?? []),
+            { toolCalls: plan.toolCalls },
+          ].slice(-MAX_ASSISTANT_HISTORY_ROUNDS),
+          lastOperationResult: execution.executionResult,
+          backendToolResults: (plan.backendToolResults ?? previousContext.backendToolResults ?? [])
+            .slice(-MAX_ASSISTANT_BACKEND_RESULTS),
         };
+
+        task = await parseTaskResponse(await apiFetch(`/api/assistant/tasks/${encodeURIComponent(task.taskId)}/resume`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "page_result", context: nextContext }),
+          signal: abortController.signal,
+        }));
       }
 
-      if (!lastExecutedPlan) return;
+      if (task.status === "waiting_page") {
+        throw new Error("assistant_task_page_resume_limit");
+      }
 
       setAssistantRecognized([]);
+      const finalPlan = task.plan ?? lastExecutedPlan;
+      if (task.status === "waiting_user") {
+        const question = task.question ?? finalPlan?.userInputRequest?.question ?? "请补充完成任务所需的信息。";
+        setAssistantPendingTask({
+          taskId: task.taskId,
+          question,
+          requestedFields: task.requestedFields ?? finalPlan?.userInputRequest?.requestedFields ?? [],
+        });
+        appendAssistantMessage({
+          id: `assistant-${Date.now()}`,
+          role: "assistant",
+          content: question,
+          source: `${selectedProviderLabel} 回复`,
+          systemNote: "任务已由 LangGraph 暂停，回复后将从当前检查点继续。",
+          steps: allSteps,
+        });
+        return;
+      }
 
-      const lastToolCall = lastExecutedPlan.toolCalls.at(-1);
+      if (!finalPlan) throw new Error("assistant_task_plan_missing");
+      assistantTaskIdRef.current = null;
+      const lastToolCall = finalPlan.toolCalls.at(-1);
       const finalOperation = lastExecutionResult?.executionResult as { type?: unknown; success?: unknown } | undefined;
       const resultSummary =
-        lastExecutedPlan.userInputRequest
-          ? "等待用户补充信息，回复后将继续原任务。"
-          : finalOperation?.type === "mutation_result" && finalOperation.success === true
+        finalOperation?.type === "mutation_result" && finalOperation.success === true
           ? "数据变更已保存并返回成功结果。"
-          : executionRoundLimitReached
-            ? "已达到本次执行轮次上限，任务尚未确认完成。"
+          : task.status === "cancelled"
+            ? "任务已取消。"
           : lastToolCall?.tool === "click_button" && lastToolCall.args.actionId === "search"
           ? "查询结果已经刷新，等待 Agent 根据结果继续判断。"
           : lastToolCall?.tool === "set_field"
@@ -1183,14 +1214,14 @@ export default function Page() {
             ? `已执行：${formatToolCall(lastToolCall)}。`
             : lastToolCall?.tool === "click_list_item_action"
               ? `已执行：${formatToolCall(lastToolCall)}。`
-            : lastExecutedPlan.decision === "finish"
-              ? "任务已结束。"
+            : task.status === "completed"
+              ? "LangGraph 任务已完成。"
               : "已执行当前步骤。";
 
       appendAssistantMessage({
         id: `assistant-${Date.now()}`,
         role: "assistant",
-        content: lastExecutedPlan.userInputRequest?.question ?? lastExecutedPlan.reply,
+        content: finalPlan.reply,
         source: `${selectedProviderLabel} 回复`,
         systemNote: resultSummary,
         steps: allSteps,
@@ -1209,7 +1240,9 @@ export default function Page() {
       appendAssistantMessage({
         id: `assistant-error-${Date.now()}`,
         role: "assistant",
-        content: "执行过程中出现异常，本次任务已停止。",
+        content: error instanceof Error && error.message !== "assistant_task_failed"
+          ? `执行过程中出现异常：${error.message}`
+          : "执行过程中出现异常，本次任务已停止。",
         source: "系统",
       });
     } finally {
@@ -1225,7 +1258,14 @@ export default function Page() {
     if (!controller || controller.signal.aborted) return;
     setAssistantStopping(true);
     setAssistantProgress("正在停止当前任务，已完成的操作将保留。");
+    const taskId = assistantTaskIdRef.current;
+    if (taskId) {
+      void apiFetch(`/api/assistant/tasks/${encodeURIComponent(taskId)}/cancel`, { method: "POST" })
+        .catch(() => undefined);
+    }
     controller.abort();
+    assistantTaskIdRef.current = null;
+    setAssistantPendingTask(null);
   }
 
   const totalPolicyPages = Math.max(1, Math.ceil(policyTotal / POLICY_PAGE_SIZE));

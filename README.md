@@ -42,7 +42,7 @@ NestJS 前后端业务接口迁移已经完成。Next.js 只负责页面渲染�
 1. NestJS 已建立 `UnderwritingModule`、`ClaimsModule`、`CalculationModule`、`AssistantModule`、`AttachmentsModule` 和 `PrismaModule`
 2. Next.js 中重复的业务 Route Handler 已移除
 3. `npm run dev` 和 `npm start` 会联合启动前端与后端
-4. 下一阶段接入 LangGraph，保留当前页面注册中心和内部动作执行器
+4. LangGraph 已接入 NestJS 和 PostgreSQL Checkpointer，负责助手任务状态、中断、跨重启恢复和取消；页面继续使用注册中心和内部动作执行器
 
 这样做的原因是先打稳业务底座，避免一开始就被复杂流程和多技术栈拖散。
 
@@ -236,10 +236,10 @@ LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示
   菜单、页面、区域、字段和动作注册中心
 - `src/assistant/policy-query-assistant.ts`
   Agent 工具类型、校验和兼容转换
-- `app/api/assistant/plan/route.ts`
-  Ollama 调用、系统提示词、注册信息发现、多轮规划和上下文处理
-- `app/api/assistant/registry/route.ts`
-  注册信息查询 API
+- `apps/api/src/assistant/assistant-graph.service.ts`
+  LangGraph 任务状态、页面/用户中断、恢复和取消
+- `src/assistant/plan-service.ts`
+  模型调用、系统提示词、注册信息发现和单轮规划
 - `app/page.tsx`
   页面导航、可关闭标签页、保单查询/详情抽屉、理赔配置入口、Agent 前端执行器和助手面板
 - `app/components/CalculationConfigPage.tsx`
@@ -252,6 +252,8 @@ LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示
   编号与代码口径
 - `docs/frontend-style-guide.md`
   前端统一风格规则
+- `docs/system-flow-and-elements.md`
+  系统架构、Agent 流程、页面元素和幂等机制图解
 - `legacy/claims-agent-mvp/`
   旧版理赔 Agent 原型归档
 
@@ -276,7 +278,8 @@ LLM每轮计划还会返回 `thought` 字段，用于在页面执行期间展示
 
 ```text
 app/page.tsx
-app/api/assistant/plan/route.ts
+apps/api/src/assistant/assistant-graph.service.ts
+src/assistant/plan-service.ts
 src/assistant/page-registry.ts
 src/assistant/policy-query-assistant.ts
 docs/frontend-style-guide.md
@@ -295,9 +298,8 @@ docs/frontend-style-guide.md
 下一步架构工作：
 
 1. 将 Prisma 业务服务进一步收敛为 NestJS Provider 内部实现
-2. 接入 LangGraph 和 PostgreSQL Checkpointer
-3. 为 Agent 变更动作增加幂等操作编号
-4. 将影像正文迁移到对象存储
+2. 为 LangGraph checkpoint 和幂等记录增加归档与过期清理
+3. 将影像正文迁移到对象存储
 
 ## 受理立案
 

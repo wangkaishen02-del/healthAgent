@@ -1,6 +1,7 @@
 import "reflect-metadata";
 import "../../apps/api/src/load-env.ts";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "../../apps/api/src/app.module.ts";
 import { buildSystemPrompt, getAssistantPromptMetrics, isDataMutationRequest } from "../assistant/plan-service.ts";
@@ -50,14 +51,30 @@ try {
   });
   assert.equal(invalidPlan.status, 400, "invalid assistant provider should return 400");
 
-  const form = new FormData();
-  form.append("category", "identity");
-  form.append("file", new File([new Uint8Array([1, 2, 3])], "smoke-test.png", { type: "image/png" }));
-  const uploadResponse = await fetch(`${baseUrl}/api/claim-attachments`, { method: "POST", body: form });
+  const operationKey = `nest-smoke-${randomUUID()}`;
+  const createUploadForm = () => {
+    const form = new FormData();
+    form.append("category", "identity");
+    form.append("file", new File([new Uint8Array([1, 2, 3])], "smoke-test.png", { type: "image/png" }));
+    return form;
+  };
+  const uploadResponse = await fetch(`${baseUrl}/api/claim-attachments`, {
+    method: "POST",
+    body: createUploadForm(),
+  });
   assert.equal(uploadResponse.status, 201, "attachment upload should return 201");
   const upload = await uploadResponse.json() as { uploadId: string };
-  const deleteResponse = await fetch(`${baseUrl}/api/claim-attachments?uploadId=${encodeURIComponent(upload.uploadId)}`, { method: "DELETE" });
+  const deleteUrl = `${baseUrl}/api/claim-attachments?uploadId=${encodeURIComponent(upload.uploadId)}`;
+  const deleteResponse = await fetch(deleteUrl, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": `${operationKey}:delete` },
+  });
   assert.equal(deleteResponse.status, 200, "attachment delete should return 200");
+  const repeatedDeleteResponse = await fetch(deleteUrl, {
+    method: "DELETE",
+    headers: { "Idempotency-Key": `${operationKey}:delete` },
+  });
+  assert.equal(repeatedDeleteResponse.status, 200, "repeated idempotent delete should return 200");
 
   console.log("NestJS API smoke tests passed");
 } finally {

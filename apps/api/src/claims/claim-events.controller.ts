@@ -1,11 +1,15 @@
-import { BadRequestException, Body, Controller, Get, Inject, Post, Put, Query } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, Get, Headers, Inject, Post, Put, Query } from "@nestjs/common";
 import type { ClaimEventInput } from "../../../../src/claims/types.ts";
+import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
 import { isClaimEventInput } from "./claim-validation.ts";
 
 @Controller("claim-events")
 export class ClaimEventsController {
-  constructor(@Inject(ClaimsService) private readonly claims: ClaimsService) {}
+  constructor(
+    @Inject(ClaimsService) private readonly claims: ClaimsService,
+    @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
+  ) {}
 
   @Get()
   async list(@Query() query: Record<string, string | undefined>) {
@@ -19,27 +23,39 @@ export class ClaimEventsController {
   }
 
   @Post()
-  async create(@Body() body: unknown) {
+  async create(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { insuredPersonId?: unknown }).insuredPersonId !== "string" || !isClaimEventInput(body)) {
       throw new BadRequestException("invalid_claim_event");
     }
     try {
       const input = body as ClaimEventInput & { insuredPersonId: string };
-      return await this.claims.createEvent(input.insuredPersonId, input);
+      return await this.idempotency.execute(
+        "claim_event:create",
+        operationKey,
+        input,
+        () => this.claims.createEvent(input.insuredPersonId, input),
+      );
     } catch (error) {
+      if (error instanceof ConflictException) throw error;
       throw new BadRequestException(error instanceof Error ? error.message : "claim_event_create_failed");
     }
   }
 
   @Put()
-  async update(@Body() body: unknown) {
+  async update(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { id?: unknown }).id !== "string" || typeof (body as { insuredPersonId?: unknown }).insuredPersonId !== "string" || !isClaimEventInput(body)) {
       throw new BadRequestException("invalid_claim_event");
     }
     try {
       const input = body as ClaimEventInput & { id: string; insuredPersonId: string };
-      return await this.claims.updateEvent(input.id, input.insuredPersonId, input);
+      return await this.idempotency.execute(
+        "claim_event:update",
+        operationKey,
+        input,
+        () => this.claims.updateEvent(input.id, input.insuredPersonId, input),
+      );
     } catch (error) {
+      if (error instanceof ConflictException) throw error;
       throw new BadRequestException(error instanceof Error ? error.message : "claim_event_update_failed");
     }
   }
