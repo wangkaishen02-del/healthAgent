@@ -32,6 +32,14 @@ export type AssistantBackendCall =
   | {
       tool: "query_claim_cases";
       args: { caseNo?: string; policyNo?: string; insuredName?: string; insuredIdNo?: string };
+    }
+  | {
+      tool: "inspect_claim_case";
+      args: { caseNo: string };
+    }
+  | {
+      tool: "summarize_claim_work_queue";
+      args: Record<string, never>;
     };
 
 export type AssistantUserInputCall = {
@@ -374,6 +382,10 @@ export function isAssistantBackendCall(value: unknown): value is AssistantBacken
   if (candidate.tool === "query_claim_cases") {
     return [candidate.args?.caseNo, candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
   }
+  if (candidate.tool === "inspect_claim_case") {
+    return typeof candidate.args?.caseNo === "string" && candidate.args.caseNo.trim().length > 0;
+  }
+  if (candidate.tool === "summarize_claim_work_queue") return true;
   return false;
 }
 
@@ -428,6 +440,18 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
       },
     };
     return isAssistantBackendCall(normalizedCall) ? normalizedCall : null;
+  }
+
+  if (candidate.tool === "inspect_claim_case") {
+    const normalizedCall: AssistantBackendCall = {
+      tool: "inspect_claim_case",
+      args: { caseNo: typeof candidate.args?.caseNo === "string" ? candidate.args.caseNo.trim().toUpperCase() : "" },
+    };
+    return isAssistantBackendCall(normalizedCall) ? normalizedCall : null;
+  }
+
+  if (candidate.tool === "summarize_claim_work_queue") {
+    return { tool: "summarize_claim_work_queue", args: {} };
   }
 
   if (candidate.tool === "ask_user") {

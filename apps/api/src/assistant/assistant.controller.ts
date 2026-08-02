@@ -17,7 +17,7 @@ import type { AuthenticatedUser } from "../auth/auth.types.ts";
 import { canAccessAssistantPage, filterAssistantMenus } from "../../../../src/assistant/access-control.ts";
 
 @Controller("assistant")
-@Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
+@Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer", "claim_admin")
 export class AssistantController {
   constructor(@Inject(AssistantGraphService) private readonly graphService: AssistantGraphService) {}
 

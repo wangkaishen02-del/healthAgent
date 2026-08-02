@@ -625,6 +625,8 @@ export function getAssistantBackendToolCatalog() {
   return [
     { tool: "query_underwriting", args: { policyNo: "可选", insuredName: "可选", insuredIdNo: "可选" }, description: "在后台查询承保关系，至少提供一个条件；返回保单、承保关系、被保人和保障计划信息，不操作前端查询页面。" },
     { tool: "query_claim_cases", args: { caseNo: "可选", policyNo: "可选", insuredName: "可选", insuredIdNo: "可选" }, description: "在后台查询理赔案件，至少提供一个条件；案件号应使用 caseNo，返回可用于页面列表对象操作的 itemId、案件、人员及关联事件信息。" },
+    { tool: "inspect_claim_case", args: { caseNo: "必填案件号" }, description: "检查指定案件的环节、处理人、资料数量、OCR、理算结果、风险提示和当前角色可执行的后续流转；只读，不操作页面。" },
+    { tool: "summarize_claim_work_queue", args: {}, description: "汇总受理、录入、理算、审核、结案、撤件各环节案件量和 OCR 队列状态；只读且无需查询条件。" },
   ];
 }
 

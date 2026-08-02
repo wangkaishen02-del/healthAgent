@@ -48,6 +48,7 @@ jobs:
       - name: Run service and workflow tests
         run: |
           npm run test:assistant-privacy
+          npm run test:assistant-backend
           npm run test:assistant-graph
           npm run test:claim-state-machine
           npm run test:claim-workflow

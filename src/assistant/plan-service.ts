@@ -26,6 +26,7 @@ import { queryUnderwritingDb } from "../underwriting/prisma-service.ts";
 import { queryClaimCasesDb } from "../claims/prisma-service.ts";
 import { ExternalDataProtector, minimizeAssistantData, redactSensitiveText } from "./privacy.ts";
 import { canAccessAssistantPage, filterAssistantMenus } from "./access-control.ts";
+import { inspectClaimCaseForAssistant, summarizeClaimWorkQueueForAssistant } from "./backend-tools.ts";
 
 export type LlmProvider = "ollama" | "deepseek";
 
@@ -140,6 +141,12 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
   if (/(案件|CL[A-Z0-9-]{6,}|案件查询|受理立案)/i.test(scope)) {
     rules.push("案件号与保单号必须严格区分：CL 是案件号，GI 是保单号。仅查询案件时使用只读案件查询页；只有明确修改、提交或撤件时才进入受理立案。用户已给案件号时不得再索要其他定位条件。");
   }
+  if (/CL[A-Z0-9-]{6,}/i.test(scope) && /(情况|进度|状态|资料|缺少|完整|OCR|下一步|能做什么|为什么)/i.test(scope)) {
+    rules.push("用户询问指定案件的情况、资料、OCR、异常或下一步时，优先调用 inspect_claim_case；依据返回的 warnings、workflowActions 和 recommendedPage 回答，不猜测流程动作。仅在用户明确要求打开页面或办理时再执行页面动作。");
+  }
+  if (/(多少|数量|待办|积压|工作量|队列|各环节|OCR).{0,12}(案件|影像|任务)|(?:案件|影像|任务).{0,12}(多少|数量|待办|积压|队列)/i.test(scope)) {
+    rules.push("用户询问整体案件环节数量、待办量或 OCR 队列时，调用 summarize_claim_work_queue 获取实时汇总，不打开列表后自行估算。");
+  }
   if (/(有效期|出生日期|报案日期|申请人|领款人|受理立案)/.test(scope)) {
     rules.push("证件有效期已按角色分别注册。仅给年份时先交给页面保留原月日；页面返回 invalid_or_incomplete_date 才追问具体月日，禁止编造日期。");
   }
@@ -236,7 +243,7 @@ function executeDiscovery(call: AssistantDiscoveryCall, roles: readonly string[]
   return getCompactPageRegistration(call.args.pageId) ?? { error: "page_not_found" };
 }
 
-async function executeBackendTool(call: AssistantBackendCall) {
+export async function executeAssistantBackendTool(call: AssistantBackendCall, roles: readonly string[] = []) {
   if (call.tool === "query_underwriting") {
     const result = await queryUnderwritingDb(call.args);
     return {
@@ -271,6 +278,8 @@ async function executeBackendTool(call: AssistantBackendCall) {
       resolvedFields: result.total === 1 ? ["caseId", "caseNo", "policyNo", "insuredName", "insuredIdNo", "eventId"] : [],
     };
   }
+  if (call.tool === "inspect_claim_case") return inspectClaimCaseForAssistant(call.args.caseNo, roles);
+  if (call.tool === "summarize_claim_work_queue") return summarizeClaimWorkQueueForAssistant();
   return { type: "backend_tool_error", reason: "tool_not_supported" };
 }
 
@@ -704,7 +713,7 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
         },
       };
     }
-    const backendResults = await Promise.all(backendCalls.map(executeBackendTool));
+    const backendResults = await Promise.all(backendCalls.map((call) => executeAssistantBackendTool(call, context?.actorRoles)));
     backendToolResults.push(...backendResults);
     discoveredResources.push(...discoveryResults);
     discoveryCalls.forEach((call) => discoverySteps.push(formatDiscoveryStep(call)));
