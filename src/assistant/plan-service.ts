@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -24,6 +24,7 @@ import {
 } from "./page-registry.ts";
 import { queryUnderwritingDb } from "../underwriting/prisma-service.ts";
 import { queryClaimCasesDb } from "../claims/prisma-service.ts";
+import { ExternalDataProtector, minimizeAssistantData, redactSensitiveText } from "./privacy.ts";
 
 export type LlmProvider = "ollama" | "deepseek";
 
@@ -36,6 +37,11 @@ const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 90000);
 const MAX_AGENT_TURNS = 5;
 const ASSISTANT_LOG_DIR = join(process.cwd(), "logs");
 const ASSISTANT_LOG_PATH = join(ASSISTANT_LOG_DIR, "assistant-llm.log");
+const ASSISTANT_LOG_LEVEL = process.env.ASSISTANT_LOG_LEVEL === "redacted"
+  ? "redacted"
+  : process.env.ASSISTANT_LOG_LEVEL === "off"
+    ? "off"
+    : "metadata";
 
 type OllamaMessage = { role: "system" | "user" | "assistant"; content: string };
 type OllamaResponse = { message?: { content?: string } };
@@ -79,13 +85,16 @@ function formatAssistantLog(entry: AssistantLogEntry) {
 
   if (entry.type === "input") {
     const promptMetrics = getAssistantPromptMetrics(entry.messages.map((message) => message.content));
-    const messages = entry.messages.map((message, index) => [
-      `[${index + 1}] ${message.role.toUpperCase()}`,
-      message.content,
-    ].join("\n"));
+    const digest = createHash("sha256").update(entry.messages.map((message) => message.content).join("\n")).digest("hex").slice(0, 16);
+    const messages = ASSISTANT_LOG_LEVEL === "redacted"
+      ? entry.messages.map((message, index) => [
+          `[${index + 1}] ${message.role.toUpperCase()}`,
+          redactSensitiveText(message.content),
+        ].join("\n"))
+      : [];
     return [
       ...header,
-      `prompt_chars=${promptMetrics.characters} | approx_tokens=${promptMetrics.approxTokens} | size=${promptMetrics.level}`,
+      `prompt_chars=${promptMetrics.characters} | approx_tokens=${promptMetrics.approxTokens} | size=${promptMetrics.level} | sha256=${digest}`,
       ...messages,
       "=".repeat(84),
     ].join("\n");
@@ -93,8 +102,8 @@ function formatAssistantLog(entry: AssistantLogEntry) {
 
   return [
     ...header,
-    `duration=${entry.durationMs}ms`,
-    formatJsonIfPossible(entry.content),
+    `duration=${entry.durationMs}ms | output_chars=${[...entry.content].length} | sha256=${createHash("sha256").update(entry.content).digest("hex").slice(0, 16)}`,
+    ...(ASSISTANT_LOG_LEVEL === "redacted" ? [formatJsonIfPossible(redactSensitiveText(entry.content))] : []),
     "=".repeat(84),
   ].join("\n");
 }
@@ -112,11 +121,12 @@ export function getAssistantPromptMetrics(contents: string[]) {
 }
 
 async function writeAssistantLog(entry: AssistantLogEntry) {
+  if (ASSISTANT_LOG_LEVEL === "off") return;
   const content = formatAssistantLog(entry);
   console.info(content);
   try {
-    await mkdir(ASSISTANT_LOG_DIR, { recursive: true });
-    await appendFile(ASSISTANT_LOG_PATH, `${content}\n`, "utf8");
+    await mkdir(ASSISTANT_LOG_DIR, { recursive: true, mode: 0o700 });
+    await appendFile(ASSISTANT_LOG_PATH, `${content}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {
     // 日志写入失败不额外输出，保持控制台与日志文件内容一致。
   }
@@ -421,7 +431,7 @@ async function callOllama(messages: OllamaMessage[]) {
   }
 }
 
-async function callDeepSeek(messages: OllamaMessage[]) {
+async function callDeepSeek(messages: OllamaMessage[], protector: ExternalDataProtector) {
   const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) throw new Error("deepseek_api_key_missing");
 
@@ -441,22 +451,22 @@ async function callDeepSeek(messages: OllamaMessage[]) {
         temperature: 0,
         thinking: { type: "disabled" },
         response_format: { type: "json_object" },
-        messages,
+        messages: messages.map((message) => ({ ...message, content: protector.protect(message.content) })),
       }),
       signal: controller.signal,
       cache: "no-store",
     });
     if (!response.ok) throw new Error(`deepseek_http_${response.status}`);
     const data = (await response.json()) as DeepSeekResponse;
-    const content = data.choices?.[0]?.message?.content?.trim() ?? "";
+    const content = protector.restore(data.choices?.[0]?.message?.content?.trim() ?? "");
     return { content, parsed: tryParseJson(content), durationMs: Date.now() - startedAt };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function callLlm(provider: LlmProvider, messages: OllamaMessage[]) {
-  return provider === "deepseek" ? callDeepSeek(messages) : callOllama(messages);
+async function callLlm(provider: LlmProvider, messages: OllamaMessage[], protector: ExternalDataProtector) {
+  return provider === "deepseek" ? callDeepSeek(messages, protector) : callOllama(messages);
 }
 
 export async function requestAgentPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
@@ -479,25 +489,33 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
   }
   const runId = randomUUID().slice(0, 8);
   const llm = getLlmIdentity(provider);
+  const protector = new ExternalDataProtector();
+  const minimizedContext = context ? minimizeAssistantData({
+    history: context.history?.slice(-8),
+    currentPageRegistry: context.currentPageRegistry,
+    lastOperationResult: context.lastOperationResult,
+    backendToolResults: context.backendToolResults,
+    currentPagePath: context.currentPagePath,
+  }) as AssistantContinuationContext : undefined;
   const userMessage = context
     ? `${userText}
 
 当前 Agent 状态如下，请只根据以下信息决定下一步：
 
 历史操作记录：
-${JSON.stringify(context.history ?? [])}
+${JSON.stringify(minimizedContext?.history ?? [])}
 
 当前页面注册信息：
-${JSON.stringify(context.currentPageRegistry ?? null)}
+${JSON.stringify(minimizedContext?.currentPageRegistry ?? null)}
 
 上一次操作结果：
-${formatLastOperationResult(context.lastOperationResult)}
+${formatLastOperationResult(minimizedContext?.lastOperationResult)}
 
 本任务已取得的后台工具结果：
-${JSON.stringify(context.backendToolResults ?? [])}
+${JSON.stringify(minimizedContext?.backendToolResults ?? [])}
 
 当前页面路径：
-${context.currentPagePath?.join(" -> ") ?? "未知"}`
+${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
     : userText;
   const messages: OllamaMessage[] = [
     { role: "system", content: buildSystemPrompt(userText, context) },
@@ -511,7 +529,7 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
 
   for (let turn = 1; turn <= MAX_AGENT_TURNS; turn += 1) {
     await writeAssistantLog({ type: "input", runId, turn, ...llm, messages });
-    const result = await callLlm(provider, messages);
+    const result = await callLlm(provider, messages, protector);
     rawReplies.push(result.content);
     await writeAssistantLog({
       type: "output",
@@ -620,7 +638,7 @@ ${context.currentPagePath?.join(" -> ") ?? "未知"}`
     messages.push({ role: "assistant", content: result.content });
     messages.push({
       role: "user",
-      content: `工具执行结果如下：${JSON.stringify([...discoveryResults, ...backendResults])}。请根据这些结果继续下一步，只输出新的 JSON 计划。`,
+      content: `工具执行结果如下：${JSON.stringify(minimizeAssistantData([...discoveryResults, ...backendResults]))}。请根据这些结果继续下一步，只输出新的 JSON 计划。`,
     });
   }
 

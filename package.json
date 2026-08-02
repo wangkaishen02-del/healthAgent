@@ -14,6 +14,7 @@
     "start:web": "next start",
     "start:api": "node dist/nest/apps/api/src/main.js",
     "test:assistant-graph": "LANGGRAPH_CHECKPOINTER=memory node --import tsx src/assistant/assistant-graph-smoke-test.ts",
+    "test:assistant-privacy": "node --import tsx src/assistant/privacy-test.ts",
     "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",
     "test:api": "tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
     "test:auto-calculation": "tsx --tsconfig apps/api/tsconfig.json src/api/automatic-calculation-smoke-test.ts",
