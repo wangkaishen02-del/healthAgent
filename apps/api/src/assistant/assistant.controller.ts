@@ -11,29 +11,37 @@ import {
   AssistantGraphService,
   type AssistantTaskResume,
 } from "./assistant-graph.service.ts";
+import { Roles } from "../auth/auth.decorators.ts";
+import { CurrentUser } from "../auth/auth.decorators.ts";
+import type { AuthenticatedUser } from "../auth/auth.types.ts";
+import { canAccessAssistantPage, filterAssistantMenus } from "../../../../src/assistant/access-control.ts";
 
 @Controller("assistant")
+@Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
 export class AssistantController {
   constructor(@Inject(AssistantGraphService) private readonly graphService: AssistantGraphService) {}
 
   @Get("registry")
-  registry(@Query() query: Record<string, string | undefined>) {
+  registry(@Query() query: Record<string, string | undefined>, @CurrentUser() user: AuthenticatedUser) {
     const resource = query.resource ?? "navigation";
     if (resource === "tools") return { tools: getAssistantRegistryToolCatalog() };
-    if (resource === "menu") return { menu: query.menuId ? getMenuPages(query.menuId) : null };
+    if (resource === "menu") {
+      const menu = query.menuId ? getMenuPages(query.menuId) : null;
+      return { menu: menu ? filterAssistantMenus([menu], user.roles)[0] ?? null : null };
+    }
     if (resource === "page") return {
-      page: query.pageId
+      page: query.pageId && canAccessAssistantPage(query.pageId, user.roles)
         ? query.view === "compact"
           ? getCompactPageRegistration(query.pageId)
           : getPageRegistration(query.pageId)
         : null,
     };
-    return getNavigationRegistry();
+    return { menus: filterAssistantMenus(getNavigationRegistry().menus, user.roles) };
   }
 
   @Post("plan")
-  async plan(@Body() body: { text?: string; provider?: unknown; context?: AssistantContinuationContext } | null) {
-    const result = await createAssistantPlan(body);
+  async plan(@Body() body: { text?: string; provider?: unknown; context?: AssistantContinuationContext } | null, @CurrentUser() user: AuthenticatedUser) {
+    const result = await createAssistantPlan(body ? { ...body, context: { ...body.context, actorRoles: user.roles } } : body);
     if (result.status !== 200) throw new HttpException(result.body, result.status);
     return result.body;
   }
@@ -44,7 +52,7 @@ export class AssistantController {
     text?: string;
     provider?: unknown;
     context?: AssistantContinuationContext;
-  } | null) {
+  } | null, @CurrentUser() user: AuthenticatedUser) {
     const text = body?.text?.trim();
     if (!text) throw new HttpException({ message: "text is required" }, 400);
     const provider = body?.provider;
@@ -56,7 +64,7 @@ export class AssistantController {
         taskId: typeof body?.taskId === "string" && body.taskId.trim() ? body.taskId : undefined,
         text,
         provider,
-        context: body?.context,
+        context: { ...body?.context, actorRoles: user.roles },
       });
     } catch (error) {
       throw this.toTaskException(error);
@@ -67,12 +75,16 @@ export class AssistantController {
   async resumeTask(
     @Param("taskId") taskId: string,
     @Body() body: AssistantTaskResume | null,
+    @CurrentUser() user: AuthenticatedUser,
   ) {
     if (!body || (body.type !== "page_result" && body.type !== "user_input")) {
       throw new HttpException({ message: "invalid_resume_payload" }, 400);
     }
     try {
-      return await this.graphService.resumeTask(taskId, body);
+      const resume = body.type === "page_result"
+        ? { ...body, context: { ...body.context, actorRoles: user.roles } }
+        : body;
+      return await this.graphService.resumeTask(taskId, resume);
     } catch (error) {
       throw this.toTaskException(error);
     }

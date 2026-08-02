@@ -77,6 +77,8 @@ NestJS 前后端业务接口迁移已经完成。Next.js 只负责页面渲染�
 
 Agent 工具校验以注册中心为准，不维护页面字段和动作的硬编码白名单。动作声明 `target` 区分页面动作与列表行动作；动态下拉字段使用 `optionSource: "runtime"`，由当前页面上下文注入可用选项。前端通过 `pageId.fieldId` 和 `pageId.actionId` 绑定执行器，因此扩展新页面能力时可以复用现有 `set_field`、`click_button` 和 `click_list_row_action` 工具。
 
+用户登录、角色菜单、API 权限、Agent 权限和操作审计见 [`docs/auth-and-rbac.md`](docs/auth-and-rbac.md)。
+
 复杂页面可以实现通用 `RegisteredPageController`，统一提供字段设置、页面动作、列表行动作和运行时选项。理算配置页通过该控制器维护独立页面状态，Agent 外层执行器不依赖具体配置业务。
 
 Agent 的一次执行过程是：

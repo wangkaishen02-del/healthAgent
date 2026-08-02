@@ -24,6 +24,7 @@ import {
   saveClaimEventEntry,
   validateBenefitFormula,
 } from "../../../../src/calculation/automation-service.ts";
+import type { ClaimOperator } from "../../../../src/claims/types.ts";
 
 @Injectable()
 export class CalculationService {
@@ -44,6 +45,6 @@ export class CalculationService {
   deleteClaimEventEntry(id: string) { return deleteClaimEventEntry(id); }
   saveClaimDiseaseEntry(input: Parameters<typeof saveClaimDiseaseEntry>[0]) { return saveClaimDiseaseEntry(input); }
   deleteClaimDiseaseEntry(id: string) { return deleteClaimDiseaseEntry(id); }
-  runAutomaticCalculation(claimCaseId: string) { return runAutomaticCalculation(claimCaseId); }
-  rollbackAutomaticCalculation(claimCaseId: string) { return rollbackAutomaticCalculation(claimCaseId); }
+  runAutomaticCalculation(claimCaseId: string, operator: ClaimOperator) { return runAutomaticCalculation(claimCaseId, operator); }
+  rollbackAutomaticCalculation(claimCaseId: string, operator: ClaimOperator) { return rollbackAutomaticCalculation(claimCaseId, operator); }
 }

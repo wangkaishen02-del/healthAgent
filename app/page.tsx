@@ -10,8 +10,10 @@ import CalculationConfigPage from "./components/CalculationConfigPage";
 import ClaimEntryCalculationPage from "./components/ClaimEntryCalculationPage";
 import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
+import { useAuth, type AppRole } from "./auth/AuthProvider";
+import AuditLogPage from "./components/AuditLogPage";
 
-type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config";
+type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config" | "audit_logs";
 type DrawerTab = "basic" | "benefits" | "insureds";
 type InsuredPolicyLedgerItem = {
   id: string;
@@ -527,11 +529,13 @@ function InsuredsView({
 }
 
 export default function Page() {
+  const { user, hasAnyRole, logout } = useAuth();
   const [mainTab, setMainTab] = useState<MainTab>("policy");
   const [openTabs, setOpenTabs] = useState<MainTab[]>(["policy"]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [claimMenuOpen, setClaimMenuOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  const [systemMenuOpen, setSystemMenuOpen] = useState(false);
   const topNavRef = useRef<HTMLElement | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
@@ -592,6 +596,16 @@ export default function Page() {
   }
 
   function openMainTab(tab: MainTab) {
+    const requiredRoles: Record<MainTab, AppRole[]> = {
+      policy: ["claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer"],
+      claim: ["claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer"],
+      claim_registration: ["claim_acceptor"],
+      claim_entry_calculation: ["claim_calculator"],
+      claim_review_completion: ["claim_reviewer"],
+      calculation_config: ["claim_admin"],
+      audit_logs: ["claim_admin"],
+    };
+    if (!hasAnyRole(...requiredRoles[tab])) return;
     setOpenTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
     setMainTab(tab);
   }
@@ -635,6 +649,7 @@ export default function Page() {
         setMenuOpen(false);
         setClaimMenuOpen(false);
         setConfigMenuOpen(false);
+        setSystemMenuOpen(false);
       }
       if (selectRef.current && !selectRef.current.contains(event.target as Node)) {
         setStatusOpen(false);
@@ -648,6 +663,7 @@ export default function Page() {
       setMenuOpen(false);
       setClaimMenuOpen(false);
       setConfigMenuOpen(false);
+      setSystemMenuOpen(false);
     }
     document.addEventListener("click", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
@@ -1359,8 +1375,8 @@ export default function Page() {
         <div className="topbar-left">
           <div className="topbar-brand">healthAgent 承保管理系统</div>
           <nav className="topnav" ref={topNavRef}>
-            <div className="menu-item active">
-              <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setClaimMenuOpen(false); setConfigMenuOpen(false); }}>
+            {hasAnyRole("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer") && <div className="menu-item active">
+              <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setClaimMenuOpen(false); setConfigMenuOpen(false); setSystemMenuOpen(false); }}>
                 综合查询 ▾
               </button>
               <div className={`dropdown ${menuOpen ? "" : "hidden"}`}>
@@ -1371,9 +1387,9 @@ export default function Page() {
                   案件查询
                 </button>
               </div>
-            </div>
-            <div className="menu-item">
-              <button className="menu-trigger" onClick={() => { setConfigMenuOpen((value) => !value); setMenuOpen(false); setClaimMenuOpen(false); }}>
+            </div>}
+            {hasAnyRole("claim_admin") && <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setConfigMenuOpen((value) => !value); setMenuOpen(false); setClaimMenuOpen(false); setSystemMenuOpen(false); }}>
                 理赔配置 ▾
               </button>
               <div className={`dropdown ${configMenuOpen ? "" : "hidden"}`}>
@@ -1381,17 +1397,25 @@ export default function Page() {
                   保单理算配置
                 </button>
               </div>
-            </div>
-            <div className="menu-item">
-              <button className="menu-trigger" onClick={() => { setClaimMenuOpen((value) => !value); setMenuOpen(false); setConfigMenuOpen(false); }}>
+            </div>}
+            {hasAnyRole("claim_acceptor", "claim_calculator", "claim_reviewer") && <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setClaimMenuOpen((value) => !value); setMenuOpen(false); setConfigMenuOpen(false); setSystemMenuOpen(false); }}>
                 理赔处理 ▾
               </button>
               <div className={`dropdown ${claimMenuOpen ? "" : "hidden"}`}>
-                <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>
-                <button className="dropdown-item" onClick={() => { openMainTab("claim_entry_calculation"); setClaimMenuOpen(false); }}>录入与理算</button>
-                <button className="dropdown-item" onClick={() => { openMainTab("claim_review_completion"); setClaimMenuOpen(false); }}>审核结案</button>
+                {hasAnyRole("claim_acceptor") && <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>}
+                {hasAnyRole("claim_calculator") && <button className="dropdown-item" onClick={() => { openMainTab("claim_entry_calculation"); setClaimMenuOpen(false); }}>录入与理算</button>}
+                {hasAnyRole("claim_reviewer") && <button className="dropdown-item" onClick={() => { openMainTab("claim_review_completion"); setClaimMenuOpen(false); }}>审核结案</button>}
               </div>
-            </div>
+            </div>}
+            {hasAnyRole("claim_admin") && <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setSystemMenuOpen((value) => !value); setMenuOpen(false); setClaimMenuOpen(false); setConfigMenuOpen(false); }}>
+                系统管理 ▾
+              </button>
+              <div className={`dropdown ${systemMenuOpen ? "" : "hidden"}`}>
+                <button className="dropdown-item" onClick={() => { openMainTab("audit_logs"); setSystemMenuOpen(false); }}>操作审计</button>
+              </div>
+            </div>}
           </nav>
         </div>
         <div className="topbar-right">
@@ -1402,6 +1426,11 @@ export default function Page() {
           >
             智能助手
           </button>
+          <div className="current-user">
+            <span>{user.displayName}</span>
+            <small>{user.username}</small>
+          </div>
+          <button className="logout-button" type="button" onClick={() => void logout()}>退出</button>
         </div>
       </header>
 
@@ -1418,7 +1447,9 @@ export default function Page() {
                     ? "录入与理算"
                     : tab === "claim_review_completion"
                       ? "审核结案"
-                    : "保单理算配置";
+                    : tab === "calculation_config"
+                      ? "保单理算配置"
+                      : "操作审计";
             return (
               <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
                 <button className="tab-button" aria-current={mainTab === tab ? "page" : undefined} onClick={() => setMainTab(tab)}>{label}</button>
@@ -1637,6 +1668,7 @@ export default function Page() {
         <section className={`page-section ${openTabs.includes("claim_review_completion") && mainTab === "claim_review_completion" ? "" : "hidden"}`}>
           <ClaimEntryCalculationPage ref={claimReviewCompletionControllerRef} mode="review" />
         </section>
+        {openTabs.includes("audit_logs") && mainTab === "audit_logs" && <AuditLogPage />}
 
         <section className={`page-section ${openTabs.includes("calculation_config") && mainTab === "calculation_config" ? "" : "hidden"}`}>
           <CalculationConfigPage ref={calculationConfigControllerRef} />

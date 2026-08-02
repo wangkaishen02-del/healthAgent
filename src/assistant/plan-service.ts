@@ -25,6 +25,7 @@ import {
 import { queryUnderwritingDb } from "../underwriting/prisma-service.ts";
 import { queryClaimCasesDb } from "../claims/prisma-service.ts";
 import { ExternalDataProtector, minimizeAssistantData, redactSensitiveText } from "./privacy.ts";
+import { canAccessAssistantPage, filterAssistantMenus } from "./access-control.ts";
 
 export type LlmProvider = "ollama" | "deepseek";
 
@@ -62,6 +63,7 @@ export type AssistantContinuationContext = {
   }>;
   lastOperationResult?: unknown;
   backendToolResults?: unknown[];
+  actorRoles?: string[];
 };
 
 type AssistantLogEntry =
@@ -158,7 +160,7 @@ export function buildSystemPrompt(userText = "", context?: AssistantContinuation
 当前系统日期（Asia/Shanghai）：${currentDate}。
 
 系统导航信息（无需调用工具）：
-${JSON.stringify(getNavigationRegistry())}
+${JSON.stringify({ menus: filterAssistantMenus(getNavigationRegistry().menus, context?.actorRoles) })}
 
 注册信息发现工具：
 ${JSON.stringify(getAssistantDiscoveryToolCatalog())}
@@ -223,9 +225,14 @@ function normalizePayload(payload: LlmPayload) {
   };
 }
 
-function executeDiscovery(call: AssistantDiscoveryCall) {
-  if (call.tool === "get_navigation_registry") return getNavigationRegistry();
-  if (call.tool === "get_menu_pages") return getMenuPages(call.args.menuId) ?? { error: "menu_not_found" };
+function executeDiscovery(call: AssistantDiscoveryCall, roles: readonly string[] = []) {
+  if (call.tool === "get_navigation_registry") return { menus: filterAssistantMenus(getNavigationRegistry().menus, roles) };
+  if (call.tool === "get_menu_pages") {
+    const menu = getMenuPages(call.args.menuId);
+    if (!menu) return { error: "menu_not_found" };
+    return filterAssistantMenus([menu], roles)[0] ?? { error: "menu_forbidden" };
+  }
+  if (!canAccessAssistantPage(call.args.pageId, roles)) return { error: "page_forbidden" };
   return getCompactPageRegistration(call.args.pageId) ?? { error: "page_not_found" };
 }
 
@@ -289,6 +296,12 @@ function hasSetFieldAction(plan: NonNullable<ReturnType<typeof normalizePayload>
 
 function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
   return plan.toolCalls.filter((call) => call.tool === "click_list_row_action" || call.tool === "click_list_item_action").length > 1;
+}
+
+function hasForbiddenPageAction(plan: NonNullable<ReturnType<typeof normalizePayload>>, roles: readonly string[] = []) {
+  return plan.toolCalls.some((call) => "pageId" in call.args
+    && typeof call.args.pageId === "string"
+    && !canAccessAssistantPage(call.args.pageId, roles));
 }
 
 function misusesClaimCaseNoAsPolicyField(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
@@ -410,6 +423,16 @@ function getLlmIdentity(provider: LlmProvider) {
   return { provider, model: DEEPSEEK_MODEL };
 }
 
+function explicitRequestedPage(userText: string) {
+  const text = userText.replace(/\s+/g, "");
+  if (!/(打开|进入|切换|前往)/.test(text)) return null;
+  if (/受理立案/.test(text)) return "claim_registration";
+  if (/录入与理算|录入理算|理算页面/.test(text)) return "claim_entry_calculation";
+  if (/审核结案|审核页面/.test(text)) return "claim_review_completion";
+  if (/理算配置|配置页面/.test(text)) return "calculation_config";
+  return null;
+}
+
 async function callOllama(messages: OllamaMessage[]) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
@@ -470,6 +493,23 @@ async function callLlm(provider: LlmProvider, messages: OllamaMessage[], protect
 }
 
 export async function requestAgentPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
+  const requestedPage = explicitRequestedPage(userText);
+  if (requestedPage && !canAccessAssistantPage(requestedPage, context?.actorRoles)) {
+    return {
+      ok: true as const,
+      rawReplies: [],
+      plan: {
+        thought: "目标页面超出当前角色权限",
+        reply: "当前账号没有访问该页面或执行该业务环节的权限，请联系管理员调整角色。",
+        recognized: ["目标页面超出当前角色权限"],
+        decision: "finish" as const,
+        toolCalls: [] as AssistantToolCall[],
+        discoverySteps: [],
+        discoveryResults: [],
+        backendToolResults: context?.backendToolResults ?? [],
+      },
+    };
+  }
   const terminalErrorReply = getTerminalOperationError(context?.lastOperationResult);
   if (terminalErrorReply) {
     return {
@@ -496,6 +536,7 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
     lastOperationResult: context.lastOperationResult,
     backendToolResults: context.backendToolResults,
     currentPagePath: context.currentPagePath,
+    actorRoles: context.actorRoles,
   }) as AssistantContinuationContext : undefined;
   const userMessage = context
     ? `${userText}
@@ -552,6 +593,22 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       continue;
     }
     lastPlan = plan;
+
+    if (hasForbiddenPageAction(plan, context?.actorRoles)) {
+      return {
+        ok: true as const,
+        rawReplies,
+        plan: {
+          reply: "当前账号没有访问该页面或执行该业务环节的权限，请联系管理员调整角色。",
+          recognized: ["目标页面超出当前角色权限"],
+          decision: "finish" as const,
+          toolCalls: [] as AssistantToolCall[],
+          discoverySteps,
+          discoveryResults: discoveredResources,
+          backendToolResults,
+        },
+      };
+    }
 
     if (asksForResolvedFields(plan, backendToolResults)) {
       messages.push({ role: "assistant", content: result.content });
@@ -629,7 +686,24 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       };
     }
 
-    const discoveryResults = discoveryCalls.map(executeDiscovery);
+    const discoveryResults = discoveryCalls.map((call) => executeDiscovery(call, context?.actorRoles));
+    const forbiddenDiscovery = discoveryResults.some((result) => result && typeof result === "object"
+      && ["page_forbidden", "menu_forbidden"].includes(String((result as { error?: unknown }).error)));
+    if (forbiddenDiscovery) {
+      return {
+        ok: true as const,
+        rawReplies,
+        plan: {
+          reply: "当前账号没有访问该页面或执行该业务环节的权限，请联系管理员调整角色。",
+          recognized: ["目标页面超出当前角色权限"],
+          decision: "finish" as const,
+          toolCalls: [] as AssistantToolCall[],
+          discoverySteps,
+          discoveryResults: [...discoveredResources, ...discoveryResults],
+          backendToolResults,
+        },
+      };
+    }
     const backendResults = await Promise.all(backendCalls.map(executeBackendTool));
     backendToolResults.push(...backendResults);
     discoveredResources.push(...discoveryResults);

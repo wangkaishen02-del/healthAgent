@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ClaimOperator } from "../claims/types.ts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
 import { calculationExpressionReferencesAny, evaluateCalculationExpression, substituteCalculationExpression, type FormulaValue } from "./expression-engine.ts";
@@ -925,7 +926,7 @@ async function benefitConfigValues(policyId: string, claimCaseId: string, benefi
   return values;
 }
 
-export async function runAutomaticCalculation(claimCaseId: string) {
+export async function runAutomaticCalculation(claimCaseId: string, operator: ClaimOperator = { userId: "default-user", userName: "默认用户" }) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId } });
   if (!claimCase) throw new Error("claim_case_not_found");
   if (claimCase.status !== "entering") throw new Error("claim_case_not_entering");
@@ -1225,14 +1226,14 @@ export async function runAutomaticCalculation(claimCaseId: string) {
         },
       });
     }
-    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "entering" }, data: { status: "calculating", currentHandlerUserId: "default-user", currentHandlerName: "默认用户" } });
+    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "entering" }, data: { status: "calculating", currentHandlerUserId: operator.userId, currentHandlerName: operator.userName } });
     if (changed.count !== 1) throw new Error("claim_case_status_locked");
-    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "calculate", fromStatus: "entering", toStatus: "calculating", operatorUserId: "default-user", operatorName: "默认用户", targetUserId: "default-user", targetUserName: "默认用户", description: "完成理算" } });
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "calculate", fromStatus: "entering", toStatus: "calculating", operatorUserId: operator.userId, operatorName: operator.userName, targetUserId: operator.userId, targetUserName: operator.userName, description: "完成理算" } });
   });
   return result;
 }
 
-export async function rollbackAutomaticCalculation(claimCaseId: string) {
+export async function rollbackAutomaticCalculation(claimCaseId: string, operator: ClaimOperator = { userId: "default-user", userName: "默认用户" }) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId } });
   if (!claimCase) throw new Error("claim_case_not_found");
   if (claimCase.status !== "calculating") throw new Error("claim_case_not_calculating");
@@ -1301,7 +1302,7 @@ export async function rollbackAutomaticCalculation(claimCaseId: string) {
     await tx.claimCalculationRun.deleteMany({ where: { claimCaseId } });
     const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "calculating" }, data: { status: "entering", currentHandlerUserId: targetUserId, currentHandlerName: targetUserName } });
     if (changed.count !== 1) throw new Error("claim_case_status_locked");
-    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "rollback_calculation", fromStatus: "calculating", toStatus: "entering", operatorUserId: "default-user", operatorName: "默认用户", targetUserId, targetUserName, description: `理算回退给提交人 ${targetUserName}` } });
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "rollback_calculation", fromStatus: "calculating", toStatus: "entering", operatorUserId: operator.userId, operatorName: operator.userName, targetUserId, targetUserName, description: `理算回退给提交人 ${targetUserName}` } });
   });
   const configuration = await getAutomationConfiguration(claimCase.policyId, claimCaseId);
   return { success: true, ledgerBalances: configuration.ledgerBalances };

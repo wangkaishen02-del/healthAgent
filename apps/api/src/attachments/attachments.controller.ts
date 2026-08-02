@@ -5,6 +5,7 @@ import { getClaimUpload, removeClaimUpload, storeClaimUpload } from "../../../..
 import type { ClaimAttachmentCategory } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { AttachmentOcrService } from "./attachment-ocr.service.ts";
+import { Roles } from "../auth/auth.decorators.ts";
 
 const categories: ClaimAttachmentCategory[] = ["application", "identity", "medical", "invoice", "bank", "other"];
 
@@ -16,6 +17,7 @@ export class AttachmentsController {
   ) {}
 
   @Get("ocr")
+  @Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
   async ocrResult(@Query("uploadId") uploadId?: string) {
     if (!uploadId) throw new BadRequestException("uploadId is required");
     const result = await this.ocr.get(uploadId);
@@ -24,6 +26,7 @@ export class AttachmentsController {
   }
 
   @Post("ocr/retry")
+  @Roles("claim_acceptor", "claim_calculator")
   async retryOcr(@Body("uploadId") uploadId?: string) {
     if (!uploadId) throw new BadRequestException("uploadId is required");
     if (!getClaimUpload(uploadId)) throw new NotFoundException("attachment_not_found");
@@ -31,6 +34,7 @@ export class AttachmentsController {
   }
 
   @Get()
+  @Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
   preview(
     @Query("uploadId") uploadId: string | undefined,
     @Res({ passthrough: true }) response: Response,
@@ -48,6 +52,7 @@ export class AttachmentsController {
   }
 
   @Post()
+  @Roles("claim_acceptor", "claim_calculator")
   @UseInterceptors(FileInterceptor("file", { limits: { fileSize: 10 * 1024 * 1024 } }))
   async upload(
     @UploadedFile() file: Express.Multer.File | undefined,
@@ -76,6 +81,7 @@ export class AttachmentsController {
   }
 
   @Delete()
+  @Roles("claim_acceptor", "claim_calculator")
   async remove(
     @Query("uploadId") uploadId?: string,
     @Headers("idempotency-key") operationKey?: string,

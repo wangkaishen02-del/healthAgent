@@ -376,6 +376,45 @@ model ClaimCaseTransition {
   @@map("claim_case_transition")
 }
 
+model AppUserSnapshot {
+  userId      String   @id @map("user_id") @db.VarChar(100)
+  username    String   @db.VarChar(100)
+  displayName String   @map("display_name") @db.VarChar(150)
+  email       String?  @db.VarChar(200)
+  roles       Json
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+
+  @@index([username], map: "idx_app_user_snapshot_username")
+  @@index([lastSeenAt], map: "idx_app_user_snapshot_last_seen")
+  @@map("app_user_snapshot")
+}
+
+model OperationAudit {
+  id            String   @id @default(uuid()) @db.VarChar(50)
+  actorUserId   String   @map("actor_user_id") @db.VarChar(100)
+  actorUsername String   @map("actor_username") @db.VarChar(100)
+  actorName     String   @map("actor_name") @db.VarChar(150)
+  actorRoles    Json     @map("actor_roles")
+  method        String   @db.VarChar(10)
+  path          String   @db.VarChar(300)
+  resourceType  String   @map("resource_type") @db.VarChar(100)
+  resourceId    String?  @map("resource_id") @db.VarChar(100)
+  outcome       String   @db.VarChar(20)
+  statusCode    Int      @map("status_code")
+  errorCode     String?  @map("error_code") @db.VarChar(100)
+  requestId     String   @map("request_id") @db.VarChar(100)
+  ipAddress     String?  @map("ip_address") @db.VarChar(100)
+  userAgent     String?  @map("user_agent") @db.VarChar(300)
+  occurredAt    DateTime @default(now()) @map("occurred_at")
+
+  @@index([actorUserId, occurredAt], map: "idx_operation_audit_actor_time")
+  @@index([resourceType, resourceId, occurredAt], map: "idx_operation_audit_resource_time")
+  @@index([outcome, occurredAt], map: "idx_operation_audit_outcome_time")
+  @@index([requestId], map: "idx_operation_audit_request_id")
+  @@map("operation_audit")
+}
+
 model ClaimEvent {
   id                 String   @id @default(uuid()) @db.VarChar(50)
   eventNo            String   @unique @map("event_no") @db.VarChar(50)

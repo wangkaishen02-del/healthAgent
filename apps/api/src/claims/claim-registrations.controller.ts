@@ -1,8 +1,10 @@
-import { BadRequestException, Body, ConflictException, Controller, Get, Headers, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Headers, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
 import type { ClaimCaseStatus, CreateClaimCaseInput } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
 import { isClaimCaseInput } from "./claim-validation.ts";
+import { CurrentUser, Roles } from "../auth/auth.decorators.ts";
+import type { AuthenticatedUser } from "../auth/auth.types.ts";
 
 function positiveNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
@@ -25,6 +27,7 @@ export class ClaimRegistrationsController {
   ) {}
 
   @Get()
+  @Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
   async list(@Query() query: Record<string, string | undefined>) {
     const filterKeys = ["id", "keyword", "caseNo", "policyNo", "insuredName", "insuredIdNo", "status", "reportDateFrom", "reportDateTo", "page", "pageSize"];
     if (!filterKeys.some((key) => query[key] !== undefined)) return { items: await this.claims.listCases() };
@@ -48,14 +51,16 @@ export class ClaimRegistrationsController {
   }
 
   @Post()
-  async create(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
+  @Roles("claim_acceptor")
+  async create(@Body() body: unknown, @CurrentUser() user: AuthenticatedUser, @Headers("idempotency-key") operationKey?: string) {
     if (!isClaimCaseInput(body)) throw new BadRequestException("invalid_claim_case");
     try {
-      return await this.idempotency.execute("claim_case:create", operationKey, body, () => this.claims.createCase(body));
+      return await this.idempotency.execute("claim_case:create", operationKey, body, () => this.claims.createCase(body, { userId: user.id, userName: user.displayName }));
     } catch (error) { throwClaimError(error); }
   }
 
   @Put()
+  @Roles("claim_acceptor")
   async update(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { id?: unknown }).id !== "string" || !isClaimCaseInput(body)) {
       throw new BadRequestException("invalid_claim_case");
@@ -77,12 +82,24 @@ export class ClaimRegistrationsController {
   }
 
   @Patch()
+  @Roles("claim_acceptor", "claim_calculator", "claim_reviewer")
   async changeStatus(
     @Body() body: { id?: unknown; action?: unknown },
+    @CurrentUser() user: AuthenticatedUser,
     @Headers("idempotency-key") operationKey?: string,
   ) {
     if (!body || typeof body.id !== "string" || !["submit", "review", "complete", "cancel", "rollback"].includes(String(body.action))) {
       throw new BadRequestException("invalid_claim_action");
+    }
+    const requiredRole = body.action === "submit"
+      ? "claim_acceptor"
+      : body.action === "review"
+        ? "claim_calculator"
+        : body.action === "complete"
+          ? "claim_reviewer"
+          : null;
+    if (requiredRole && !user.roles.includes(requiredRole) && !user.roles.includes("claim_admin")) {
+      throw new ForbiddenException("claim_action_role_mismatch");
     }
     try {
       const result = await this.idempotency.execute(
@@ -90,10 +107,11 @@ export class ClaimRegistrationsController {
         operationKey,
         body,
         () => body.action === "rollback"
-          ? this.claims.rollbackCase(body.id as string)
+          ? this.claims.rollbackCase(body.id as string, { userId: user.id, userName: user.displayName })
           : this.claims.changeCaseStatus(
             body.id as string,
             body.action === "submit" ? "entering" : body.action === "review" ? "reviewing" : body.action === "complete" ? "completed" : "cancelled",
+            { userId: user.id, userName: user.displayName },
           ),
       );
       if (!result) throw new NotFoundException("claim_case_not_found");

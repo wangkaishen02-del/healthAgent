@@ -6,6 +6,9 @@ import type { CalculationParameterScope } from "../../../../src/underwriting/typ
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { UnderwritingService } from "../underwriting/underwriting.service.ts";
 import { CalculationService } from "./calculation.service.ts";
+import { Roles } from "../auth/auth.decorators.ts";
+import { CurrentUser } from "../auth/auth.decorators.ts";
+import type { AuthenticatedUser } from "../auth/auth.types.ts";
 
 const scopes: CalculationParameterScope[] = ["policy", "plan", "product", "benefit"];
 
@@ -38,6 +41,7 @@ function throwMutationError(error: unknown): never {
 }
 
 @Controller("calculation-parameters")
+@Roles("claim_admin")
 export class CalculationController {
   constructor(
     @Inject(CalculationService) private readonly calculation: CalculationService,
@@ -111,6 +115,7 @@ const variableCategories: CalculationVariableCategory[] = ["bill", "event", "led
 const automationValueTypes: AutomationValueType[] = ["number", "boolean"];
 
 @Controller("automatic-calculation")
+@Roles("claim_calculator", "claim_reviewer")
 export class AutomaticCalculationController {
   constructor(@Inject(CalculationService) private readonly calculation: CalculationService) {}
 
@@ -261,16 +266,16 @@ export class AutomaticCalculationController {
   }
 
   @Post("run")
-  run(@Body() body: Record<string, unknown>) {
+  run(@Body() body: Record<string, unknown>, @CurrentUser() user: AuthenticatedUser) {
     if (typeof body.claimCaseId !== "string") throw new BadRequestException("claimCaseId is required");
-    return this.calculation.runAutomaticCalculation(body.claimCaseId)
+    return this.calculation.runAutomaticCalculation(body.claimCaseId, { userId: user.id, userName: user.displayName })
       .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "automatic_calculation_failed"); });
   }
 
   @Post("rollback")
-  rollback(@Body() body: Record<string, unknown>) {
+  rollback(@Body() body: Record<string, unknown>, @CurrentUser() user: AuthenticatedUser) {
     if (typeof body.claimCaseId !== "string") throw new BadRequestException("claimCaseId is required");
-    return this.calculation.rollbackAutomaticCalculation(body.claimCaseId)
+    return this.calculation.rollbackAutomaticCalculation(body.claimCaseId, { userId: user.id, userName: user.displayName })
       .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "calculation_rollback_failed"); });
   }
 }

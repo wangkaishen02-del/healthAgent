@@ -539,6 +539,7 @@ const pages: PageRegistration[] = [
 ];
 
 export function getNavigationRegistry() { return { menus }; }
+export function getAllMenuRegistrations() { return menus; }
 export function getMenuPages(menuId: string) { return menus.find((menu) => menu.menuId === menuId) ?? null; }
 
 export function getPageRegistration(pageId: string) {

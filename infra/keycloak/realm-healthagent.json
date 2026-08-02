@@ -1,0 +1,92 @@
+{
+  "realm": "healthagent",
+  "enabled": true,
+  "displayName": "healthAgent 理赔系统",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": true,
+  "rememberMe": true,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "eventsEnabled": true,
+  "eventsListeners": ["jboss-logging"],
+  "adminEventsEnabled": true,
+  "adminEventsDetailsEnabled": true,
+  "sslRequired": "external",
+  "roles": {
+    "realm": [
+      { "name": "claim_viewer", "description": "查看保单、案件和台账" },
+      { "name": "claim_acceptor", "description": "受理立案和受理阶段维护" },
+      { "name": "claim_calculator", "description": "录入、理算和理算回退" },
+      { "name": "claim_reviewer", "description": "审核、回退和结案" },
+      { "name": "claim_admin", "description": "系统配置和全部业务权限" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "healthagent-web",
+      "name": "healthAgent Web",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": false,
+      "rootUrl": "http://127.0.0.1:3000",
+      "baseUrl": "http://127.0.0.1:3000",
+      "redirectUris": [
+        "http://127.0.0.1:3000/*",
+        "http://localhost:3000/*"
+      ],
+      "webOrigins": [
+        "http://127.0.0.1:3000",
+        "http://localhost:3000"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256"
+      },
+      "protocolMappers": [
+        {
+          "name": "healthagent-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "healthagent-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "healthagent-api",
+      "name": "healthAgent API",
+      "enabled": true,
+      "bearerOnly": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ],
+  "users": [
+    {
+      "username": "default-user",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "默认",
+      "lastName": "用户",
+      "email": "default-user@healthagent.local",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "default-user-change-me",
+          "temporary": true
+        }
+      ],
+      "realmRoles": ["claim_admin"]
+    }
+  ]
+}

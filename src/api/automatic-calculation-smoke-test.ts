@@ -142,7 +142,7 @@ try {
     selectedBenefitIds: [configuredBenefits[0].benefitId, configuredBenefits[1].benefitId],
   });
 
-  const calculated = await runAutomaticCalculation(temporaryCaseId) as {
+  const calculated = await runAutomaticCalculation(temporaryCaseId, { userId: "calculation-test-user", userName: "理算测试用户" }) as {
     runId: string;
     billResults: Array<{
       billId: string;
@@ -159,6 +159,7 @@ try {
   assert(calculated.billResults.every((item) => scopedBenefitIds.has(item.benefitId)), "calculation results must stay within the insured person's coverage plan");
   assert(calculated.billResults.every((item) => item.substitutedMatchExpression && item.steps.every((step) => step.substitutedExpression)), "calculation process should retain substituted expressions");
   assert(Number.isFinite(calculated.totalAmount));
+  assert.equal((await prisma.claimCaseTransition.findFirst({ where: { claimCaseId: temporaryCaseId, action: "calculate" }, orderBy: { occurredAt: "desc" } }))?.operatorUserId, "calculation-test-user");
   assert(await prisma.claimCaseCalculationResult.findUnique({ where: { id: calculated.runId } }), "calculation should persist a case result");
   const billBenefitResults = await prisma.claimBillBenefitCalculationResult.findMany({ where: { calculationResultId: calculated.runId } });
   assert.equal(billBenefitResults.length, 4, "calculation should persist one result per bill and responsibility");
@@ -178,14 +179,15 @@ try {
     `event:${sourceCase.eventId}`,
   ]);
   assert(carried.every((item) => allowedLedgerScopeIds.has(item.benefitId)), "ledger current values must stay within the insured person's coverage plan");
-  await rollbackAutomaticCalculation(temporaryCaseId);
+  await rollbackAutomaticCalculation(temporaryCaseId, { userId: "review-test-user", userName: "审核测试用户" });
+  assert.equal((await prisma.claimCaseTransition.findFirst({ where: { claimCaseId: temporaryCaseId, action: "rollback_calculation" }, orderBy: { occurredAt: "desc" } }))?.operatorUserId, "review-test-user");
   assert.equal(await prisma.claimCalculationProcess.count({ where: { billBenefitResultId: { in: billBenefitResults.map((item) => item.id) } } }), 0, "rollback should delete formula step processes");
   assert.equal(await prisma.claimLedgerAccumulationRecord.count({ where: { claimCaseId: temporaryCaseId } }), 0, "rollback should delete the case accumulation records");
   assert.equal(await prisma.claimCaseCalculationResult.count({ where: { claimCaseId: temporaryCaseId } }), 0, "rollback should delete the case result");
   assert.equal(await prisma.claimBillBenefitCalculationResult.count({ where: { claimCaseId: temporaryCaseId } }), 0, "rollback should delete bill responsibility results");
   const rolledBackCurrentValues = await prisma.claimLedgerCurrentValue.findMany({ where: { insuredPersonId: temporaryPersonId } });
   assert(rolledBackCurrentValues.every((item) => Number(item.currentAmount) === 0), "rollback should restore ledger current values");
-  const recalculated = await runAutomaticCalculation(temporaryCaseId);
+  const recalculated = await runAutomaticCalculation(temporaryCaseId, { userId: "calculation-test-user", userName: "理算测试用户" });
   assert.equal(recalculated.committed, true, "the case should support calculation again after rollback");
   console.log(JSON.stringify({ bills: 2, selectedFormulaRuns: calculated.billResults.length, ledgerEntries: entryCount, ledgerBalances: carried.length, totalAmount: calculated.totalAmount }));
 } finally {

@@ -2,6 +2,7 @@ import { BadRequestException, Body, ConflictException, Controller, Headers, Inje
 import type { ClaimRemarkStage } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
+import { Roles } from "../auth/auth.decorators.ts";
 
 const remarkStages: ClaimRemarkStage[] = ["acceptance", "calculation", "review"];
 
@@ -13,6 +14,7 @@ export class ClaimRemarksController {
   ) {}
 
   @Post()
+  @Roles("claim_acceptor", "claim_calculator", "claim_reviewer")
   async create(
     @Body() body: { claimCaseId?: unknown; stage?: unknown; content?: unknown },
     @Headers("idempotency-key") operationKey?: string,
