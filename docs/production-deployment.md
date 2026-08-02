@@ -112,6 +112,10 @@ docker compose --env-file .env.production -f compose.production.yaml exec backup
 
 不可在未审查差异时直接绕过保护。当前开发数据库已经完成迁移基线，可正常备份后迁入生产环境。
 
+全新空库由 API 启动脚本先同步当前 Prisma Schema，再执行
+`infra/database/current-schema-post-push.sql` 补齐 Prisma Schema 无法表达的参数编号触发器，最后将历史迁移登记为已应用。
+CI 使用同一套初始化步骤并导入示例数据，以持续验证全新部署不会依赖旧数据库中的隐含对象。
+
 ## 8. 更新与回滚
 
 每次发布先提交代码并记录提交号，然后构建镜像、备份、更新。不要使用浮动 `latest` 基础镜像；本编排固定 Node 24、Keycloak 26.7.0、Caddy 2.11.4 和 PostgreSQL 17 的主版本/补丁标签。

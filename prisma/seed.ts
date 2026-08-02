@@ -193,6 +193,47 @@ async function seed() {
     });
   }
 
+  const productPolicyIds = new Map(policyProducts.map((item) => [item.id, item.policyId]));
+  const defaultBenefitParameters = { LIMIT: "100000", DEDUCTIBLE: "300", PAYMENT_RATIO: "90" } as const;
+  for (const benefit of policyBenefits) {
+    for (const [parameterCode, parameterValue] of Object.entries(defaultBenefitParameters)) {
+      const definitionId = definitionIds.get(parameterCode);
+      if (!definitionId) throw new Error(`Missing calculation parameter definition ${parameterCode}`);
+      await prisma.calculationParameter.upsert({
+        where: { scope_targetId_definitionId: { scope: "benefit", targetId: benefit.id, definitionId } },
+        update: {},
+        create: {
+          id: `seed-${benefit.id}-${parameterCode.toLowerCase()}`,
+          scope: "benefit",
+          targetId: benefit.id,
+          definitionId,
+          parameterValue,
+          description: "基础演示责任默认理算参数",
+          enabled: true,
+        },
+      });
+    }
+
+    const policyId = productPolicyIds.get(benefit.policyProductId);
+    if (!policyId) throw new Error(`Missing policy for product ${benefit.policyProductId}`);
+    await prisma.benefitCalculationFormula.upsert({
+      where: { benefitId: benefit.id },
+      update: {},
+      create: {
+        policyId,
+        benefitId: benefit.id,
+        formulaName: `${benefit.benefitName}自动理算`,
+        matchExpression: "医疗总费用 > 0",
+        steps: [
+          { id: "1", name: "可理算费用", expression: "最大(0, 医疗总费用 - 自费金额)", result: false },
+          { id: "2", name: "扣除免赔后金额", expression: "最大(0, 可理算费用 - 免赔额)", result: false },
+          { id: "3", name: "责任给付金额", expression: "最小(扣除免赔后金额 * 赔付比例 / 100, 限额)", result: true, ledgerTarget: { code: "annual_payment", name: "累计年给付金额" } },
+        ],
+        enabled: true,
+      },
+    });
+  }
+
   const insuredPersonId = personIds.get("insured-001")!;
   const initialEvents = [
     { id: "claim-event-001", eventNo: "EV202606120001", eventType: "1", occurredDate: "2026-06-12", administrativeArea: "上海市 / 上海市 / 黄浦区", detailedAddress: "中山东一路附近", hospitalName: "上海市第一人民医院", diagnosis: "急性上呼吸道感染", description: "发热咳嗽后前往门诊就医。" },

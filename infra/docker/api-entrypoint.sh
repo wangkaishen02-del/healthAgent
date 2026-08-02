@@ -6,6 +6,7 @@ database_state=$(node /app/infra/docker/database-state.mjs)
 if [ "$database_state" = "empty" ]; then
   echo "Initializing an empty healthAgent database from the current Prisma schema"
   ./node_modules/.bin/prisma db push --skip-generate
+  ./node_modules/.bin/prisma db execute --schema /app/prisma/schema.prisma --file /app/infra/database/current-schema-post-push.sql
   for migration_dir in /app/prisma/migrations/*; do
     migration_name=${migration_dir##*/}
     ./node_modules/.bin/prisma migrate resolve --applied "$migration_name"

@@ -20,6 +20,7 @@
     "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",
     "test:api": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
     "test:auto-calculation": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/automatic-calculation-smoke-test.ts",
+    "test:e2e": "node scripts/run-e2e.mjs",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
     "db:logs": "docker compose logs -f postgres",
@@ -44,6 +45,7 @@
     "rxjs": "^7.8.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.0.0",

@@ -18,6 +18,7 @@ COPY --from=builder --chown=healthagent:healthagent /app/node_modules ./node_mod
 COPY --from=builder --chown=healthagent:healthagent /app/package.json ./package.json
 COPY --from=builder --chown=healthagent:healthagent /app/dist ./dist
 COPY --from=builder --chown=healthagent:healthagent /app/prisma ./prisma
+COPY --from=builder --chown=healthagent:healthagent /app/infra/database ./infra/database
 COPY --from=builder --chown=healthagent:healthagent /app/infra/docker/database-state.mjs ./infra/docker/database-state.mjs
 COPY --from=builder --chown=healthagent:healthagent /app/infra/docker/api-entrypoint.sh ./infra/docker/api-entrypoint.sh
 USER healthagent

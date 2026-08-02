@@ -6,7 +6,10 @@ import { calculationExpressionIdentifiers, calculationExpressionReferencesAny, e
 import { ClaimsService } from "../../apps/api/src/claims/claims.service.ts";
 import { transitionClaimCaseDb } from "../claims/prisma-service.ts";
 
-const sourceCase = await prisma.claimCase.findFirst({ where: { status: "entering" }, orderBy: { createdAt: "asc" } });
+const sourceCase = await prisma.claimCase.findFirst({
+  where: { status: "entering", policyId: "policy-001" },
+  orderBy: { createdAt: "asc" },
+});
 assert(sourceCase, "a processing claim case is required");
 
 const configuration = await getAutomationConfiguration(sourceCase.policyId);
