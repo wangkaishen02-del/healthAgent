@@ -3,187 +3,38 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import type { ClaimCase, ClaimPersonEvent, ClaimUpload } from "../../src/claims/types";
-import { CLAIM_STATUS_LABELS } from "../../src/claims/state-machine";
 import { apiFetch } from "../../src/api/client";
-import AppCombobox, { type AppComboboxOption } from "./AppCombobox";
+import AppCombobox from "./AppCombobox";
 import AppDatePicker from "./AppDatePicker";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
-import ClaimRegistrationPage, { type RegistrationSection } from "./ClaimRegistrationPage";
+import ClaimRegistrationPage from "./ClaimRegistrationPage";
 import ClaimImageWorkspace from "./ClaimImageWorkspace";
+import ClaimWorkflowDialogs from "./ClaimWorkflowDialogs";
 import type { AutomaticCalculationResult, BenefitFormulaView, CalculationVariableView, LedgerBalanceView } from "../../src/calculation/automation-types";
-
-type AcceptanceReviewTab = "acceptance_basic" | "acceptance_insured" | "acceptance_applicant" | "acceptance_payee" | "acceptance_remark";
-type EntryTab = "bill" | "event" | "disease" | AcceptanceReviewTab;
-type EntryWorkflowStatus = "editing" | "calculated";
-type BillAttachmentChangeDecision = "change" | "cancel" | "keep";
-
-type BillEntry = {
-  id: string;
-  claimCaseId: string;
-  invoiceCode: string;
-  invoiceNo: string;
-  checkCode: string;
-  billType: string;
-  patientName: string;
-  patientIdNo: string;
-  visitNo: string;
-  institution: string;
-  department: string;
-  billDate: string;
-  admissionDate: string;
-  dischargeDate: string;
-  diagnosis: string;
-  medicalInsuranceType: string;
-  settlementNo: string;
-  totalAmount: number;
-  insuranceFundAmount: number;
-  personalAccountAmount: number;
-  cashAmount: number;
-  selfPaidAmount: number;
-  cashier: string;
-  attachmentIds: string[];
-  customValues: Record<string, string | number | boolean>;
-  selectedBenefitIds: string[];
-  createdAt: string;
-  updatedAt: string;
-};
-
-type DiseaseEntry = {
-  id: string;
-  diseaseName: string;
-  icdCode: string;
-  diagnosisDate: string;
-  hospital: string;
-  note: string;
-};
-
-type CaseEntryData = {
-  bills: BillEntry[];
-  events: ClaimPersonEvent[];
-  diseases: DiseaseEntry[];
-};
-
-type ProcessingCaseResult = {
-  items: ClaimCase[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
-
-type AutomationBenefit = {
-  id: string;
-  code: string;
-  name: string;
-  productId: string;
-  planId?: string;
-  productName: string;
-};
-
-type CalculationDictionaryItem = {
-  dictionaryType: string;
-  itemCode: string;
-  itemName: string;
-};
-
-const billTypeOptions: AppSelectOption<string>[] = [
-  { value: "1", label: "门诊" },
-  { value: "2", label: "住院" },
-  { value: "3", label: "门诊特殊病" },
-  { value: "4", label: "药店购药" },
-  { value: "9", label: "其他费用" },
-];
-
-const medicalInsuranceTypeOptions: AppSelectOption<string>[] = [
-  { value: "1", label: "城镇职工基本医疗保险" },
-  { value: "2", label: "城乡居民基本医疗保险" },
-  { value: "3", label: "新型农村合作医疗" },
-  { value: "4", label: "商业健康保险" },
-  { value: "5", label: "全自费" },
-  { value: "9", label: "其他" },
-];
-
-const eventTypeOptions: AppSelectOption<string>[] = [
-  { value: "1", label: "疾病" },
-  { value: "2", label: "意外" },
-  { value: "9", label: "其他" },
-];
-const eventFilterOptions: AppSelectOption<string>[] = [{ value: "all", label: "全部类型" }, ...eventTypeOptions];
-const eventAreaOptions: AppComboboxOption[] = [
-  { value: "310115", label: "上海市 / 上海市 / 浦东新区", keywords: "上海 浦东 pudong" },
-  { value: "310101", label: "上海市 / 上海市 / 黄浦区", keywords: "上海 黄浦 huangpu" },
-  { value: "310104", label: "上海市 / 上海市 / 徐汇区", keywords: "上海 徐汇 xuhui" },
-  { value: "110105", label: "北京市 / 北京市 / 朝阳区", keywords: "北京 朝阳 chaoyang" },
-  { value: "110108", label: "北京市 / 北京市 / 海淀区", keywords: "北京 海淀 haidian" },
-  { value: "440305", label: "广东省 / 深圳市 / 南山区", keywords: "广东 深圳 南山 shenzhen" },
-  { value: "440106", label: "广东省 / 广州市 / 天河区", keywords: "广东 广州 天河 guangzhou" },
-  { value: "330106", label: "浙江省 / 杭州市 / 西湖区", keywords: "浙江 杭州 西湖 hangzhou" },
-  { value: "320102", label: "江苏省 / 南京市 / 玄武区", keywords: "江苏 南京 玄武 nanjing" },
-  { value: "510107", label: "四川省 / 成都市 / 武侯区", keywords: "四川 成都 武侯 chengdu" },
-];
-
-const acceptanceReviewSections: Array<{ tab: AcceptanceReviewTab; section: RegistrationSection; number: string; label: string }> = [
-  { tab: "acceptance_basic", section: "basic", number: "01", label: "立案信息" },
-  { tab: "acceptance_insured", section: "insured", number: "02", label: "被保人信息" },
-  { tab: "acceptance_applicant", section: "applicant", number: "03", label: "申请人信息" },
-  { tab: "acceptance_payee", section: "payee", number: "04", label: "领款人信息" },
-  { tab: "acceptance_remark", section: "remark", number: "05", label: "案件备注" },
-];
-
-const DEFAULT_CASE_PAGE_SIZE = 10;
-
-function adaptiveCasePageSize(viewportHeight: number) {
-  return Math.max(5, Math.min(20, Math.floor((viewportHeight - 390) / 48)));
-}
-
-function money(value: number) {
-  return value.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function emptyCalculationEventForm() {
-  return {
-    eventType: "1",
-    occurredDate: "",
-    administrativeArea: "",
-    detailedAddress: "",
-    hospitalName: "",
-    diagnosis: "",
-    description: "",
-  };
-}
-
-function emptyBillForm(patientName = "", patientIdNo = "") {
-  return {
-    invoiceCode: "",
-    invoiceNo: "",
-    checkCode: "",
-    billType: "1",
-    patientName,
-    patientIdNo,
-    visitNo: "",
-    institution: "",
-    department: "",
-    billDate: "",
-    admissionDate: "",
-    dischargeDate: "",
-    diagnosis: "",
-    medicalInsuranceType: "1",
-    settlementNo: "",
-    totalAmount: "",
-    insuranceFundAmount: "",
-    personalAccountAmount: "",
-    cashAmount: "",
-    selfPaidAmount: "",
-    cashier: "",
-  };
-}
-
-type ClaimEntryCalculationPageProps = {
-  mode?: "processing" | "review" | "query";
-  initialCase?: ClaimCase;
-  onClose?: () => void;
-};
-
-const detailStatusLabels: Record<ClaimCase["status"], string> = CLAIM_STATUS_LABELS;
+import {
+  acceptanceReviewSections,
+  adaptiveCasePageSize,
+  billTypeOptions,
+  DEFAULT_CASE_PAGE_SIZE,
+  detailStatusLabels,
+  emptyBillForm,
+  emptyCalculationEventForm,
+  eventAreaOptions,
+  eventFilterOptions,
+  eventTypeOptions,
+  medicalInsuranceTypeOptions,
+  money,
+  type AutomationBenefit,
+  type BillAttachmentChangeDecision,
+  type BillEntry,
+  type CalculationDictionaryItem,
+  type CaseEntryData,
+  type ClaimEntryCalculationPageProps,
+  type DiseaseEntry,
+  type EntryTab,
+  type EntryWorkflowStatus,
+  type ProcessingCaseResult,
+} from "./ClaimEntryCalculationModel";
 
 const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntryCalculationPageProps>(function ClaimEntryCalculationPage({ mode = "processing", initialCase, onClose }, assistantRef) {
   const reviewMode = mode === "review";
@@ -1341,59 +1192,20 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
 
   return (
     <div className={`claim-image-push-stage ${attachmentsOpen ? "image-open" : ""}`}>
-      {attachmentChangePrompt ? (
-        <div className="bill-attachment-change-overlay">
-          <div className="bill-attachment-change-dialog" role="dialog" aria-modal="true" aria-labelledby="bill-attachment-change-title">
-            <div className="section-title" id="bill-attachment-change-title">账单绑定影像件发生变化</div>
-            <p>
-              当前绑定：<strong>{attachmentChangePrompt.previousName}</strong>
-              <br />
-              保存后：<strong>{attachmentChangePrompt.nextName ?? "不再绑定影像件"}</strong>
-            </p>
-            <div className="bill-attachment-change-actions">
-              <button type="button" onClick={() => resolveAttachmentChangeDecision("change")}>确定</button>
-              <button type="button" className="secondary-button" onClick={() => resolveAttachmentChangeDecision("cancel")}>取消</button>
-              <button type="button" className="secondary-button" onClick={() => resolveAttachmentChangeDecision("keep")}>不修改绑定</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {rollbackPromptOpen ? (
-        <div className="bill-attachment-change-overlay">
-          <div className="bill-attachment-change-dialog" role="dialog" aria-modal="true" aria-labelledby="calculation-rollback-title">
-            <div className="section-title" id="calculation-rollback-title">确认理算回退</div>
-            <p>回退后将删除本案的理算过程、账单责任结果和案件结果，同时删除本案累计记录并冲回台账当前值。</p>
-            <div className="bill-attachment-change-actions">
-              <button type="button" className="danger-button" onClick={() => void rollbackCalculation()}>确认回退</button>
-              <button type="button" className="secondary-button" onClick={() => setRollbackPromptOpen(false)}>取消</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {caseRollbackPromptOpen ? (
-        <div className="bill-attachment-change-overlay">
-          <div className="bill-attachment-change-dialog" role="dialog" aria-modal="true" aria-labelledby="case-rollback-title">
-            <div className="section-title" id="case-rollback-title">确认案件回退</div>
-            <p>案件将直接回到上一状态，并退给最近一次提交到当前状态的操作人。</p>
-            <div className="bill-attachment-change-actions">
-              <button type="button" className="danger-button" onClick={() => void rollbackCase()}>确认回退</button>
-              <button type="button" className="secondary-button" onClick={() => setCaseRollbackPromptOpen(false)}>取消</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {withdrawPromptOpen ? (
-        <div className="bill-attachment-change-overlay">
-          <div className="bill-attachment-change-dialog" role="dialog" aria-modal="true" aria-labelledby="calculation-withdraw-title">
-            <div className="section-title" id="calculation-withdraw-title">确认撤件</div>
-            <p>确定撤销案件 <strong>{selectedCase.caseNo}</strong> 吗？撤件后案件将退出当前处理流程。</p>
-            <div className="bill-attachment-change-actions">
-              <button type="button" className="danger-button" onClick={() => void withdrawCase()}>确认撤件</button>
-              <button type="button" className="secondary-button" onClick={() => setWithdrawPromptOpen(false)}>取消</button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ClaimWorkflowDialogs
+        attachmentChange={attachmentChangePrompt}
+        calculationRollbackOpen={rollbackPromptOpen}
+        caseRollbackOpen={caseRollbackPromptOpen}
+        withdrawOpen={withdrawPromptOpen}
+        caseNo={selectedCase.caseNo}
+        onAttachmentDecision={resolveAttachmentChangeDecision}
+        onCalculationRollback={rollbackCalculation}
+        onCloseCalculationRollback={() => setRollbackPromptOpen(false)}
+        onCaseRollback={rollbackCase}
+        onCloseCaseRollback={() => setCaseRollbackPromptOpen(false)}
+        onWithdraw={withdrawCase}
+        onCloseWithdraw={() => setWithdrawPromptOpen(false)}
+      />
       {calculationProcessOpen && calculationResult ? (
         <div className="calculation-process-overlay" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setCalculationProcessOpen(false);
