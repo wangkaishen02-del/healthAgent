@@ -9,6 +9,7 @@ import {
   policyInsureds,
   policyProducts,
 } from "../src/underwriting/mock-data.ts";
+import { seedScenarioData } from "./scenario-data.ts";
 
 const prisma = new PrismaClient();
 
@@ -28,7 +29,66 @@ const personIds = idMap(insuredPersons);
 const policyInsuredIds = idMap(policyInsureds);
 const definitionIds = new Map(calculationParameterDefinitions.map((item) => [item.parameterCode, `definition-${item.parameterCode.toLowerCase()}`]));
 
+const dictionarySeed = [
+  ["bill_type", "账单类型", [["1", "门诊"], ["2", "住院"], ["3", "门诊特殊病"], ["4", "药店购药"], ["9", "其他费用"]]],
+  ["medical_insurance_type", "医保类型", [["1", "城镇职工基本医疗保险"], ["2", "城乡居民基本医疗保险"], ["3", "新型农村合作医疗"], ["4", "商业健康保险"], ["5", "全自费"], ["9", "其他"]]],
+  ["event_type", "事件类型", [["1", "疾病"], ["2", "意外"], ["9", "其他"]]],
+  ["claim_case_status", "案件状态", [["1", "受理中"], ["2", "处理中"], ["3", "已结案"], ["4", "已撤件"]]],
+  ["claim_report_channel", "报案渠道", [["1", "线上报案"], ["2", "电话报案"], ["3", "柜面报案"], ["9", "其他"]]],
+  ["claim_payment_method", "赔付方式", [["0", "待确定"], ["1", "银行转账"], ["2", "现金"], ["9", "其他"]]],
+  ["attachment_category", "影像件分类", [["1", "申请材料"], ["2", "身份材料"], ["3", "医疗材料"], ["4", "医疗发票"], ["5", "银行材料"], ["9", "其他"]]],
+  ["gender", "性别", [["1", "男"], ["2", "女"], ["9", "未知"]]],
+  ["id_type", "证件类型", [["1", "居民身份证"], ["2", "护照"], ["9", "其他"]]],
+  ["insured_role", "被保人关系", [["1", "员工本人"], ["2", "配偶"], ["3", "子女"], ["4", "父母"], ["9", "其他"]]],
+  ["policy_status", "保单状态", [["1", "启用"], ["0", "停用"]]],
+  ["product_status", "险种状态", [["1", "有效"], ["0", "无效"]]],
+  ["benefit_status", "责任状态", [["1", "有效"], ["0", "无效"]]],
+] as const;
+
+const calculationParameterCatalogSeed = [
+  { category: "bill", parameterName: "医疗总费用", valueType: "amount", unit: "元" },
+  { category: "bill", parameterName: "自费金额", valueType: "amount", unit: "元" },
+  { category: "bill", parameterName: "医保统筹支付", valueType: "amount", unit: "元" },
+  { category: "bill", parameterName: "个人账户支付", valueType: "amount", unit: "元" },
+  { category: "bill", parameterName: "个人现金支付", valueType: "amount", unit: "元" },
+  { category: "bill", parameterName: "票据类型", valueType: "text", dictionaryType: "bill_type" },
+  { category: "bill", parameterName: "收费日期", valueType: "date" },
+  { category: "bill", parameterName: "医保类型", valueType: "text", dictionaryType: "medical_insurance_type" },
+  { category: "event", parameterName: "事件类型", valueType: "text", dictionaryType: "event_type" },
+  { category: "event", parameterName: "事件日期", valueType: "date" },
+  { category: "event", parameterName: "事件诊断", valueType: "text" },
+  { category: "benefit", parameterName: "限额", valueType: "amount", unit: "元" },
+  { category: "benefit", parameterName: "免赔额", valueType: "amount", unit: "元" },
+];
+
+const calculationLedgerParameterCatalogSeed = (["benefit", "product", "plan", "event"] as const).flatMap((responsibilityRange) => [
+  { parameterName: `累计年免赔额（${{ benefit: "责任", product: "险种", plan: "计划", event: "事件" }[responsibilityRange]}）`, valueType: "amount", unit: "元", timeRange: "year", responsibilityRange },
+  { parameterName: `累计年给付金额（${{ benefit: "责任", product: "险种", plan: "计划", event: "事件" }[responsibilityRange]}）`, valueType: "amount", unit: "元", timeRange: "year", responsibilityRange },
+]);
+
 async function seed() {
+  for (const [dictionaryType, typeName, items] of dictionarySeed) {
+    for (const [itemCode, itemName] of items) {
+      await prisma.systemDictionary.upsert({
+        where: { dictionaryType_itemCode: { dictionaryType, itemCode } },
+        update: { typeName, itemName, enabled: true },
+        create: { dictionaryType, typeName, itemCode, itemName, sequenceNo: Number(itemCode), enabled: true },
+      });
+    }
+  }
+
+  for (const item of calculationParameterCatalogSeed) {
+    const existing = await prisma.calculationParameterCatalog.findFirst({ where: { policyId: null, parameterName: item.parameterName } });
+    if (existing) await prisma.calculationParameterCatalog.update({ where: { id: existing.id }, data: { ...item, custom: false } });
+    else await prisma.calculationParameterCatalog.create({ data: { ...item, custom: false } });
+  }
+
+  for (const item of calculationLedgerParameterCatalogSeed) {
+    const existing = await prisma.calculationLedgerParameterCatalog.findFirst({ where: { policyId: null, parameterName: item.parameterName } });
+    if (existing) await prisma.calculationLedgerParameterCatalog.update({ where: { id: existing.id }, data: { ...item, custom: false } });
+    else await prisma.calculationLedgerParameterCatalog.create({ data: { ...item, custom: false } });
+  }
+
   for (const item of policies) {
     await prisma.policy.upsert({
       where: { policyNo: item.policyNo },
@@ -107,7 +167,7 @@ async function seed() {
   }
 
   for (const item of calculationParameterDefinitions) {
-    await prisma.calculationParameterDefinition.upsert({
+    const definition = await prisma.calculationParameterDefinition.upsert({
       where: { parameterCode: item.parameterCode },
       update: {},
       create: {
@@ -116,6 +176,7 @@ async function seed() {
         unit: item.unit, applicableScopes: item.applicableScopes, description: item.description,
       },
     });
+    definitionIds.set(item.parameterCode, definition.id);
   }
 
   const targetIds = { policy: policyIds, plan: planIds, product: productIds, benefit: benefitIds };
@@ -123,8 +184,8 @@ async function seed() {
     const definitionId = definitionIds.get(item.parameterCode)!;
     const targetId = targetIds[item.scope].get(item.targetId)!;
     await prisma.calculationParameter.upsert({
-      where: { scope_targetId_definitionId: { scope: item.scope, targetId, definitionId } },
-      update: { parameterValue: item.parameterValue, description: item.description, enabled: item.enabled },
+      where: { id: item.id },
+      update: { scope: item.scope, targetId, definitionId, parameterValue: item.parameterValue, description: item.description, enabled: item.enabled },
       create: {
         id: item.id, scope: item.scope, targetId, definitionId,
         parameterValue: item.parameterValue, description: item.description, enabled: item.enabled,
@@ -134,8 +195,8 @@ async function seed() {
 
   const insuredPersonId = personIds.get("insured-001")!;
   const initialEvents = [
-    { id: "claim-event-001", eventNo: "EV202606120001", eventType: "disease" as const, occurredDate: "2026-06-12", administrativeArea: "上海市 / 上海市 / 黄浦区", detailedAddress: "中山东一路附近", hospitalName: "上海市第一人民医院", diagnosis: "急性上呼吸道感染", description: "发热咳嗽后前往门诊就医。" },
-    { id: "claim-event-002", eventNo: "EV202604080001", eventType: "accident" as const, occurredDate: "2026-04-08", administrativeArea: "上海市 / 上海市 / 徐汇区", detailedAddress: "漕溪北路附近", diagnosis: "踝关节扭伤", description: "步行时不慎扭伤，完成门诊检查。" },
+    { id: "claim-event-001", eventNo: "EV202606120001", eventType: "1", occurredDate: "2026-06-12", administrativeArea: "上海市 / 上海市 / 黄浦区", detailedAddress: "中山东一路附近", hospitalName: "上海市第一人民医院", diagnosis: "急性上呼吸道感染", description: "发热咳嗽后前往门诊就医。" },
+    { id: "claim-event-002", eventNo: "EV202604080001", eventType: "2", occurredDate: "2026-04-08", administrativeArea: "上海市 / 上海市 / 徐汇区", detailedAddress: "漕溪北路附近", diagnosis: "踝关节扭伤", description: "步行时不慎扭伤，完成门诊检查。" },
   ];
   for (const item of initialEvents) {
     await prisma.claimEvent.upsert({
@@ -143,6 +204,7 @@ async function seed() {
       create: { ...item, insuredPersonId, occurredDate: date(item.occurredDate)! },
     });
   }
+  await seedScenarioData(prisma);
 }
 
 seed()

@@ -1,39 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
-import { evaluateCalculationExpression } from "./expression-engine.ts";
+import { calculationExpressionReferencesAny, evaluateCalculationExpression, substituteCalculationExpression, type FormulaValue } from "./expression-engine.ts";
 import type {
   AutomatedBillView,
   AutomationValueType,
   BenefitFormulaView,
   CalculationVariableCategory,
   CalculationVariableView,
+  AutomaticCalculationResult,
+  BillBenefitCalculationResult,
+  CalculationStepResult,
   FormulaStep,
+  FormulaValidationResult,
   LedgerBalanceView,
 } from "./automation-types.ts";
-
-const fixedVariables: Array<Omit<CalculationVariableView, "policyId">> = [
-  { category: "bill", variableName: "医疗总费用", valueType: "amount", unit: "元", custom: false, enabled: true },
-  { category: "bill", variableName: "自费金额", valueType: "amount", unit: "元", custom: false, enabled: true },
-  { category: "bill", variableName: "医保统筹支付", valueType: "amount", unit: "元", custom: false, enabled: true },
-  { category: "bill", variableName: "个人账户支付", valueType: "amount", unit: "元", custom: false, enabled: true },
-  { category: "bill", variableName: "个人现金支付", valueType: "amount", unit: "元", custom: false, enabled: true },
-  { category: "bill", variableName: "票据类型", valueType: "text", custom: false, enabled: true },
-  { category: "bill", variableName: "收费日期", valueType: "date", custom: false, enabled: true },
-  { category: "bill", variableName: "医保类型", valueType: "text", custom: false, enabled: true },
-  { category: "event", variableName: "事件类型", valueType: "text", custom: false, enabled: true },
-  { category: "event", variableName: "事件日期", valueType: "date", custom: false, enabled: true },
-  { category: "event", variableName: "事件诊断", valueType: "text", custom: false, enabled: true },
-  { category: "case", variableName: "报案日期", valueType: "date", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年免赔额（责任）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "benefit", baseName: "免赔额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年给付金额（责任）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "benefit", baseName: "给付金额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年免赔额（险种）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "product", baseName: "免赔额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年给付金额（险种）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "product", baseName: "给付金额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年免赔额（计划）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "plan", baseName: "免赔额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年给付金额（计划）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "plan", baseName: "给付金额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年免赔额（事件）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "event", baseName: "免赔额", custom: false, enabled: true },
-  { category: "ledger", variableName: "累计年给付金额（事件）", valueType: "amount", unit: "元", timeRange: "year", responsibilityRange: "event", baseName: "给付金额", custom: false, enabled: true },
-];
 
 const billVariableFields: Record<string, string> = {
   totalAmount: "医疗总费用",
@@ -46,37 +27,263 @@ const billVariableFields: Record<string, string> = {
   medicalInsuranceType: "医保类型",
 };
 
-const billTypeLabels: Record<string, string> = { outpatient: "门诊账单", inpatient: "住院账单", pharmacy: "药店购药", other: "其他费用" };
-const medicalInsuranceLabels: Record<string, string> = { employee: "城镇职工基本医疗保险", resident: "城乡居民基本医疗保险", new_rural: "新型农村合作医疗", commercial: "商业健康保险", self_pay: "全自费", other: "其他" };
-const eventTypeLabels: Record<string, string> = { disease: "疾病", accident: "意外", other: "其他" };
+const billAmountNames: Record<string, string> = {
+  insuranceFundAmount: "医保统筹支付",
+  personalAccountAmount: "个人账户支付",
+  cashAmount: "个人现金支付",
+  selfPaidAmount: "自费金额",
+};
 
-function asObject(value: Prisma.JsonValue) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, Prisma.JsonValue> : {};
+const parameterScopeLabels = { policy: "保单", plan: "保障计划", product: "险种", benefit: "责任" } as const;
+
+function mapParameterCatalog(
+  item: {
+    id: number;
+    parameterCode: string;
+    policyId: string | null;
+    category: string;
+    parameterName: string;
+    valueType: string;
+    unit: string | null;
+    dictionaryType: string | null;
+    defaultValue: string | null;
+    custom: boolean;
+  },
+  policyId: string,
+  dictionaryOptions: Map<string, string[]>,
+): CalculationVariableView {
+  return {
+    id: item.id,
+    parameterCode: item.parameterCode,
+    policyId: item.policyId ?? policyId,
+    category: item.category as CalculationVariableCategory,
+    variableName: item.parameterName,
+    valueType: item.valueType as AutomationValueType,
+    unit: item.unit ?? undefined,
+    dictionaryType: item.dictionaryType ?? undefined,
+    options: item.dictionaryType ? dictionaryOptions.get(item.dictionaryType) ?? [] : undefined,
+    defaultValue: item.defaultValue ?? undefined,
+    custom: item.custom,
+    enabled: true,
+  };
 }
 
-function asStringArray(value: Prisma.JsonValue) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+function mapLedgerParameterCatalog(
+  item: {
+    id: number;
+    parameterCode: string;
+    policyId: string | null;
+    parameterName: string;
+    valueType: string;
+    unit: string | null;
+    timeRange: string;
+    responsibilityRange: string;
+    defaultValue: string | null;
+    custom: boolean;
+  },
+  policyId: string,
+): CalculationVariableView {
+  return {
+    id: item.id,
+    parameterCode: item.parameterCode,
+    policyId: item.policyId ?? policyId,
+    category: "ledger",
+    variableName: item.parameterName,
+    valueType: item.valueType as AutomationValueType,
+    unit: item.unit ?? undefined,
+    timeRange: item.timeRange as "year" | "month" | "day",
+    responsibilityRange: item.responsibilityRange as "benefit" | "product" | "plan" | "event",
+    defaultValue: item.defaultValue ?? undefined,
+    custom: item.custom,
+    enabled: true,
+  };
 }
 
-function mapBill(item: { id: string; claimCaseId: string; billData: Prisma.JsonValue; customValues: Prisma.JsonValue; selectedBenefitIds: Prisma.JsonValue; createdAt: Date; updatedAt: Date }): AutomatedBillView {
+type StoredClaimBill = {
+  id: string;
+  claimCaseId: string;
+  invoiceCode: string;
+  invoiceNo: string;
+  checkCode: string;
+  billType: string;
+  patientName: string;
+  patientIdNo: string;
+  visitNo: string;
+  institution: string;
+  department: string;
+  billDate: Date;
+  admissionDate: Date | null;
+  dischargeDate: Date | null;
+  diagnosis: string;
+  medicalInsuranceType: string;
+  settlementNo: string;
+  totalAmount: Prisma.Decimal;
+  cashier: string;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type StoredBillAmount = {
+  billId: string;
+  amountName: string;
+  amountValue: Prisma.Decimal;
+};
+
+type StoredCustomValue = {
+  billId: string;
+  variableName: string;
+  valueType: string;
+  valueText: string | null;
+  valueNumber: Prisma.Decimal | null;
+  valueBoolean: boolean | null;
+  valueDate: Date | null;
+};
+
+function formatDate(value: Date | null) {
+  return value ? value.toISOString().slice(0, 10) : "";
+}
+
+function mapCustomValue(item: StoredCustomValue): string | number | boolean {
+  if (["number", "amount", "percentage"].includes(item.valueType)) return Number(item.valueNumber ?? 0);
+  if (item.valueType === "boolean") return item.valueBoolean ?? false;
+  if (item.valueType === "date") return formatDate(item.valueDate);
+  return item.valueText ?? "";
+}
+
+function mapBill(
+  item: StoredClaimBill,
+  amounts: StoredBillAmount[],
+  customValues: StoredCustomValue[],
+  selectedBenefitIds: string[],
+  attachmentIds: string[],
+): AutomatedBillView {
   return {
     id: item.id,
     claimCaseId: item.claimCaseId,
-    ...asObject(item.billData),
-    customValues: asObject(item.customValues) as Record<string, string | number | boolean>,
-    selectedBenefitIds: asStringArray(item.selectedBenefitIds),
+    invoiceCode: item.invoiceCode,
+    invoiceNo: item.invoiceNo,
+    checkCode: item.checkCode,
+    billType: item.billType,
+    patientName: item.patientName,
+    patientIdNo: item.patientIdNo,
+    visitNo: item.visitNo,
+    institution: item.institution,
+    department: item.department,
+    billDate: formatDate(item.billDate),
+    admissionDate: formatDate(item.admissionDate),
+    dischargeDate: formatDate(item.dischargeDate),
+    diagnosis: item.diagnosis,
+    medicalInsuranceType: item.medicalInsuranceType,
+    settlementNo: item.settlementNo,
+    totalAmount: Number(item.totalAmount),
+    ...Object.fromEntries(Object.entries(billAmountNames).map(([fieldName, amountName]) => [
+      fieldName,
+      Number(amounts.find((amount) => amount.amountName === amountName)?.amountValue ?? 0),
+    ])),
+    cashier: item.cashier,
+    attachmentIds,
+    customValues: Object.fromEntries(customValues.map((value) => [value.variableName, mapCustomValue(value)])),
+    selectedBenefitIds,
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
   };
 }
 
-function mapLedger(item: { id: string; policyId: string; insuredPersonId: string; benefitId: string; ledgerCode: string; ledgerName: string; periodYear: number; usedAmount: Prisma.Decimal }): LedgerBalanceView {
-  return { ...item, usedAmount: Number(item.usedAmount) };
+async function loadClaimBills(claimCaseId: string) {
+  const bills = await prisma.claimBill.findMany({ where: { claimCaseId }, orderBy: { createdAt: "asc" } });
+  if (!bills.length) return [];
+  const billIds = bills.map((bill) => bill.id);
+  const [amounts, customValues, benefits, attachments] = await Promise.all([
+    prisma.claimBillAmount.findMany({ where: { billId: { in: billIds } }, orderBy: { id: "asc" } }),
+    prisma.claimBillCustomValue.findMany({ where: { billId: { in: billIds } }, orderBy: { id: "asc" } }),
+    prisma.claimBillBenefit.findMany({ where: { billId: { in: billIds } }, orderBy: { id: "asc" } }),
+    prisma.claimBillAttachment.findMany({ where: { billId: { in: billIds } }, orderBy: { id: "asc" } }),
+  ]);
+  return bills.map((bill) => mapBill(
+    bill,
+    amounts.filter((value) => value.billId === bill.id),
+    customValues.filter((value) => value.billId === bill.id),
+    benefits.filter((value) => value.billId === bill.id).map((value) => value.benefitId),
+    attachments.filter((value) => value.billId === bill.id).map((value) => value.uploadId),
+  ));
+}
+
+function mapLedger(item: { id: string; policyId: string; insuredPersonId: string; benefitId: string; ledgerCode: string; ledgerName: string; periodYear: number; currentAmount: Prisma.Decimal }): LedgerBalanceView {
+  return { ...item, currentAmount: Number(item.currentAmount) };
+}
+
+const responsibilityLedgerTemplates = [
+  { ledgerCode: "annual_deductible", ledgerName: "累计年免赔额（责任）" },
+  { ledgerCode: "annual_payment", ledgerName: "累计年给付金额（责任）" },
+] as const;
+
+async function loadLatestNormalizedCalculationResult(
+  claimCaseId: string,
+  ledgerBalances: LedgerBalanceView[],
+  allowedBenefitIds?: Set<string>,
+): Promise<AutomaticCalculationResult | null> {
+  const caseResult = await prisma.claimCaseCalculationResult.findFirst({
+    where: { claimCaseId },
+    orderBy: { createdAt: "desc" },
+  });
+  if (!caseResult) return null;
+  const storedBillResults = await prisma.claimBillBenefitCalculationResult.findMany({
+    where: {
+      calculationResultId: caseResult.id,
+      benefitId: allowedBenefitIds ? { in: [...allowedBenefitIds] } : undefined,
+    },
+    orderBy: { sequenceNo: "asc" },
+  });
+  const processRows = storedBillResults.length
+    ? await prisma.claimCalculationProcess.findMany({
+      where: { billBenefitResultId: { in: storedBillResults.map((item) => item.id) } },
+      orderBy: [{ billBenefitResultId: "asc" }, { sequenceNo: "asc" }],
+    })
+    : [];
+  const billResults: BillBenefitCalculationResult[] = storedBillResults.map((item) => ({
+    billId: item.billId,
+    invoiceNo: item.invoiceNo,
+    benefitId: item.benefitId,
+    benefitCode: item.benefitCode,
+    benefitName: item.benefitName,
+    formulaName: item.formulaName,
+    matched: item.matched,
+    matchExpression: item.matchExpression,
+    substitutedMatchExpression: item.substitutedMatchExpression,
+    amount: Number(item.amount),
+    steps: processRows
+      .filter((process) => process.billBenefitResultId === item.id)
+      .map((process): CalculationStepResult => ({
+        id: process.stepId,
+        name: process.stepName,
+        expression: process.expression,
+        substitutedExpression: process.substitutedExpression,
+        result: process.resultFlag,
+        value: process.resultValue as number | boolean | string,
+        ledgerTarget: process.ledgerTargetCode && process.ledgerTargetName
+          ? { code: process.ledgerTargetCode, name: process.ledgerTargetName }
+          : undefined,
+        ledgerOpening: process.ledgerOpeningAmount === null ? undefined : Number(process.ledgerOpeningAmount),
+        ledgerClosing: process.ledgerClosingAmount === null ? undefined : Number(process.ledgerClosingAmount),
+      })),
+  }));
+  return {
+    runId: caseResult.id,
+    runNo: caseResult.runNo,
+    claimCaseId,
+    committed: true,
+    totalAmount: Number(billResults.reduce((sum, item) => sum + item.amount, 0).toFixed(2)),
+    billCount: new Set(billResults.map((item) => item.billId)).size,
+    responsibilityResultCount: billResults.length,
+    billResults,
+    ledgerBalances,
+    createdAt: caseResult.createdAt.toISOString(),
+  };
 }
 
 function ledgerConfiguredAmount(code: string, config: Record<string, string | number>) {
   const value = code === "annual_deductible" ? config["免赔额"]
-    : code === "annual_payment" ? config["年度累计赔付限额"]
+    : code === "annual_payment" ? config["限额"] ?? config["年度累计赔付限额"]
     : undefined;
   const amount = Number(value);
   return Number.isFinite(amount) && amount > 0 ? amount : undefined;
@@ -103,9 +310,9 @@ function normalizeFormulaSteps(value: Prisma.JsonValue): FormulaStep[] {
   });
 }
 
-async function policyBenefits(policyId: string) {
+async function policyBenefits(policyId: string, coveragePlanId?: string) {
   const products = await prisma.policyProduct.findMany({
-    where: { policyId },
+    where: { policyId, coveragePlanId: coveragePlanId || undefined },
     include: { benefits: { where: { benefitStatus: "active", claimableFlag: true }, orderBy: { sequenceNo: "asc" } } },
     orderBy: { sequenceNo: "asc" },
   });
@@ -120,14 +327,50 @@ async function policyBenefits(policyId: string) {
 }
 
 export async function getAutomationConfiguration(policyId: string, claimCaseId?: string) {
-  const benefits = await policyBenefits(policyId);
-  const [storedFormulas, customVariables, responsibilityParameters, bills, claimCase] = await Promise.all([
-    prisma.benefitCalculationFormula.findMany({ where: { policyId }, orderBy: { updatedAt: "desc" } }),
-    prisma.calculationVariableDefinition.findMany({ where: { policyId, enabled: true }, orderBy: [{ category: "asc" }, { variableName: "asc" }] }),
-    prisma.calculationParameter.findMany({ where: { scope: "benefit", targetId: { in: benefits.map((benefit) => benefit.id) }, enabled: true }, include: { definition: true } }),
-    claimCaseId ? prisma.claimBill.findMany({ where: { claimCaseId }, orderBy: { createdAt: "asc" } }) : Promise.resolve([]),
-    claimCaseId ? prisma.claimCase.findUnique({ where: { id: claimCaseId } }) : Promise.resolve(null),
+  const claimCase = claimCaseId ? await prisma.claimCase.findUnique({ where: { id: claimCaseId } }) : null;
+  if (claimCaseId && (!claimCase || claimCase.policyId !== policyId)) throw new Error("claim_case_not_found");
+  const policyInsured = claimCase
+    ? await prisma.policyInsured.findUnique({ where: { id: claimCase.policyInsuredId } })
+    : null;
+  if (claimCase && !policyInsured?.coveragePlanId) throw new Error("claim_coverage_plan_required");
+  const coveragePlanId = policyInsured?.coveragePlanId ?? undefined;
+  const benefits = await policyBenefits(policyId, coveragePlanId);
+  const allowedBenefitIds = new Set(benefits.map((benefit) => benefit.id));
+  const parameterTargetIds = [
+    policyId,
+    ...benefits.flatMap((benefit) => [benefit.planId, benefit.productId, benefit.id]),
+  ].filter((item): item is string => Boolean(item));
+  const [storedFormulas, parameterCatalog, ledgerParameterCatalog, dictionaryRows, responsibilityParameters, loadedBills, eventEntries, diseaseEntries] = await Promise.all([
+    prisma.benefitCalculationFormula.findMany({
+      where: { policyId, benefitId: coveragePlanId ? { in: [...allowedBenefitIds] } : undefined },
+      orderBy: { updatedAt: "desc" },
+    }),
+    prisma.calculationParameterCatalog.findMany({
+      where: { OR: [{ policyId: null }, { policyId }] },
+      orderBy: [{ category: "asc" }, { parameterName: "asc" }],
+    }),
+    prisma.calculationLedgerParameterCatalog.findMany({
+      where: { OR: [{ policyId: null }, { policyId }] },
+      orderBy: { parameterName: "asc" },
+    }),
+    prisma.systemDictionary.findMany({ where: { enabled: true }, orderBy: [{ dictionaryType: "asc" }, { sequenceNo: "asc" }] }),
+    prisma.calculationParameter.findMany({
+      where: { targetId: { in: [...new Set(parameterTargetIds)] }, enabled: true },
+      include: { definition: true },
+      orderBy: { updatedAt: "asc" },
+    }),
+    claimCaseId ? loadClaimBills(claimCaseId) : Promise.resolve([]),
+    claimCaseId ? prisma.claimCaseEventEntry.findMany({ where: { claimCaseId }, orderBy: [{ occurredDate: "asc" }, { createdAt: "asc" }] }) : Promise.resolve([]),
+    claimCaseId ? prisma.claimCaseDiseaseEntry.findMany({ where: { claimCaseId }, orderBy: [{ diagnosisDate: "asc" }, { createdAt: "asc" }] }) : Promise.resolve([]),
   ]);
+  const bills: AutomatedBillView[] = loadedBills.map((bill) => ({
+    ...bill,
+    selectedBenefitIds: bill.selectedBenefitIds.filter((benefitId) => allowedBenefitIds.has(benefitId)),
+  }));
+  const dictionaryOptions = new Map<string, string[]>();
+  dictionaryRows.forEach((item) => {
+    dictionaryOptions.set(item.dictionaryType, [...(dictionaryOptions.get(item.dictionaryType) ?? []), item.itemName]);
+  });
   const formulaMap = new Map(storedFormulas.map((item) => [item.benefitId, item]));
   const formulas: BenefitFormulaView[] = benefits.map((benefit) => {
     const formula = formulaMap.get(benefit.id);
@@ -144,55 +387,221 @@ export async function getAutomationConfiguration(policyId: string, claimCaseId?:
       updatedAt: formula?.updatedAt.toISOString(),
     };
   });
-  const variables: CalculationVariableView[] = [
-    ...fixedVariables.map((item) => ({ ...item, policyId })),
-    ...customVariables.map((item) => ({
-      id: item.id,
-      policyId: item.policyId,
-      category: item.category as CalculationVariableCategory,
-      variableName: item.variableName,
-      valueType: item.valueType as AutomationValueType,
-      unit: item.unit ?? undefined,
-      timeRange: item.timeRange as "year" | "month" | "day" | undefined,
-      responsibilityRange: item.responsibilityRange as "benefit" | "product" | "plan" | "event" | undefined,
-      baseName: item.baseName ?? undefined,
-      defaultValue: item.defaultValue ?? undefined,
-      description: item.description ?? undefined,
-      custom: item.custom,
-      enabled: item.enabled,
-    })),
-    ...responsibilityParameters.map((item) => ({
+  const inheritedParameterVariables = benefits.flatMap((benefit) => {
+    const targetByScope = {
+      policy: policyId,
+      plan: benefit.planId,
+      product: benefit.productId,
+      benefit: benefit.id,
+    };
+    return responsibilityParameters
+      .filter((item) => targetByScope[item.scope] === item.targetId)
+      .map((item) => ({
       policyId,
       category: "benefit" as const,
       variableName: item.definition.parameterName,
-      benefitId: item.targetId,
+      formulaName: `${item.definition.parameterName}（${parameterScopeLabels[item.scope]}）`,
+      benefitId: benefit.id,
+      parameterScope: item.scope,
       valueType: item.definition.valueType as AutomationValueType,
       unit: item.definition.unit ?? undefined,
       defaultValue: item.parameterValue,
       description: item.description ?? item.definition.description ?? undefined,
       custom: false,
       enabled: true,
-    })),
+    }));
+  });
+  const variables: CalculationVariableView[] = [
+    ...parameterCatalog
+      .filter((item) => item.category !== "benefit")
+      .map((item) => mapParameterCatalog(item, policyId, dictionaryOptions)),
+    ...ledgerParameterCatalog.map((item) => mapLedgerParameterCatalog(item, policyId)),
+    ...inheritedParameterVariables,
   ];
-  const rawLedgerBalances = claimCase ? await prisma.claimLedgerBalance.findMany({
-    where: { policyId, insuredPersonId: claimCase.insuredPersonId, periodYear: claimCase.reportDate.getUTCFullYear() },
+  const allowedLedgerScopeIds = coveragePlanId && claimCase ? [
+    ...benefits.map((benefit) => benefit.id),
+    ...benefits.map((benefit) => `product:${benefit.productId}`),
+    `plan:${coveragePlanId}`,
+    `event:${claimCase.eventId}`,
+  ] : [];
+  const rawLedgerBalances = claimCase ? await prisma.claimLedgerCurrentValue.findMany({
+    where: {
+      policyId,
+      insuredPersonId: claimCase.insuredPersonId,
+      periodYear: claimCase.reportDate.getUTCFullYear(),
+      benefitId: { in: [...new Set(allowedLedgerScopeIds)] },
+    },
     orderBy: [{ benefitId: "asc" }, { ledgerCode: "asc" }],
   }) : [];
-  const ledgerBalances = await Promise.all(rawLedgerBalances.map(async (item) => {
+  const completeLedgerBalances = claimCase ? [
+    ...rawLedgerBalances,
+    ...benefits.flatMap((benefit) => responsibilityLedgerTemplates.flatMap((template) =>
+      rawLedgerBalances.some((item) => item.benefitId === benefit.id && item.ledgerCode === template.ledgerCode)
+        ? []
+        : [{
+          id: `virtual:${benefit.id}:${template.ledgerCode}`,
+          policyId,
+          insuredPersonId: claimCase.insuredPersonId,
+          benefitId: benefit.id,
+          ledgerCode: template.ledgerCode,
+          ledgerName: template.ledgerName,
+          periodYear: claimCase.reportDate.getUTCFullYear(),
+          currentAmount: new Prisma.Decimal(0),
+        }],
+    )),
+  ] : rawLedgerBalances;
+  const ledgerBalances = await Promise.all(completeLedgerBalances.map(async (item) => {
     const mapped = mapLedger(item);
     const config = await benefitConfigValues(policyId, claimCaseId!, item.benefitId);
     const configuredAmount = ledgerConfiguredAmount(item.ledgerCode, config);
-    return { ...mapped, configuredAmount, remainingAmount: configuredAmount === undefined ? undefined : Math.max(0, configuredAmount - mapped.usedAmount) };
+    return { ...mapped, configuredAmount, remainingAmount: configuredAmount === undefined ? undefined : Math.max(0, configuredAmount - mapped.currentAmount) };
   }));
-  const latestRun = claimCaseId ? await prisma.claimCalculationRun.findFirst({ where: { claimCaseId }, orderBy: { createdAt: "desc" } }) : null;
+  const latestResult = claimCaseId
+    ? await loadLatestNormalizedCalculationResult(claimCaseId, ledgerBalances, allowedBenefitIds)
+    : null;
   return {
     benefits,
     formulas,
     variables,
-    bills: bills.map(mapBill),
+    bills,
+    events: eventEntries.map((item) => ({
+      id: item.id,
+      eventType: item.eventType,
+      occurredDate: item.occurredDate.toISOString().slice(0, 10),
+      location: item.location ?? "",
+      description: item.description,
+    })),
+    diseases: diseaseEntries.map((item) => ({
+      id: item.id,
+      diseaseName: item.diseaseName,
+      icdCode: item.icdCode ?? "",
+      diagnosisDate: item.diagnosisDate.toISOString().slice(0, 10),
+      hospital: item.hospital,
+      note: item.note ?? "",
+    })),
+    dictionaries: dictionaryRows.map((item) => ({
+      id: item.id,
+      dictionaryType: item.dictionaryType,
+      typeName: item.typeName,
+      itemCode: item.itemCode,
+      itemName: item.itemName,
+    })),
     ledgerBalances,
-    latestResult: latestRun?.resultData ?? null,
+    latestResult,
   };
+}
+
+export async function listInsuredPolicyLedgers(policyId: string, insuredPersonId: string) {
+  const policyInsured = await prisma.policyInsured.findFirst({
+    where: { policyId, insuredPersonId },
+    include: { insuredPerson: true },
+  });
+  if (!policyInsured) throw new Error("policy_insured_not_found");
+  const rows = await prisma.claimLedgerCurrentValue.findMany({
+    where: { policyId, insuredPersonId },
+    orderBy: [{ periodYear: "desc" }, { benefitId: "asc" }, { ledgerCode: "asc" }],
+  });
+  const benefitIds = rows.map((item) => item.benefitId).filter((id) => !id.includes(":"));
+  const productIds = rows.filter((item) => item.benefitId.startsWith("product:")).map((item) => item.benefitId.slice(8));
+  const planIds = rows.filter((item) => item.benefitId.startsWith("plan:")).map((item) => item.benefitId.slice(5));
+  const eventIds = rows.filter((item) => item.benefitId.startsWith("event:")).map((item) => item.benefitId.slice(6));
+  const [benefits, products, plans, events] = await Promise.all([
+    prisma.policyBenefit.findMany({ where: { id: { in: [...new Set(benefitIds)] } }, select: { id: true, benefitCode: true, benefitName: true } }),
+    prisma.policyProduct.findMany({ where: { id: { in: [...new Set(productIds)] } }, select: { id: true, productCode: true, productName: true } }),
+    prisma.coveragePlan.findMany({ where: { id: { in: [...new Set(planIds)] } }, select: { id: true, planCode: true, planName: true } }),
+    prisma.claimEvent.findMany({ where: { id: { in: [...new Set(eventIds)] } }, select: { id: true, eventNo: true, diagnosis: true } }),
+  ]);
+  const targetNames = new Map<string, { scope: string; code: string; name: string }>([
+    ...benefits.map((item) => [item.id, { scope: "责任", code: item.benefitCode, name: item.benefitName }] as const),
+    ...products.map((item) => [`product:${item.id}`, { scope: "险种", code: item.productCode, name: item.productName }] as const),
+    ...plans.map((item) => [`plan:${item.id}`, { scope: "计划", code: item.planCode, name: item.planName }] as const),
+    ...events.map((item) => [`event:${item.id}`, { scope: "事件", code: item.eventNo, name: item.diagnosis || item.eventNo }] as const),
+  ]);
+  return {
+    policyInsuredId: policyInsured.id,
+    insuredPerson: {
+      id: policyInsured.insuredPerson.id,
+      insuredNo: policyInsured.insuredPerson.insuredNo,
+      name: policyInsured.insuredPerson.name,
+      idNo: policyInsured.insuredPerson.idNo,
+    },
+    items: rows.map((item) => ({
+      ...mapLedger(item),
+      updatedAt: item.updatedAt.toISOString(),
+      scope: targetNames.get(item.benefitId)?.scope ?? "责任",
+      targetCode: targetNames.get(item.benefitId)?.code ?? item.benefitId,
+      targetName: targetNames.get(item.benefitId)?.name ?? item.benefitId,
+    })),
+  };
+}
+
+async function requireProcessingClaimCase(claimCaseId: string) {
+  const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId }, select: { id: true, status: true } });
+  if (!claimCase || claimCase.status !== "entering") throw new Error("claim_case_not_entering");
+}
+
+export async function saveClaimEventEntry(input: {
+  id?: string;
+  claimCaseId: string;
+  eventType: string;
+  occurredDate: string;
+  location?: string;
+  description: string;
+}) {
+  await requireProcessingClaimCase(input.claimCaseId);
+  const data = {
+    claimCaseId: input.claimCaseId,
+    eventType: input.eventType.trim(),
+    occurredDate: new Date(`${input.occurredDate}T00:00:00.000Z`),
+    location: input.location?.trim() || null,
+    description: input.description.trim(),
+  };
+  if (!data.eventType || !input.occurredDate || !data.description) throw new Error("claim_event_entry_incomplete");
+  const item = input.id
+    ? await prisma.claimCaseEventEntry.update({ where: { id: input.id }, data })
+    : await prisma.claimCaseEventEntry.create({ data: { id: randomUUID(), ...data } });
+  return { ...item, occurredDate: item.occurredDate.toISOString().slice(0, 10), location: item.location ?? "" };
+}
+
+export async function deleteClaimEventEntry(id: string) {
+  const item = await prisma.claimCaseEventEntry.findUnique({ where: { id }, select: { claimCaseId: true } });
+  if (!item) return false;
+  await requireProcessingClaimCase(item.claimCaseId);
+  await prisma.claimCaseEventEntry.delete({ where: { id } });
+  return true;
+}
+
+export async function saveClaimDiseaseEntry(input: {
+  id?: string;
+  claimCaseId: string;
+  diseaseName: string;
+  icdCode?: string;
+  diagnosisDate: string;
+  hospital: string;
+  note?: string;
+}) {
+  await requireProcessingClaimCase(input.claimCaseId);
+  const data = {
+    claimCaseId: input.claimCaseId,
+    diseaseName: input.diseaseName.trim(),
+    icdCode: input.icdCode?.trim() || null,
+    diagnosisDate: new Date(`${input.diagnosisDate}T00:00:00.000Z`),
+    hospital: input.hospital.trim(),
+    note: input.note?.trim() || null,
+  };
+  if (!data.diseaseName || !input.diagnosisDate || !data.hospital) throw new Error("claim_disease_entry_incomplete");
+  const item = input.id
+    ? await prisma.claimCaseDiseaseEntry.update({ where: { id: input.id }, data })
+    : await prisma.claimCaseDiseaseEntry.create({ data: { id: randomUUID(), ...data } });
+  return { ...item, diagnosisDate: item.diagnosisDate.toISOString().slice(0, 10), icdCode: item.icdCode ?? "", note: item.note ?? "" };
+}
+
+export async function deleteClaimDiseaseEntry(id: string) {
+  const item = await prisma.claimCaseDiseaseEntry.findUnique({ where: { id }, select: { claimCaseId: true } });
+  if (!item) return false;
+  await requireProcessingClaimCase(item.claimCaseId);
+  await prisma.claimCaseDiseaseEntry.delete({ where: { id } });
+  return true;
 }
 
 export async function saveAutomationVariable(input: {
@@ -205,8 +614,6 @@ export async function saveAutomationVariable(input: {
   timeRange?: "year" | "month" | "day";
   responsibilityRange?: "benefit" | "product" | "plan" | "event";
   defaultValue?: string;
-  description?: string;
-  enabled: boolean;
 }) {
   const rawName = input.variableName.trim();
   if (!rawName) throw new Error("invalid_variable_name");
@@ -218,30 +625,64 @@ export async function saveAutomationVariable(input: {
   const variableName = input.category === "ledger"
     ? `累计${timeLabels[input.timeRange!]}${rawName}（${responsibilityLabels[input.responsibilityRange!]}）`
     : rawName;
-  if (fixedVariables.some((item) => item.variableName === variableName)) throw new Error("variable_name_exists");
-  const [duplicate, responsibilityDefinition] = await Promise.all([
-    prisma.calculationVariableDefinition.findFirst({ where: { policyId: input.policyId, variableName, ...(input.id ? { id: { not: input.id } } : {}) } }),
+  const [catalogDuplicate, ledgerDuplicate, responsibilityDefinition] = await Promise.all([
+    prisma.calculationParameterCatalog.findFirst({
+      where: {
+        parameterName: variableName,
+        OR: [{ policyId: null }, { policyId: input.policyId }],
+        ...(input.category !== "ledger" && input.id ? { id: { not: input.id } } : {}),
+      },
+    }),
+    prisma.calculationLedgerParameterCatalog.findFirst({
+      where: {
+        parameterName: variableName,
+        OR: [{ policyId: null }, { policyId: input.policyId }],
+        ...(input.category === "ledger" && input.id ? { id: { not: input.id } } : {}),
+      },
+    }),
     prisma.calculationParameterDefinition.findUnique({ where: { parameterName: variableName } }),
   ]);
-  if (duplicate || responsibilityDefinition) throw new Error("variable_name_exists");
+  if (catalogDuplicate || ledgerDuplicate || responsibilityDefinition) throw new Error("variable_name_exists");
+  if (input.category === "ledger") {
+    const ledgerData = {
+      policyId: input.policyId,
+      parameterName: variableName,
+      valueType: input.valueType,
+      unit: null,
+      timeRange: input.timeRange!,
+      responsibilityRange: input.responsibilityRange!,
+      defaultValue: input.defaultValue?.trim() || null,
+      custom: true,
+    };
+    const ledgerItem = input.id
+      ? await prisma.calculationLedgerParameterCatalog.update({ where: { id: input.id }, data: ledgerData })
+      : await prisma.calculationLedgerParameterCatalog.create({ data: ledgerData });
+    return mapLedgerParameterCatalog(ledgerItem, input.policyId);
+  }
   const data = {
     policyId: input.policyId,
     category: input.category,
-    variableName,
+    parameterName: variableName,
     valueType: input.valueType,
     unit: null,
-    timeRange: input.category === "ledger" ? input.timeRange : null,
-    responsibilityRange: input.category === "ledger" ? input.responsibilityRange : null,
-    baseName: input.category === "ledger" ? rawName : null,
     defaultValue: input.defaultValue?.trim() || null,
-    description: null,
     custom: true,
-    enabled: input.enabled,
   };
   const item = input.id
-    ? await prisma.calculationVariableDefinition.update({ where: { id: input.id }, data })
-    : await prisma.calculationVariableDefinition.create({ data });
-  return { ...item, unit: item.unit ?? undefined, defaultValue: item.defaultValue ?? undefined, description: item.description ?? undefined };
+    ? await prisma.calculationParameterCatalog.update({ where: { id: input.id }, data })
+    : await prisma.calculationParameterCatalog.create({ data });
+  return {
+    id: item.id,
+    parameterCode: item.parameterCode,
+    policyId: item.policyId ?? input.policyId,
+    category: item.category as CalculationVariableCategory,
+    variableName: item.parameterName,
+    valueType: item.valueType as AutomationValueType,
+    unit: item.unit ?? undefined,
+    defaultValue: item.defaultValue ?? undefined,
+    custom: item.custom,
+    enabled: true,
+  };
 }
 
 export async function saveBenefitFormula(input: {
@@ -253,17 +694,30 @@ export async function saveBenefitFormula(input: {
   if (!input.matchExpression.trim()) throw new Error("formula_match_expression_required");
   if (input.steps.length && !input.steps.some((step) => step.result)) throw new Error("formula_result_step_required");
   if (new Set(input.steps.map((step) => step.name.trim())).size !== input.steps.length || input.steps.some((step) => !step.name.trim())) throw new Error("formula_step_name_duplicate");
-  const [customNames, responsibilityNames] = await Promise.all([
-    prisma.calculationVariableDefinition.findMany({ where: { policyId: input.policyId }, select: { variableName: true } }),
-    prisma.calculationParameterDefinition.findMany({ select: { parameterName: true } }),
+  const [catalog, ledgerCatalog] = await Promise.all([
+    prisma.calculationParameterCatalog.findMany({
+      where: { OR: [{ policyId: null }, { policyId: input.policyId }] },
+      select: { parameterName: true, category: true },
+    }),
+    prisma.calculationLedgerParameterCatalog.findMany({
+      where: { OR: [{ policyId: null }, { policyId: input.policyId }] },
+      select: { parameterName: true },
+    }),
   ]);
-  const reservedNames = new Set([...fixedVariables.map((item) => item.variableName), ...customNames.map((item) => item.variableName), ...responsibilityNames.map((item) => item.parameterName)]);
+  const responsibilityNames = catalog.filter((item) => item.category === "benefit");
+  const reservedNames = new Set([...catalog, ...ledgerCatalog].map((item) => item.parameterName));
   if (input.steps.some((step) => reservedNames.has(step.name.trim()))) throw new Error("formula_step_name_conflict");
   for (let index = 0; index < input.steps.length; index += 1) {
     const laterNames = input.steps.slice(index + 1).map((step) => step.name.trim()).filter(Boolean);
-    if (laterNames.some((name) => input.steps[index].expression.includes(name))) throw new Error("formula_step_dependency_order_invalid");
+    if (calculationExpressionReferencesAny(input.steps[index].expression, laterNames)) throw new Error("formula_step_dependency_order_invalid");
   }
-  const variables: Record<string, number | string | boolean> = {};
+  const qualifiedResponsibilityNames = responsibilityNames.flatMap((item) =>
+    Object.values(parameterScopeLabels).map((scopeLabel) => `${item.parameterName}（${scopeLabel}）`),
+  );
+  const variables: Record<string, number | string | boolean> = Object.fromEntries(
+    [...reservedNames, ...qualifiedResponsibilityNames].map((name) => [name, 0]),
+  );
+  evaluateCalculationExpression(input.matchExpression, variables);
   for (const step of input.steps) {
     const value = evaluateCalculationExpression(step.expression, variables);
     variables[step.name] = value;
@@ -278,6 +732,44 @@ export async function saveBenefitFormula(input: {
   return { ...item, steps: normalizeFormulaSteps(item.steps), matchExpression: item.matchExpression ?? "" };
 }
 
+export function validateBenefitFormula(input: {
+  matchExpression: string;
+  steps: FormulaStep[];
+  variables: Record<string, FormulaValue>;
+}): FormulaValidationResult {
+  const variables = { ...input.variables };
+  const substitutedMatchExpression = substituteCalculationExpression(input.matchExpression, variables);
+  const matched = Boolean(evaluateCalculationExpression(input.matchExpression, variables));
+  if (!matched) {
+    return {
+      matched: false,
+      matchExpression: input.matchExpression,
+      substitutedMatchExpression,
+      steps: [],
+    };
+  }
+  const steps = input.steps.map((step) => {
+    const substitutedExpression = substituteCalculationExpression(step.expression, variables);
+    const value = evaluateCalculationExpression(step.expression, variables);
+    variables[step.name] = value;
+    return {
+      id: step.id,
+      name: step.name,
+      expression: step.expression,
+      substitutedExpression,
+      value,
+      result: step.result,
+    };
+  });
+  return {
+    matched,
+    matchExpression: input.matchExpression,
+    substitutedMatchExpression,
+    steps,
+    result: steps.find((step) => step.result)?.value,
+  };
+}
+
 export async function deleteBenefitFormula(policyId: string, benefitId: string) {
   return (await prisma.benefitCalculationFormula.deleteMany({ where: { policyId, benefitId } })).count > 0;
 }
@@ -290,22 +782,120 @@ export async function saveClaimBill(input: {
   selectedBenefitIds: string[];
 }) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: input.claimCaseId } });
-  if (!claimCase || claimCase.status !== "processing") throw new Error("claim_case_not_processing");
-  const benefits = await policyBenefits(claimCase.policyId);
+  if (!claimCase || claimCase.status !== "entering") throw new Error("claim_case_not_entering");
+  const policyInsured = await prisma.policyInsured.findUnique({ where: { id: claimCase.policyInsuredId } });
+  if (!policyInsured?.coveragePlanId) throw new Error("claim_coverage_plan_required");
+  const attachmentIds = Array.isArray(input.billData.attachmentIds)
+    ? input.billData.attachmentIds.filter((item): item is string => typeof item === "string")
+    : [];
+  if (attachmentIds.length) {
+    const matchedAttachments = await prisma.claimAttachment.count({ where: { claimCaseId: input.claimCaseId, uploadId: { in: attachmentIds } } });
+    if (matchedAttachments !== new Set(attachmentIds).size) throw new Error("invalid_bill_attachments");
+  }
+  const benefits = await policyBenefits(claimCase.policyId, policyInsured.coveragePlanId);
   const allowed = new Set(benefits.map((item) => item.id));
   if (!input.selectedBenefitIds.length || input.selectedBenefitIds.some((id) => !allowed.has(id))) throw new Error("invalid_selected_benefits");
-  const data = {
-    claimCaseId: input.claimCaseId,
-    billData: input.billData as Prisma.InputJsonValue,
-    customValues: input.customValues as Prisma.InputJsonValue,
-    selectedBenefitIds: input.selectedBenefitIds as Prisma.InputJsonValue,
+  if (input.id) {
+    const existing = await prisma.claimBill.findFirst({ where: { id: input.id, claimCaseId: input.claimCaseId }, select: { id: true } });
+    if (!existing) throw new Error("claim_bill_not_found");
+  }
+  const stringValue = (name: string) => typeof input.billData[name] === "string" ? input.billData[name].trim() : "";
+  const amountValue = (name: string) => {
+    const value = Number(input.billData[name]);
+    return Number.isFinite(value) ? value : 0;
   };
-  const item = input.id ? await prisma.claimBill.update({ where: { id: input.id }, data }) : await prisma.claimBill.create({ data });
-  return mapBill(item);
+  const dateValue = (name: string, required = false) => {
+    const value = stringValue(name);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return new Date(`${value}T00:00:00.000Z`);
+    if (required) return new Date();
+    return null;
+  };
+  const billData = {
+    claimCaseId: input.claimCaseId,
+    invoiceCode: stringValue("invoiceCode"),
+    invoiceNo: stringValue("invoiceNo"),
+    checkCode: stringValue("checkCode"),
+    billType: stringValue("billType"),
+    patientName: stringValue("patientName"),
+    patientIdNo: stringValue("patientIdNo"),
+    visitNo: stringValue("visitNo"),
+    institution: stringValue("institution"),
+    department: stringValue("department"),
+    billDate: dateValue("billDate", true)!,
+    admissionDate: dateValue("admissionDate"),
+    dischargeDate: dateValue("dischargeDate"),
+    diagnosis: stringValue("diagnosis"),
+    medicalInsuranceType: stringValue("medicalInsuranceType"),
+    settlementNo: stringValue("settlementNo"),
+    totalAmount: amountValue("totalAmount"),
+    cashier: stringValue("cashier"),
+  };
+  const amountRows = Object.entries(billAmountNames).map(([fieldName, amountName]) => ({
+    amountName,
+    amountValue: amountValue(fieldName),
+  }));
+  const customNames = Object.keys(input.customValues);
+  const definitions = customNames.length ? await prisma.calculationParameterCatalog.findMany({
+    where: { policyId: claimCase.policyId, parameterName: { in: customNames } },
+  }) : [];
+  const definitionMap = new Map(definitions.map((item) => [item.parameterName, item]));
+  const customRows = Object.entries(input.customValues).map(([variableName, value]) => {
+    const definition = definitionMap.get(variableName);
+    const valueType = definition?.valueType ?? (typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : "text");
+    const numericValue = Number(value);
+    const dateText = typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+    return {
+      parameterCatalogId: definition?.id ?? null,
+      variableName,
+      valueType,
+      valueText: valueType === "text" ? String(value ?? "") : null,
+      valueNumber: ["number", "amount", "percentage"].includes(valueType) && Number.isFinite(numericValue) ? numericValue : null,
+      valueBoolean: valueType === "boolean" ? value === true || value === "true" : null,
+      valueDate: valueType === "date" && dateText ? new Date(`${dateText}T00:00:00.000Z`) : null,
+    };
+  });
+  let billId = input.id;
+  await prisma.$transaction(async (tx) => {
+    const bill = input.id
+      ? await tx.claimBill.update({ where: { id: input.id }, data: billData })
+      : await tx.claimBill.create({ data: billData });
+    billId = bill.id;
+    await Promise.all([
+      tx.claimBillAmount.deleteMany({ where: { billId: bill.id } }),
+      tx.claimBillCustomValue.deleteMany({ where: { billId: bill.id } }),
+      tx.claimBillBenefit.deleteMany({ where: { billId: bill.id } }),
+      tx.claimBillAttachment.deleteMany({ where: { billId: bill.id } }),
+    ]);
+    await tx.claimBillAmount.createMany({
+      data: amountRows.map((row) => ({ billId: bill.id, ...row })),
+    });
+    if (customRows.length) await tx.claimBillCustomValue.createMany({
+      data: customRows.map((row) => ({ billId: bill.id, ...row })),
+    });
+    await tx.claimBillBenefit.createMany({
+      data: [...new Set(input.selectedBenefitIds)].map((benefitId) => ({ billId: bill.id, benefitId })),
+    });
+    if (attachmentIds.length) await tx.claimBillAttachment.createMany({
+      data: [...new Set(attachmentIds)].map((uploadId) => ({ billId: bill.id, uploadId })),
+    });
+  });
+  const saved = (await loadClaimBills(input.claimCaseId)).find((bill) => bill.id === billId);
+  if (!saved) throw new Error("claim_bill_save_failed");
+  return saved;
 }
 
 export async function deleteClaimBill(id: string) {
-  return (await prisma.claimBill.deleteMany({ where: { id } })).count > 0;
+  const existing = await prisma.claimBill.findUnique({ where: { id }, select: { id: true, claimCaseId: true } });
+  if (!existing) return false;
+  await requireProcessingClaimCase(existing.claimCaseId);
+  await prisma.$transaction([
+    prisma.claimBillAmount.deleteMany({ where: { billId: id } }),
+    prisma.claimBillCustomValue.deleteMany({ where: { billId: id } }),
+    prisma.claimBillBenefit.deleteMany({ where: { billId: id } }),
+    prisma.claimBillAttachment.deleteMany({ where: { billId: id } }),
+    prisma.claimBill.deleteMany({ where: { id } }),
+  ]);
+  return true;
 }
 
 async function benefitConfigValues(policyId: string, claimCaseId: string, benefitId: string) {
@@ -320,38 +910,89 @@ async function benefitConfigValues(policyId: string, claimCaseId: string, benefi
   const parameters = await prisma.calculationParameter.findMany({ where: { targetId: { in: targetIds }, enabled: true } });
   const priority = new Map([[policyId, 0], [insured?.coveragePlanId ?? "", 1], [benefit.policyProductId, 2], [benefitId, 3]]);
   parameters.sort((a, b) => (priority.get(a.targetId) ?? 0) - (priority.get(b.targetId) ?? 0));
-  const definitionMap = new Map(definitions.map((item) => [item.id, item.parameterName]));
-  return Object.fromEntries(parameters.map((item) => [definitionMap.get(item.definitionId)!, Number.isFinite(Number(item.parameterValue)) ? Number(item.parameterValue) : item.parameterValue]));
+  const definitionMap = new Map(definitions.map((item) => [item.id, item]));
+  const values: Record<string, string | number> = {};
+  parameters.forEach((item) => {
+    const definition = definitionMap.get(item.definitionId);
+    if (!definition) return;
+    const name = definition.parameterName;
+    const value = definition.valueType === "boolean"
+      ? item.parameterValue === "true" ? "是" : "否"
+      : Number.isFinite(Number(item.parameterValue)) ? Number(item.parameterValue) : item.parameterValue;
+    values[`${name}（${parameterScopeLabels[item.scope]}）`] = value;
+    values[name] = value;
+  });
+  return values;
 }
 
-export async function runAutomaticCalculation(claimCaseId: string, commit: boolean) {
+export async function runAutomaticCalculation(claimCaseId: string) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId } });
   if (!claimCase) throw new Error("claim_case_not_found");
-  if (commit) {
-    const existing = await prisma.claimCalculationRun.findFirst({ where: { claimCaseId, status: "committed" }, orderBy: { createdAt: "desc" } });
-    if (existing) return existing.resultData;
-  }
-  const [bills, formulas, benefits, openingBalances] = await Promise.all([
-    prisma.claimBill.findMany({ where: { claimCaseId }, orderBy: { createdAt: "asc" } }),
-    prisma.benefitCalculationFormula.findMany({ where: { policyId: claimCase.policyId } }),
-    policyBenefits(claimCase.policyId),
-    prisma.claimLedgerBalance.findMany({
+  if (claimCase.status !== "entering") throw new Error("claim_case_not_entering");
+  const policyInsured = await prisma.policyInsured.findUnique({ where: { id: claimCase.policyInsuredId } });
+  if (!policyInsured?.coveragePlanId) throw new Error("claim_coverage_plan_required");
+  const benefits = await policyBenefits(claimCase.policyId, policyInsured.coveragePlanId);
+  const planClaimEvents = await prisma.claimCase.findMany({
+    where: { policyInsuredId: claimCase.policyInsuredId },
+    select: { eventId: true },
+  });
+  const allowedBenefitIds = new Set(benefits.map((benefit) => benefit.id));
+  const allowedLedgerScopeIds = new Set([
+    ...benefits.map((benefit) => benefit.id),
+    ...benefits.map((benefit) => `product:${benefit.productId}`),
+    `plan:${policyInsured.coveragePlanId}`,
+    ...planClaimEvents.map((item) => `event:${item.eventId}`),
+  ]);
+  const [loadedBills, formulas, allOpeningBalances, previousCaseEntries, dictionaryRows] = await Promise.all([
+    loadClaimBills(claimCaseId),
+    prisma.benefitCalculationFormula.findMany({
+      where: { policyId: claimCase.policyId, benefitId: { in: [...allowedBenefitIds] } },
+    }),
+    prisma.claimLedgerCurrentValue.findMany({
       where: { policyId: claimCase.policyId, insuredPersonId: claimCase.insuredPersonId, periodYear: claimCase.reportDate.getUTCFullYear() },
     }),
+    prisma.claimLedgerAccumulationRecord.findMany({ where: { claimCaseId } }),
+    prisma.systemDictionary.findMany({
+      where: { enabled: true, dictionaryType: { in: ["bill_type", "medical_insurance_type", "event_type"] } },
+    }),
   ]);
+  const bills: AutomatedBillView[] = loadedBills.map((bill) => ({
+    ...bill,
+    selectedBenefitIds: bill.selectedBenefitIds.filter((benefitId) => allowedBenefitIds.has(benefitId)),
+  }));
   if (!bills.length) throw new Error("claim_bills_required");
+  if (bills.some((bill) => !bill.selectedBenefitIds.length)) throw new Error("claim_bill_plan_benefits_required");
   const benefitMap = new Map(benefits.map((item) => [item.id, item]));
   const formulaMap = new Map(formulas.map((item) => [item.benefitId, item]));
   const ledgerKey = (scopeKey: string, code: string) => `${scopeKey}::${code}`;
-  const workingLedger = new Map(openingBalances.map((item) => [ledgerKey(item.benefitId, item.ledgerCode), Number(item.usedAmount)]));
+  const previousCaseChanges = new Map<string, number>();
+  previousCaseEntries.forEach((item) => {
+    const key = ledgerKey(item.benefitId, item.ledgerCode);
+    previousCaseChanges.set(key, Number(((previousCaseChanges.get(key) ?? 0) + Number(item.accumulatedAmount)).toFixed(2)));
+  });
+  const openingBalances = allOpeningBalances.filter((item) => allowedLedgerScopeIds.has(item.benefitId));
+  const outOfPlanLedgerIds = allOpeningBalances
+    .filter((item) => !allowedLedgerScopeIds.has(item.benefitId))
+    .map((item) => item.id);
+  const workingLedger = new Map(openingBalances.map((item) => {
+    const key = ledgerKey(item.benefitId, item.ledgerCode);
+    return [key, Number(Math.max(0, Number(item.currentAmount) - (previousCaseChanges.get(key) ?? 0)).toFixed(2))] as const;
+  }));
   const ledgerNames = new Map(openingBalances.map((item) => [ledgerKey(item.benefitId, item.ledgerCode), item.ledgerName]));
   const configCache = new Map<string, Record<string, string | number>>();
-  const billResults: Array<Record<string, unknown>> = [];
+  const billResults: BillBenefitCalculationResult[] = [];
   const ledgerChanges: Array<{ billId: string; benefitId: string; code: string; name: string; opening: number; change: number; closing: number }> = [];
   const event = await prisma.claimEvent.findUnique({ where: { id: claimCase.eventId } });
+  const dictionaryLabelMaps = new Map<string, Map<string, string>>();
+  dictionaryRows.forEach((item) => {
+    const labels = dictionaryLabelMaps.get(item.dictionaryType) ?? new Map<string, string>();
+    labels.set(item.itemCode, item.itemName);
+    dictionaryLabelMaps.set(item.dictionaryType, labels);
+  });
+  const dictionaryLabel = (type: string, value: unknown) =>
+    dictionaryLabelMaps.get(type)?.get(String(value)) ?? String(value);
 
-  for (const billRecord of bills) {
-    const bill = mapBill(billRecord);
+  for (const bill of bills) {
     for (const benefitId of bill.selectedBenefitIds) {
       const formula = formulaMap.get(benefitId);
       const benefit = benefitMap.get(benefitId);
@@ -369,13 +1010,13 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
       Object.entries(bill).forEach(([key, value]) => {
         const variableName = billVariableFields[key];
         if (!variableName || !["string", "number", "boolean"].includes(typeof value)) return;
-        if (key === "billType") variables[variableName] = billTypeLabels[String(value)] ?? String(value);
-        else if (key === "medicalInsuranceType") variables[variableName] = medicalInsuranceLabels[String(value)] ?? String(value);
+        if (key === "billType") variables[variableName] = dictionaryLabel("bill_type", value);
+        else if (key === "medicalInsuranceType") variables[variableName] = dictionaryLabel("medical_insurance_type", value);
         else variables[variableName] = value as string | number | boolean;
       });
       Object.entries(bill.customValues).forEach(([key, value]) => { variables[key] = value; });
       if (event) {
-        variables["事件类型"] = eventTypeLabels[event.eventType] ?? event.eventType;
+        variables["事件类型"] = dictionaryLabel("event_type", event.eventType);
         variables["事件日期"] = event.occurredDate.toISOString().slice(0, 10);
         variables["事件诊断"] = event.diagnosis ?? "";
       }
@@ -384,10 +1025,29 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
         variables[`累计年免赔额（${scope.suffix}）`] = workingLedger.get(ledgerKey(scope.key, "annual_deductible")) ?? 0;
         variables[`累计年给付金额（${scope.suffix}）`] = workingLedger.get(ledgerKey(scope.key, "annual_payment")) ?? 0;
       }
-      if (formula.matchExpression && !Boolean(evaluateCalculationExpression(formula.matchExpression, variables))) continue;
-      const stepResults: Array<Record<string, unknown>> = [];
+      const matchExpression = formula.matchExpression ?? "";
+      const substitutedMatchExpression = matchExpression ? substituteCalculationExpression(matchExpression, variables) : "";
+      const matched = !matchExpression || Boolean(evaluateCalculationExpression(matchExpression, variables));
+      if (!matched) {
+        billResults.push({
+          billId: bill.id,
+          invoiceNo: String(bill.invoiceNo ?? ""),
+          benefitId,
+          benefitCode: benefit.code,
+          benefitName: benefit.name,
+          formulaName: formula.formulaName,
+          matched: false,
+          matchExpression,
+          substitutedMatchExpression,
+          amount: 0,
+          steps: [],
+        });
+        continue;
+      }
+      const stepResults: CalculationStepResult[] = [];
       let formulaAmount = 0;
       for (const step of formulaSteps) {
+        const substitutedExpression = substituteCalculationExpression(step.expression, variables);
         const rawValue = evaluateCalculationExpression(step.expression, variables);
         const value = typeof rawValue === "number" ? Math.max(0, Number(rawValue.toFixed(2))) : rawValue;
         variables[step.name] = value;
@@ -412,7 +1072,7 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
             }
           }
         }
-        stepResults.push({ ...step, value, ledgerOpening, ledgerClosing });
+        stepResults.push({ ...step, substitutedExpression, value, ledgerOpening, ledgerClosing });
       }
       billResults.push({
         billId: bill.id,
@@ -421,6 +1081,9 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
         benefitCode: benefit.code,
         benefitName: benefit.name,
         formulaName: formula.formulaName,
+        matched: true,
+        matchExpression,
+        substitutedMatchExpression,
         amount: formulaAmount,
         steps: stepResults,
       });
@@ -430,7 +1093,7 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
   const totalAmount = Number(billResults.reduce((sum, item) => sum + Number(item.amount ?? 0), 0).toFixed(2));
   const runId = randomUUID();
   const runNo = `CAL${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}${Math.floor(Math.random() * 900 + 100)}`;
-  const ledgerBalances = [...workingLedger.entries()].map(([key, usedAmount]) => {
+  const ledgerBalances = [...workingLedger.entries()].map(([key, currentAmount]) => {
     const separatorIndex = key.lastIndexOf("::");
     const benefitId = key.slice(0, separatorIndex);
     const ledgerCode = key.slice(separatorIndex + 2);
@@ -443,41 +1106,111 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
       ledgerCode,
       ledgerName: ledgerNames.get(key) ?? ledgerCode,
       periodYear: claimCase.reportDate.getUTCFullYear(),
-      usedAmount,
+      currentAmount,
       configuredAmount,
-      remainingAmount: configuredAmount === undefined ? undefined : Math.max(0, configuredAmount - usedAmount),
+      remainingAmount: configuredAmount === undefined ? undefined : Math.max(0, configuredAmount - currentAmount),
     };
   });
-  const result = { runId, runNo, claimCaseId, committed: commit, totalAmount, billResults, ledgerBalances, createdAt: new Date().toISOString() };
+  const createdAt = new Date();
+  const result: AutomaticCalculationResult = {
+    runId,
+    runNo,
+    claimCaseId,
+    committed: true,
+    totalAmount,
+    billCount: bills.length,
+    responsibilityResultCount: billResults.length,
+    billResults,
+    ledgerBalances,
+    createdAt: createdAt.toISOString(),
+  };
 
   await prisma.$transaction(async (tx) => {
-    await tx.claimCalculationRun.create({
-      data: { id: runId, claimCaseId, runNo, status: commit ? "committed" : "preview", totalAmount, resultData: result as unknown as Prisma.InputJsonValue, committedAt: commit ? new Date() : null },
+    await tx.claimLedgerAccumulationRecord.deleteMany({ where: { claimCaseId } });
+    if (outOfPlanLedgerIds.length) {
+      await tx.claimLedgerCurrentValue.deleteMany({ where: { id: { in: outOfPlanLedgerIds } } });
+    }
+    await tx.claimCaseCalculationResult.create({
+      data: {
+        id: runId,
+        claimCaseId,
+        runNo,
+        policyId: claimCase.policyId,
+        insuredPersonId: claimCase.insuredPersonId,
+        totalAmount,
+        billCount: bills.length,
+        responsibilityResultCount: billResults.length,
+        createdAt,
+      },
     });
-    if (!commit) return;
-    for (const change of ledgerChanges) {
-      await tx.claimLedgerBalance.upsert({
+    for (const [key, currentAmount] of workingLedger.entries()) {
+      const separatorIndex = key.lastIndexOf("::");
+      const benefitId = key.slice(0, separatorIndex);
+      const ledgerCode = key.slice(separatorIndex + 2);
+      await tx.claimLedgerCurrentValue.upsert({
         where: { policyId_insuredPersonId_benefitId_ledgerCode_periodYear: {
           policyId: claimCase.policyId,
           insuredPersonId: claimCase.insuredPersonId,
-          benefitId: change.benefitId,
-          ledgerCode: change.code,
+          benefitId,
+          ledgerCode,
           periodYear: claimCase.reportDate.getUTCFullYear(),
         } },
-        update: { usedAmount: change.closing, ledgerName: change.name },
+        update: { currentAmount, ledgerName: ledgerNames.get(key) ?? ledgerCode },
         create: {
           policyId: claimCase.policyId,
           insuredPersonId: claimCase.insuredPersonId,
-          benefitId: change.benefitId,
-          ledgerCode: change.code,
-          ledgerName: change.name,
+          benefitId,
+          ledgerCode,
+          ledgerName: ledgerNames.get(key) ?? ledgerCode,
           periodYear: claimCase.reportDate.getUTCFullYear(),
-          usedAmount: change.closing,
+          currentAmount,
         },
       });
-      await tx.claimLedgerEntry.create({
+    }
+    for (const [sequenceIndex, billResult] of billResults.entries()) {
+      const billBenefitResultId = randomUUID();
+      await tx.claimBillBenefitCalculationResult.create({
         data: {
-          calculationRunId: runId,
+          id: billBenefitResultId,
+          calculationResultId: runId,
+          claimCaseId,
+          billId: billResult.billId,
+          invoiceNo: billResult.invoiceNo,
+          benefitId: billResult.benefitId,
+          benefitCode: billResult.benefitCode,
+          benefitName: billResult.benefitName,
+          formulaName: billResult.formulaName,
+          sequenceNo: sequenceIndex + 1,
+          matched: billResult.matched !== false,
+          matchExpression: billResult.matchExpression ?? "",
+          substitutedMatchExpression: billResult.substitutedMatchExpression ?? "",
+          amount: billResult.amount,
+        },
+      });
+      if (billResult.steps.length) {
+        await tx.claimCalculationProcess.createMany({
+          data: billResult.steps.map((step, stepIndex) => ({
+            id: randomUUID(),
+            billBenefitResultId,
+            stepId: step.id,
+            stepName: step.name,
+            sequenceNo: stepIndex + 1,
+            expression: step.expression,
+            substitutedExpression: step.substitutedExpression ?? "",
+            resultFlag: step.result,
+            resultValue: step.value as Prisma.InputJsonValue,
+            ledgerTargetCode: step.ledgerTarget?.code,
+            ledgerTargetName: step.ledgerTarget?.name,
+            ledgerOpeningAmount: step.ledgerOpening,
+            ledgerClosingAmount: step.ledgerClosing,
+          })),
+        });
+      }
+    }
+    for (const change of ledgerChanges) {
+      await tx.claimLedgerAccumulationRecord.create({
+        data: {
+          calculationResultId: runId,
           claimCaseId,
           billId: change.billId,
           policyId: claimCase.policyId,
@@ -486,12 +1219,90 @@ export async function runAutomaticCalculation(claimCaseId: string, commit: boole
           ledgerCode: change.code,
           ledgerName: change.name,
           periodYear: claimCase.reportDate.getUTCFullYear(),
-          openingAmount: change.opening,
-          changeAmount: change.change,
-          closingAmount: change.closing,
+          beforeAmount: change.opening,
+          accumulatedAmount: change.change,
+          afterAmount: change.closing,
         },
       });
     }
+    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "entering" }, data: { status: "calculating", currentHandlerUserId: "default-user", currentHandlerName: "默认用户" } });
+    if (changed.count !== 1) throw new Error("claim_case_status_locked");
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "calculate", fromStatus: "entering", toStatus: "calculating", operatorUserId: "default-user", operatorName: "默认用户", targetUserId: "default-user", targetUserName: "默认用户", description: "完成理算" } });
   });
   return result;
+}
+
+export async function rollbackAutomaticCalculation(claimCaseId: string) {
+  const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId } });
+  if (!claimCase) throw new Error("claim_case_not_found");
+  if (claimCase.status !== "calculating") throw new Error("claim_case_not_calculating");
+  await prisma.$transaction(async (tx) => {
+    const submitted = await tx.claimCaseTransition.findFirst({ where: { claimCaseId, toStatus: "calculating" }, orderBy: { occurredAt: "desc" } });
+    const targetUserId = submitted?.operatorUserId ?? "default-user";
+    const targetUserName = submitted?.operatorName ?? "默认用户";
+    const accumulationRecords = await tx.claimLedgerAccumulationRecord.findMany({ where: { claimCaseId } });
+    const rollbackAmounts = new Map<string, {
+      policyId: string;
+      insuredPersonId: string;
+      benefitId: string;
+      ledgerCode: string;
+      periodYear: number;
+      amount: number;
+    }>();
+    accumulationRecords.forEach((record) => {
+      const key = `${record.policyId}::${record.insuredPersonId}::${record.benefitId}::${record.ledgerCode}::${record.periodYear}`;
+      const existing = rollbackAmounts.get(key);
+      rollbackAmounts.set(key, {
+        policyId: record.policyId,
+        insuredPersonId: record.insuredPersonId,
+        benefitId: record.benefitId,
+        ledgerCode: record.ledgerCode,
+        periodYear: record.periodYear,
+        amount: Number(((existing?.amount ?? 0) + Number(record.accumulatedAmount)).toFixed(2)),
+      });
+    });
+    for (const rollback of rollbackAmounts.values()) {
+      const where = {
+        policyId_insuredPersonId_benefitId_ledgerCode_periodYear: {
+          policyId: rollback.policyId,
+          insuredPersonId: rollback.insuredPersonId,
+          benefitId: rollback.benefitId,
+          ledgerCode: rollback.ledgerCode,
+          periodYear: rollback.periodYear,
+        },
+      };
+      const current = await tx.claimLedgerCurrentValue.findUnique({ where });
+      if (!current) continue;
+      await tx.claimLedgerCurrentValue.update({
+        where,
+        data: { currentAmount: Number(Math.max(0, Number(current.currentAmount) - rollback.amount).toFixed(2)) },
+      });
+    }
+    const caseResults = await tx.claimCaseCalculationResult.findMany({
+      where: { claimCaseId },
+      select: { id: true },
+    });
+    const calculationResultIds = caseResults.map((item) => item.id);
+    const billResults = calculationResultIds.length
+      ? await tx.claimBillBenefitCalculationResult.findMany({
+        where: { calculationResultId: { in: calculationResultIds } },
+        select: { id: true },
+      })
+      : [];
+    const billResultIds = billResults.map((item) => item.id);
+    if (billResultIds.length) {
+      await tx.claimCalculationProcess.deleteMany({ where: { billBenefitResultId: { in: billResultIds } } });
+    }
+    if (calculationResultIds.length) {
+      await tx.claimBillBenefitCalculationResult.deleteMany({ where: { calculationResultId: { in: calculationResultIds } } });
+      await tx.claimCaseCalculationResult.deleteMany({ where: { id: { in: calculationResultIds } } });
+    }
+    await tx.claimLedgerAccumulationRecord.deleteMany({ where: { claimCaseId } });
+    await tx.claimCalculationRun.deleteMany({ where: { claimCaseId } });
+    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "calculating" }, data: { status: "entering", currentHandlerUserId: targetUserId, currentHandlerName: targetUserName } });
+    if (changed.count !== 1) throw new Error("claim_case_status_locked");
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "rollback_calculation", fromStatus: "calculating", toStatus: "entering", operatorUserId: "default-user", operatorName: "默认用户", targetUserId, targetUserName, description: `理算回退给提交人 ${targetUserName}` } });
+  });
+  const configuration = await getAutomationConfiguration(claimCase.policyId, claimCaseId);
+  return { success: true, ledgerBalances: configuration.ledgerBalances };
 }

@@ -1,6 +1,7 @@
 import { BadRequestException, Body, ConflictException, Controller, Delete, Get, Headers, Inject, InternalServerErrorException, NotFoundException, Post, Put, Query } from "@nestjs/common";
 import type { SaveCalculationParameterInput } from "../../../../src/underwriting/contracts.ts";
 import type { FormulaStep, CalculationVariableCategory, AutomationValueType } from "../../../../src/calculation/automation-types.ts";
+import type { FormulaValue } from "../../../../src/calculation/expression-engine.ts";
 import type { CalculationParameterScope } from "../../../../src/underwriting/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { UnderwritingService } from "../underwriting/underwriting.service.ts";
@@ -106,7 +107,7 @@ export class CalculationController {
   }
 }
 
-const variableCategories: CalculationVariableCategory[] = ["bill", "event", "case", "ledger", "benefit", "custom"];
+const variableCategories: CalculationVariableCategory[] = ["bill", "event", "ledger", "benefit", "custom"];
 const automationValueTypes: AutomationValueType[] = ["number", "boolean"];
 
 @Controller("automatic-calculation")
@@ -117,6 +118,13 @@ export class AutomaticCalculationController {
   configuration(@Query("policyId") policyId?: string, @Query("claimCaseId") claimCaseId?: string) {
     if (!policyId) throw new BadRequestException("policyId is required");
     return this.calculation.automationConfiguration(policyId, claimCaseId);
+  }
+
+  @Get("ledgers")
+  ledgers(@Query("policyId") policyId?: string, @Query("insuredPersonId") insuredPersonId?: string) {
+    if (!policyId || !insuredPersonId) throw new BadRequestException("policyId and insuredPersonId are required");
+    return this.calculation.insuredPolicyLedgers(policyId, insuredPersonId)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "insured_ledger_load_failed"); });
   }
 
   @Post("variables")
@@ -137,7 +145,6 @@ export class AutomaticCalculationController {
       timeRange: ["year", "month", "day"].includes(body.timeRange as string) ? body.timeRange as "year" | "month" | "day" : undefined,
       responsibilityRange: ["benefit", "product", "plan", "event"].includes(body.responsibilityRange as string) ? body.responsibilityRange as "benefit" | "product" | "plan" | "event" : undefined,
       defaultValue: typeof body.defaultValue === "string" ? body.defaultValue : undefined,
-      enabled: body.enabled !== false,
     }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "variable_save_failed"); });
   }
 
@@ -153,6 +160,28 @@ export class AutomaticCalculationController {
       matchExpression: body.matchExpression,
       steps: body.steps as FormulaStep[],
     }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "formula_save_failed"); });
+  }
+
+  @Post("formulas/validate")
+  validateFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.matchExpression !== "string"
+      || !Array.isArray(body.steps)
+      || !body.variables
+      || typeof body.variables !== "object"
+      || Array.isArray(body.variables)) throw new BadRequestException("invalid_formula_validation");
+    const variables = Object.fromEntries(
+      Object.entries(body.variables as Record<string, unknown>)
+        .filter((entry): entry is [string, FormulaValue] => ["string", "number", "boolean"].includes(typeof entry[1])),
+    );
+    try {
+      return this.calculation.validateBenefitFormula({
+        matchExpression: body.matchExpression,
+        steps: body.steps as FormulaStep[],
+        variables,
+      });
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : "formula_validation_failed");
+    }
   }
 
   @Delete("formulas")
@@ -184,10 +213,64 @@ export class AutomaticCalculationController {
     return { success: true };
   }
 
+  @Post("events")
+  saveEvent(@Body() body: Record<string, unknown>) {
+    if (typeof body.claimCaseId !== "string"
+      || typeof body.eventType !== "string"
+      || typeof body.occurredDate !== "string"
+      || typeof body.description !== "string") throw new BadRequestException("invalid_claim_event_entry");
+    return this.calculation.saveClaimEventEntry({
+      id: typeof body.id === "string" ? body.id : undefined,
+      claimCaseId: body.claimCaseId,
+      eventType: body.eventType,
+      occurredDate: body.occurredDate,
+      location: typeof body.location === "string" ? body.location : undefined,
+      description: body.description,
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "event_save_failed"); });
+  }
+
+  @Delete("events")
+  async removeEvent(@Query("id") id?: string) {
+    if (!id) throw new BadRequestException("id is required");
+    if (!await this.calculation.deleteClaimEventEntry(id)) throw new NotFoundException("claim_event_entry_not_found");
+    return { success: true };
+  }
+
+  @Post("diseases")
+  saveDisease(@Body() body: Record<string, unknown>) {
+    if (typeof body.claimCaseId !== "string"
+      || typeof body.diseaseName !== "string"
+      || typeof body.diagnosisDate !== "string"
+      || typeof body.hospital !== "string") throw new BadRequestException("invalid_claim_disease_entry");
+    return this.calculation.saveClaimDiseaseEntry({
+      id: typeof body.id === "string" ? body.id : undefined,
+      claimCaseId: body.claimCaseId,
+      diseaseName: body.diseaseName,
+      icdCode: typeof body.icdCode === "string" ? body.icdCode : undefined,
+      diagnosisDate: body.diagnosisDate,
+      hospital: body.hospital,
+      note: typeof body.note === "string" ? body.note : undefined,
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "disease_save_failed"); });
+  }
+
+  @Delete("diseases")
+  async removeDisease(@Query("id") id?: string) {
+    if (!id) throw new BadRequestException("id is required");
+    if (!await this.calculation.deleteClaimDiseaseEntry(id)) throw new NotFoundException("claim_disease_entry_not_found");
+    return { success: true };
+  }
+
   @Post("run")
   run(@Body() body: Record<string, unknown>) {
     if (typeof body.claimCaseId !== "string") throw new BadRequestException("claimCaseId is required");
-    return this.calculation.runAutomaticCalculation(body.claimCaseId, body.commit === true)
+    return this.calculation.runAutomaticCalculation(body.claimCaseId)
       .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "automatic_calculation_failed"); });
+  }
+
+  @Post("rollback")
+  rollback(@Body() body: Record<string, unknown>) {
+    if (typeof body.claimCaseId !== "string") throw new BadRequestException("claimCaseId is required");
+    return this.calculation.rollbackAutomaticCalculation(body.claimCaseId)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "calculation_rollback_failed"); });
   }
 }

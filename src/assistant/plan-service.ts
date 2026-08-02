@@ -143,11 +143,11 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
 export function buildSystemPrompt(userText = "", context?: AssistantContinuationContext) {
   const currentDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   return `
-你是健康险承保查询系统里的页面操作 Agent。你必须先通过注册信息理解系统能力，再选择页面动作。
-你只能输出 JSON，不要输出 markdown、解释或代码块。
+你是健康险系统的页面操作 Agent。先依据注册信息理解能力，再选择页面动作。
+只能输出 JSON，不输出 markdown、解释或代码块。
 当前系统日期（Asia/Shanghai）：${currentDate}。
 
-当前系统导航信息（已直接提供，无需调用工具）：
+系统导航信息（无需调用工具）：
 ${JSON.stringify(getNavigationRegistry())}
 
 注册信息发现工具：
@@ -163,22 +163,22 @@ ${JSON.stringify(getAssistantBackendToolCatalog())}
 ${JSON.stringify(getAssistantControlToolCatalog())}
 
 工作规则：
-1. 根据当前上下文判断是否需要查询注册信息。如果已有足够可信的菜单、页面、字段和动作信息，可以直接执行；如果缺少信息或不确定，应先调用相应的注册信息查询工具。
-2. 不要猜测注册ID。菜单、页面、字段、按钮和结果操作的参数都必须填写注册中心返回的ID，不要把面向用户的中文名称当作ID。
-3. 注册信息查询和页面动作可以按任务需要分多轮进行，每一轮根据上一步结果决定继续发现、执行动作还是结束。
-4. 如果上下文中已经提供历史操作记录和上一次操作结果，应优先使用这些信息，不要恢复或猜测更早的查询结果。
+1. 已有可信注册信息时直接执行；缺少或不确定时先查询注册信息。
+2. 不猜测注册 ID；工具参数必须使用注册中心返回的菜单、页面、字段和动作 ID。
+3. 可分多轮发现和操作，每轮根据上一步结果决定继续或结束。
+4. 优先使用上下文中的历史动作和上次结果，不猜测更早结果。
 5. 原始用户请求中如果包含明确的筛选值，执行查询动作前必须使用注册字段生成对应的 set_field；不能只在 recognized 中描述而省略字段动作。
 6. 字段选择必须依据注册字段的标签、描述和所在区域，不要根据字段ID命名习惯猜测用途。
 7. select 字段必须使用当前页面注册信息声明的 options 值；运行时选项会随页面上下文提供，不要自行创造选项值。
-8. 如果已经可以执行页面动作，返回 open_page、set_field、click_button、click_list_row_action、click_list_item_action；如果任务已经完成或无法继续，返回 finish_task。后台结果提供 itemId 时，优先使用 click_list_item_action，不要猜测行号。
-9. 一次页面计划最多选择一个结果行操作，因为当前页面一次只能展示一个结果详情区域；需要处理其他结果时，等待执行结果后再继续。
+8. 可执行时返回页面操作，完成或无法继续时返回 finish_task。后台提供 itemId 时优先使用 click_list_item_action，不猜行号。
+9. 每轮最多操作一个结果行；需要处理其他结果时等待执行后继续。
 10. decision=continue 表示 Agent 还需要下一轮，decision=finish 表示结束本次任务。
 11. 每轮必须输出 thought，简短说明当前判断和下一步计划；不要输出冗长逐字推理。
-12. 对新增、修改、删除等数据变更请求，打开页面、选中对象、打开编辑器或填写字段都只是中间步骤；只有上一次操作结果明确返回成功的 mutation_result 后，才可以 finish_task。否则必须 decision=continue 并继续完成保存或确认动作。
-13. 用户只提供姓名、名称等可查询条件时，不要立即要求用户补充系统能够查询到的编号或证件信息。优先使用后台数据工具，不要为了取数操作前端查询页面；查询结果唯一时直接打开目标业务页面继续。只有结果为空或存在多个无法消歧的对象时，才使用 ask_user 请求补充定位信息。
+12. 数据变更中，打开、选中、填写都非完成；只有上次结果为 success=true 的 mutation_result 才可 finish_task，否则继续保存或确认。
+13. 姓名、名称等可查询条件先用后台工具；结果唯一时直接继续，结果为空或无法消歧时才 ask_user，不得先索要系统可查编号。
 14. 不得编造用户没有提供且系统结果中不存在的日期、地点、医院、诊断、账号等事实。页面已有默认值时保留默认值；可选字段缺失时保持为空。可以把用户原话整理为必填的简短事件描述，但不得添加原话没有表达的具体事实。
 15. 当任务缺少系统无法查询且用户未提供的必填信息时，使用 ask_user 明确询问并列出 requestedFields。ask_user 会暂停任务，用户回答后继续原任务；不要用普通 reply 或 finish_task 代替追问。
-16. 不要规范或限制用户的表达方式。追问时使用自然语言，不要求用户提供页面字段ID、枚举值或 YYYY-MM-DD 等技术格式；应理解用户的原始回答，并只在内部工具参数中转换为页面需要的值。引用用户描述时保留原意和措辞，不把改写后的文本冒充用户原话。
+16. 追问使用自然语言，不要求字段ID、枚举值或技术日期格式；内部自行转换。引用用户描述须保留原意，不把改写冒充原话。
 ${buildContextualRules(userText, context)}
 
 输出结构：
@@ -382,6 +382,19 @@ function formatLastOperationResult(result: unknown) {
 查询结果上下文说明：本次完整命中 ${candidate.matchedPolicyCount} 条保单。为限制模型上下文，policies 仅提供前 ${returnedCount} 条（最大 ${limit} 条）作为样本${truncated ? "，仍有其他命中结果未传入" : "，已包含全部命中结果"}。不得把 policies 的长度当作完整结果数，也不要臆测未传入的保单。`;
 }
 
+function getTerminalOperationError(result: unknown) {
+  if (!result || typeof result !== "object") return null;
+  const candidate = result as { type?: unknown; reason?: unknown };
+  if (candidate.type !== "operation_error" || typeof candidate.reason !== "string") return null;
+  if (candidate.reason === "calculation_data_locked") {
+    return "案件已完成理算，当前理算数据已锁定。如需新增或修改，请先执行理算回退。";
+  }
+  if (candidate.reason === "read_only_page") {
+    return "当前页面为只读页面，不能新增或修改数据。请进入对应的业务处理页面后再操作。";
+  }
+  return null;
+}
+
 function getLlmIdentity(provider: LlmProvider) {
   if (provider === "ollama") return { provider, model: OLLAMA_MODEL };
   return { provider, model: DEEPSEEK_MODEL };
@@ -447,6 +460,23 @@ async function callLlm(provider: LlmProvider, messages: OllamaMessage[]) {
 }
 
 export async function requestAgentPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
+  const terminalErrorReply = getTerminalOperationError(context?.lastOperationResult);
+  if (terminalErrorReply) {
+    return {
+      ok: true as const,
+      rawReplies: [],
+      plan: {
+        thought: "当前操作受业务状态限制，停止重复执行",
+        reply: terminalErrorReply,
+        recognized: ["当前操作不可执行"],
+        decision: "finish" as const,
+        toolCalls: [] as AssistantToolCall[],
+        discoverySteps: [],
+        discoveryResults: [],
+        backendToolResults: context?.backendToolResults ?? [],
+      },
+    };
+  }
   const runId = randomUUID().slice(0, 8);
   const llm = getLlmIdentity(provider);
   const userMessage = context

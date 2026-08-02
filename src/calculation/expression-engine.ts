@@ -1,4 +1,4 @@
-type FormulaValue = number | string | boolean;
+export type FormulaValue = number | string | boolean;
 
 type Token = { type: "number" | "string" | "identifier" | "operator" | "paren" | "comma" | "eof"; value: string };
 
@@ -41,11 +41,49 @@ function tokenize(expression: string, variableNames: string[]) {
       index += 1;
       continue;
     }
-    if (rest[0] === ",") { tokens.push({ type: "comma", value: "," }); index += 1; continue; }
+    if (rest[0] === "," || rest[0] === "，") { tokens.push({ type: "comma", value: "," }); index += 1; continue; }
     throw new Error(`invalid_expression_character:${rest[0]}`);
   }
   tokens.push({ type: "eof", value: "" });
   return tokens;
+}
+
+export function calculationExpressionReferencesAny(expression: string, candidateNames: string[]) {
+  if (!candidateNames.length) return false;
+  const candidates = new Set(candidateNames);
+  return tokenize(expression, candidateNames).some((token) => token.type === "identifier" && candidates.has(token.value));
+}
+
+export function calculationExpressionIdentifiers(expression: string, candidateNames: string[]) {
+  const candidates = new Set(candidateNames);
+  return [...new Set(
+    tokenize(expression, candidateNames)
+      .filter((token) => token.type === "identifier" && candidates.has(token.value))
+      .map((token) => token.value),
+  )];
+}
+
+function displayFormulaValue(value: FormulaValue) {
+  if (typeof value === "boolean") return value ? "是" : "否";
+  if (typeof value === "string") return `“${value}”`;
+  return String(value);
+}
+
+export function substituteCalculationExpression(expression: string, variables: Record<string, FormulaValue>) {
+  const names = Object.keys(variables).sort((left, right) => right.length - left.length);
+  let result = "";
+  let index = 0;
+  while (index < expression.length) {
+    const variableName = names.find((name) => expression.startsWith(name, index));
+    if (variableName) {
+      result += displayFormulaValue(variables[variableName]);
+      index += variableName.length;
+      continue;
+    }
+    result += expression[index];
+    index += 1;
+  }
+  return result;
 }
 
 function numeric(value: FormulaValue) {
@@ -128,8 +166,8 @@ export function evaluateCalculationExpression(expression: string, variables: Rec
         }
         const closing = take();
         if (closing.type !== "paren" || closing.value !== ")") throw new Error("missing_function_parenthesis");
-        if (upper === "MIN" || token.value === "最小") return Math.min(...args.map(numeric));
-        if (upper === "MAX" || token.value === "最大") return Math.max(...args.map(numeric));
+        if (upper === "MIN" || token.value === "最小" || token.value === "取小") return Math.min(...args.map(numeric));
+        if (upper === "MAX" || token.value === "最大" || token.value === "取大") return Math.max(...args.map(numeric));
         if (upper === "ABS" || token.value === "绝对值") return Math.abs(numeric(args[0] ?? 0));
         if (upper === "ROUND" || token.value === "四舍五入") return Number(numeric(args[0] ?? 0).toFixed(Math.max(0, numeric(args[1] ?? 2))));
         if (upper === "IF" || token.value === "如果") return truthy(args[0] ?? false) ? args[1] ?? 0 : args[2] ?? 0;
@@ -189,12 +227,18 @@ export function evaluateCalculationExpression(expression: string, variables: Rec
   }
   function and(): FormulaValue {
     let value = equality();
-    while (matchOperator("&&")) value = truthy(value) && truthy(equality());
+    while (matchOperator("&&")) {
+      const right = equality();
+      value = truthy(value) && truthy(right);
+    }
     return value;
   }
   function or(): FormulaValue {
     let value = and();
-    while (matchOperator("||")) value = truthy(value) || truthy(and());
+    while (matchOperator("||")) {
+      const right = and();
+      value = truthy(value) || truthy(right);
+    }
     return value;
   }
 

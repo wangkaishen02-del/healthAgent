@@ -11,11 +11,18 @@ import type { CalculationParameterScope } from "../../../../src/underwriting/typ
 import {
   deleteBenefitFormula,
   deleteClaimBill,
+  deleteClaimDiseaseEntry,
+  deleteClaimEventEntry,
   getAutomationConfiguration,
+  listInsuredPolicyLedgers,
+  rollbackAutomaticCalculation,
   runAutomaticCalculation,
   saveAutomationVariable,
   saveBenefitFormula,
   saveClaimBill,
+  saveClaimDiseaseEntry,
+  saveClaimEventEntry,
+  validateBenefitFormula,
 } from "../../../../src/calculation/automation-service.ts";
 
 @Injectable()
@@ -26,10 +33,17 @@ export class CalculationService {
   update(id: string, input: SaveCalculationParameterInput) { return updateCalculationParameterDb(id, input); }
   delete(id: string) { return deleteCalculationParameterDb(id); }
   automationConfiguration(policyId: string, claimCaseId?: string) { return getAutomationConfiguration(policyId, claimCaseId); }
+  insuredPolicyLedgers(policyId: string, insuredPersonId: string) { return listInsuredPolicyLedgers(policyId, insuredPersonId); }
   saveAutomationVariable(input: Parameters<typeof saveAutomationVariable>[0]) { return saveAutomationVariable(input); }
   saveBenefitFormula(input: Parameters<typeof saveBenefitFormula>[0]) { return saveBenefitFormula(input); }
+  validateBenefitFormula(input: Parameters<typeof validateBenefitFormula>[0]) { return validateBenefitFormula(input); }
   deleteBenefitFormula(policyId: string, benefitId: string) { return deleteBenefitFormula(policyId, benefitId); }
   saveClaimBill(input: Parameters<typeof saveClaimBill>[0]) { return saveClaimBill(input); }
   deleteClaimBill(id: string) { return deleteClaimBill(id); }
-  runAutomaticCalculation(claimCaseId: string, commit: boolean) { return runAutomaticCalculation(claimCaseId, commit); }
+  saveClaimEventEntry(input: Parameters<typeof saveClaimEventEntry>[0]) { return saveClaimEventEntry(input); }
+  deleteClaimEventEntry(id: string) { return deleteClaimEventEntry(id); }
+  saveClaimDiseaseEntry(input: Parameters<typeof saveClaimDiseaseEntry>[0]) { return saveClaimDiseaseEntry(input); }
+  deleteClaimDiseaseEntry(id: string) { return deleteClaimDiseaseEntry(id); }
+  runAutomaticCalculation(claimCaseId: string) { return runAutomaticCalculation(claimCaseId); }
+  rollbackAutomaticCalculation(claimCaseId: string) { return rollbackAutomaticCalculation(claimCaseId); }
 }

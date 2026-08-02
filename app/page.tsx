@@ -11,8 +11,23 @@ import ClaimEntryCalculationPage from "./components/ClaimEntryCalculationPage";
 import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
 
-type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "calculation_config";
+type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config";
 type DrawerTab = "basic" | "benefits" | "insureds";
+type InsuredPolicyLedgerItem = {
+  id: string;
+  scope: string;
+  targetCode: string;
+  targetName: string;
+  ledgerCode: string;
+  ledgerName: string;
+  periodYear: number;
+  currentAmount: number;
+  updatedAt: string;
+};
+type InsuredPolicyLedgerData = {
+  insuredPerson: { id: string; insuredNo: string; name: string; idNo?: string | null };
+  items: InsuredPolicyLedgerItem[];
+};
 type LlmProvider = "ollama" | "deepseek";
 type PolicyFilters = {
   policyNo: string;
@@ -74,6 +89,8 @@ function pageIdToMainTab(pageId: string): MainTab | null {
   if (pageId === "policy_query" || pageId === "policy_detail") return "policy";
   if (pageId === "claim_query") return "claim";
   if (pageId === "claim_registration") return "claim_registration";
+  if (pageId === "claim_entry_calculation") return "claim_entry_calculation";
+  if (pageId === "claim_review_completion") return "claim_review_completion";
   if (pageId === "calculation_config") return "calculation_config";
   return null;
 }
@@ -437,6 +454,7 @@ function InsuredsView({
   page,
   setSelectedPlanId,
   setPage,
+  onViewLedger,
 }: {
   insureds: PolicyInsuredView[];
   plans: CoveragePlan[];
@@ -445,6 +463,7 @@ function InsuredsView({
   page: number;
   setSelectedPlanId: (planId: string) => void;
   setPage: (page: number) => void;
+  onViewLedger: (item: PolicyInsuredView) => void;
 }) {
   const totalPages = Math.max(1, Math.ceil(total / INSURED_PAGE_SIZE));
 
@@ -473,6 +492,7 @@ function InsuredsView({
                 <th>被保角色</th>
                 <th>加入日期</th>
                 <th>保障期间</th>
+                <th>操作</th>
               </tr>
             </thead>
             <tbody>
@@ -492,9 +512,10 @@ function InsuredsView({
                   <td>{formatInsuredRole(item.insuredRole)}</td>
                   <td>{item.joinDate ?? "-"}</td>
                   <td>{formatDateRange(item.effectiveDate, item.expiryDate)}</td>
+                  <td><button type="button" className="action-link" onClick={() => onViewLedger(item)}>查看台账</button></td>
                 </tr>
               )) : (
-                <tr><td className="config-empty-cell" colSpan={11}>该保障计划下没有被保人。</td></tr>
+                <tr><td className="config-empty-cell" colSpan={12}>该保障计划下没有被保人。</td></tr>
               )}
             </tbody>
           </table>
@@ -511,6 +532,7 @@ export default function Page() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [claimMenuOpen, setClaimMenuOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  const topNavRef = useRef<HTMLElement | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
   const [policies, setPolicies] = useState<PolicyListItem[]>([]);
@@ -524,9 +546,13 @@ export default function Page() {
   const [insuredTotal, setInsuredTotal] = useState(0);
   const [insuredPage, setInsuredPage] = useState(1);
   const [insuredPlanId, setInsuredPlanId] = useState("");
+  const [insuredLedgerOpen, setInsuredLedgerOpen] = useState(false);
+  const [insuredLedgerLoading, setInsuredLedgerLoading] = useState(false);
+  const [insuredLedgerError, setInsuredLedgerError] = useState("");
+  const [insuredLedgerData, setInsuredLedgerData] = useState<InsuredPolicyLedgerData | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
-  const [llmProvider, setLlmProvider] = useState<LlmProvider>("ollama");
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>("deepseek");
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantStopping, setAssistantStopping] = useState(false);
@@ -555,6 +581,8 @@ export default function Page() {
   const calculationConfigControllerRef = useRef<RegisteredPageController | null>(null);
   const claimQueryControllerRef = useRef<RegisteredPageController | null>(null);
   const claimRegistrationControllerRef = useRef<RegisteredPageController | null>(null);
+  const claimEntryCalculationControllerRef = useRef<RegisteredPageController | null>(null);
+  const claimReviewCompletionControllerRef = useRef<RegisteredPageController | null>(null);
   const assistantAbortControllerRef = useRef<AbortController | null>(null);
   const assistantTaskIdRef = useRef<string | null>(null);
 
@@ -603,6 +631,11 @@ export default function Page() {
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
+      if (topNavRef.current && !topNavRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setClaimMenuOpen(false);
+        setConfigMenuOpen(false);
+      }
       if (selectRef.current && !selectRef.current.contains(event.target as Node)) {
         setStatusOpen(false);
       }
@@ -610,8 +643,18 @@ export default function Page() {
         setModelSelectOpen(false);
       }
     }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      setClaimMenuOpen(false);
+      setConfigMenuOpen(false);
+    }
     document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("click", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, []);
 
   async function loadPolicies(nextFilters: PolicyFilters, page = 1) {
@@ -646,6 +689,25 @@ export default function Page() {
     setInsuredTotal(data.total);
     setInsuredPage(data.page);
     return data;
+  }
+
+  async function openInsuredLedger(item: PolicyInsuredView) {
+    if (!drawerData) return;
+    setInsuredLedgerOpen(true);
+    setInsuredLedgerLoading(true);
+    setInsuredLedgerError("");
+    setInsuredLedgerData({ insuredPerson: item.insuredPerson, items: [] });
+    try {
+      const params = new URLSearchParams({ policyId: drawerData.policy.id, insuredPersonId: item.insuredPerson.id });
+      const response = await apiFetch(`/api/automatic-calculation/ledgers?${params.toString()}`, { cache: "no-store" });
+      const result = await response.json() as InsuredPolicyLedgerData & { message?: string };
+      if (!response.ok) throw new Error(result.message ?? "insured_ledger_load_failed");
+      setInsuredLedgerData(result);
+    } catch {
+      setInsuredLedgerError("台账加载失败，请稍后重试。");
+    } finally {
+      setInsuredLedgerLoading(false);
+    }
   }
 
   async function openPolicyDrawer(policyId: string, tab: DrawerTab) {
@@ -693,6 +755,8 @@ export default function Page() {
       if (pageId === "calculation_config") return calculationConfigControllerRef.current;
       if (pageId === "claim_query") return claimQueryControllerRef.current;
       if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
+      if (pageId === "claim_entry_calculation") return claimEntryCalculationControllerRef.current;
+      if (pageId === "claim_review_completion") return claimReviewCompletionControllerRef.current;
       return null;
     };
 
@@ -859,6 +923,12 @@ export default function Page() {
         if (targetTab === "claim_registration") {
           await getRegisteredPageController("claim_registration")?.executeAction("reset");
         }
+        if (targetTab === "claim_entry_calculation") {
+          await getRegisteredPageController("claim_entry_calculation")?.executeAction("reset");
+        }
+        if (targetTab === "claim_review_completion") {
+          await getRegisteredPageController("claim_review_completion")?.executeAction("reset");
+        }
 
         await delay(120);
         throwIfAssistantAborted(signal);
@@ -1007,6 +1077,8 @@ export default function Page() {
     Object.assign(runtimeFieldOptions, calculationConfigControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimQueryControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimRegistrationControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, claimEntryCalculationControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, claimReviewCompletionControllerRef.current?.getRuntimeFieldOptions() ?? {});
 
     return {
       steps,
@@ -1050,7 +1122,11 @@ export default function Page() {
           ? ["理赔配置", "保单理算配置"]
           : mainTab === "claim_registration"
             ? ["理赔处理", "受理立案"]
-            : ["综合查询", "案件查询"];
+            : mainTab === "claim_entry_calculation"
+              ? ["理赔处理", "录入与理算"]
+              : mainTab === "claim_review_completion"
+                ? ["理赔处理", "审核结案"]
+                : ["综合查询", "案件查询"];
       let allSteps: string[] = [];
       let lastExecutedPlan: AssistantPlan | null = null;
       let lastExecutionResult: {
@@ -1065,7 +1141,11 @@ export default function Page() {
           ? "calculation_config"
           : mainTab === "claim_registration"
             ? "claim_registration"
-            : "claim_query";
+            : mainTab === "claim_entry_calculation"
+              ? "claim_entry_calculation"
+              : mainTab === "claim_review_completion"
+                ? "claim_review_completion"
+                : "claim_query";
 
       async function parseTaskResponse(response: Response) {
         if (!response.ok) {
@@ -1278,7 +1358,7 @@ export default function Page() {
       <header className="topbar">
         <div className="topbar-left">
           <div className="topbar-brand">healthAgent 承保管理系统</div>
-          <nav className="topnav">
+          <nav className="topnav" ref={topNavRef}>
             <div className="menu-item active">
               <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setClaimMenuOpen(false); setConfigMenuOpen(false); }}>
                 综合查询 ▾
@@ -1309,6 +1389,7 @@ export default function Page() {
               <div className={`dropdown ${claimMenuOpen ? "" : "hidden"}`}>
                 <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>
                 <button className="dropdown-item" onClick={() => { openMainTab("claim_entry_calculation"); setClaimMenuOpen(false); }}>录入与理算</button>
+                <button className="dropdown-item" onClick={() => { openMainTab("claim_review_completion"); setClaimMenuOpen(false); }}>审核结案</button>
               </div>
             </div>
           </nav>
@@ -1335,10 +1416,12 @@ export default function Page() {
                   ? "受理立案"
                   : tab === "claim_entry_calculation"
                     ? "录入与理算"
-                  : "保单理算配置";
+                    : tab === "claim_review_completion"
+                      ? "审核结案"
+                    : "保单理算配置";
             return (
               <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
-                <button className="tab-button" onClick={() => setMainTab(tab)}>{label}</button>
+                <button className="tab-button" aria-current={mainTab === tab ? "page" : undefined} onClick={() => setMainTab(tab)}>{label}</button>
                 <button className="tab-close" type="button" aria-label={`关闭${label}`} onClick={() => closeMainTab(tab)}>×</button>
               </div>
             );
@@ -1510,12 +1593,33 @@ export default function Page() {
                         void loadPolicyInsureds(drawerData.policy.id, 1, planId);
                       }}
                       setPage={(page) => { void loadPolicyInsureds(drawerData.policy.id, page); }}
+                      onViewLedger={(item) => void openInsuredLedger(item)}
                     />
                   )}
                 </div>
               </div>
             </aside>
           </div>
+          {insuredLedgerOpen ? (
+            <div className="insured-ledger-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setInsuredLedgerOpen(false); }}>
+              <section className="insured-ledger-dialog" role="dialog" aria-modal="true" aria-labelledby="insured-ledger-title">
+                <div className="insured-ledger-header">
+                  <div>
+                    <div className="section-title" id="insured-ledger-title">被保人当前保单台账</div>
+                    <small>{insuredLedgerData?.insuredPerson.name ?? "-"} ｜ {insuredLedgerData?.insuredPerson.insuredNo ?? "-"} ｜ {drawerData?.policy.policyNo ?? "-"}</small>
+                  </div>
+                  <button type="button" className="page-back-button" onClick={() => setInsuredLedgerOpen(false)}>关闭</button>
+                </div>
+                <div className="insured-ledger-content">
+                  {insuredLedgerLoading ? <div className="config-empty-cell">正在加载台账…</div> : insuredLedgerError ? <div className="field-error">{insuredLedgerError}</div> : insuredLedgerData?.items.length ? (
+                    <div className="table-wrapper"><table><thead><tr><th>年度</th><th>层级</th><th>对象编码</th><th>对象名称</th><th>台账项目</th><th>当前值</th><th>更新时间</th></tr></thead><tbody>
+                      {insuredLedgerData.items.map((item) => <tr key={item.id}><td>{item.periodYear}</td><td><span className="status-badge">{item.scope}</span></td><td><code>{item.targetCode}</code></td><td>{item.targetName}</td><td>{item.ledgerName}</td><td><strong>¥ {item.currentAmount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false })}</td></tr>)}
+                    </tbody></table></div>
+                  ) : <div className="config-empty-cell">该被保人在当前保单下暂无台账记录。</div>}
+                </div>
+              </section>
+            </div>
+          ) : null}
         </section>
 
         <section className={`page-section ${openTabs.includes("claim") && mainTab === "claim" ? "" : "hidden"}`}>
@@ -1527,7 +1631,11 @@ export default function Page() {
         </section>
 
         <section className={`page-section ${openTabs.includes("claim_entry_calculation") && mainTab === "claim_entry_calculation" ? "" : "hidden"}`}>
-          <ClaimEntryCalculationPage />
+          <ClaimEntryCalculationPage ref={claimEntryCalculationControllerRef} />
+        </section>
+
+        <section className={`page-section ${openTabs.includes("claim_review_completion") && mainTab === "claim_review_completion" ? "" : "hidden"}`}>
+          <ClaimEntryCalculationPage ref={claimReviewCompletionControllerRef} mode="review" />
         </section>
 
         <section className={`page-section ${openTabs.includes("calculation_config") && mainTab === "calculation_config" ? "" : "hidden"}`}>

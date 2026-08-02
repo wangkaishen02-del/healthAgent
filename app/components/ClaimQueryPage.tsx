@@ -5,6 +5,7 @@ import type { RegisteredPageController } from "../../src/assistant/page-controll
 import type { ClaimCase, ClaimCaseStatus, ClaimPartySnapshot } from "../../src/claims/types";
 import { apiFetch } from "../../src/api/client";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
+import ClaimEntryCalculationPage from "./ClaimEntryCalculationPage";
 
 type ClaimFilters = {
   caseNo: string;
@@ -21,10 +22,10 @@ type DetailTab = "basic" | "parties" | "event" | "attachments";
 
 const PAGE_SIZE = 10;
 const EMPTY_FILTERS: ClaimFilters = { caseNo: "", policyNo: "", insuredName: "", insuredIdNo: "", status: "", reportDateFrom: "", reportDateTo: "" };
-const statusLabels: Record<ClaimCaseStatus, string> = { registered: "受理中", processing: "处理中", completed: "已结案", cancelled: "已撤件" };
-const statusOptions: AppSelectOption<ClaimFilters["status"]>[] = [{ value: "", label: "全部状态" }, { value: "registered", label: "受理中" }, { value: "processing", label: "处理中" }, { value: "completed", label: "已结案" }, { value: "cancelled", label: "已撤件" }];
+const statusLabels: Record<ClaimCaseStatus, string> = { registered: "受理", entering: "录入", calculating: "理算", reviewing: "审核", completed: "结案", cancelled: "已撤件" };
+const statusOptions: AppSelectOption<ClaimFilters["status"]>[] = [{ value: "", label: "全部状态" }, { value: "registered", label: "受理" }, { value: "entering", label: "录入" }, { value: "calculating", label: "理算" }, { value: "reviewing", label: "审核" }, { value: "completed", label: "结案" }, { value: "cancelled", label: "已撤件" }];
 const roleLabels: Record<ClaimPartySnapshot["role"], string> = { insured: "被保人", applicant: "申请人", payee: "领款人" };
-const eventTypeLabels = { disease: "疾病", accident: "意外", other: "其他" } as const;
+const eventTypeLabels = { "1": "疾病", "2": "意外", "9": "其他" } as const;
 const reportChannelLabels = { online: "线上报案", phone: "电话报案", counter: "柜面报案", other: "其他" } as const;
 const attachmentCategoryLabels = { application: "理赔申请书", identity: "身份证明", medical: "病历资料", invoice: "发票费用清单", bank: "银行卡资料", other: "其他资料" } as const;
 
@@ -157,14 +158,14 @@ const ClaimQueryPage = forwardRef<RegisteredPageController>(function ClaimQueryP
 
     <section className="panel result-panel">
       <div className="panel-title-row"><div className="section-title">查询结果</div><span className="muted">{total} 条</span></div>
-      <div className="result-table-shell"><div className="table-wrapper result-table-wrapper"><table><thead><tr><th>序号</th><th>案件号</th><th>保单号</th><th>被保人</th><th>证件号</th><th>关联事件</th><th>报案日期</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
-        {items.length ? items.map((item, index) => { const insured = item.parties.find((party) => party.role === "insured"); return <tr key={item.id} className={detail?.id === item.id ? "active-row" : ""}><td>{(page - 1) * PAGE_SIZE + index + 1}</td><td><strong>{item.caseNo}</strong></td><td>{item.policyNo}</td><td>{insured?.name ?? "-"}</td><td>{insured?.idNo ?? "-"}</td><td>{item.event.eventNo}</td><td>{item.reportDate}</td><td><span className={`status-badge claim-${item.status}`}>{statusLabels[item.status]}</span></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false })}</td><td><button type="button" className="action-link" onClick={() => openDetail(item)}>查看详情</button></td></tr>; }) : <tr><td colSpan={10}>没有找到符合条件的案件。</td></tr>}
+      <div className="result-table-shell"><div className="table-wrapper result-table-wrapper"><table><thead><tr><th>序号</th><th>案件号</th><th>保单号</th><th>被保人</th><th>证件号</th><th>当前处理人</th><th>报案日期</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>
+        {items.length ? items.map((item, index) => { const insured = item.parties.find((party) => party.role === "insured"); return <tr key={item.id} className={detail?.id === item.id ? "active-row" : ""}><td>{(page - 1) * PAGE_SIZE + index + 1}</td><td><strong>{item.caseNo}</strong></td><td>{item.policyNo}</td><td>{insured?.name ?? "-"}</td><td>{insured?.idNo ?? "-"}</td><td>{item.currentHandlerName || "-"}</td><td>{item.reportDate}</td><td><span className={`status-badge claim-${item.status}`}>{statusLabels[item.status]}</span></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false })}</td><td><button type="button" className="action-link" onClick={() => openDetail(item)}>查看详情</button></td></tr>; }) : <tr><td colSpan={10}>没有找到符合条件的案件。</td></tr>}
       </tbody></table></div>
       <div className="pagination"><span className="pagination-info">第 {page} / {totalPages} 页，共 {total} 条</span><button className="page-btn" disabled={page <= 1 || busy} onClick={() => void search(filters, page - 1)}>上一页</button><button className="page-btn" disabled={page >= totalPages || busy} onClick={() => void search(filters, page + 1)}>下一页</button></div></div>
     </section>
 
-    <div className={`drawer-overlay ${detail ? "open" : ""}`} aria-hidden={!detail}><aside className="drawer-panel"><div className="drawer-header"><div><div className="section-title">案件详情（只读）</div><div className="muted">{detail ? `${detail.caseNo} ｜ ${statusLabels[detail.status]}` : ""}</div></div><button className="page-back-button" type="button" onClick={() => setDetail(null)}>返回上一页</button></div>
-      {detail ? <div className="drawer-body"><div className="drawer-tabs">{([['basic', '基本信息'], ['parties', '关系人'], ['event', '事件信息'], ['attachments', '影像资料']] as Array<[DetailTab, string]>).map(([value, label]) => <button type="button" className={`detail-tab ${detailTab === value ? "active" : ""}`} key={value} onClick={() => setDetailTab(value)}>{label}</button>)}</div><div className="drawer-content"><CaseDetail item={detail} tab={detailTab} /></div></div> : null}
+    <div className={`drawer-overlay ${detail ? "open" : ""}`} aria-hidden={!detail}><aside className="drawer-panel claim-query-review-drawer">
+      {detail ? <ClaimEntryCalculationPage mode="query" initialCase={detail} onClose={() => setDetail(null)} /> : null}
     </aside></div>
   </>;
 });

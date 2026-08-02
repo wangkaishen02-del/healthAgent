@@ -1,5 +1,5 @@
 export type AssistantMenuId = "comprehensive_query" | "claim_processing" | "underwriting_config";
-export type RegisteredPageId = "policy_query" | "policy_detail" | "claim_query" | "claim_registration" | "calculation_config";
+export type RegisteredPageId = "policy_query" | "policy_detail" | "claim_query" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config";
 
 export type RegisteredField = {
   fieldId: string;
@@ -59,6 +59,8 @@ const menus: MenuRegistration[] = [
     description: "承接理赔受理、案件检索、详情查看和理算结果联查。",
     pages: [
       { pageId: "claim_registration", label: "受理立案", description: "登记出险人员、申请与领款信息、事件经过和影像资料。" },
+      { pageId: "claim_entry_calculation", label: "录入与理算", description: "录入账单、事件和疾病信息，执行理算并提交审核。" },
+      { pageId: "claim_review_completion", label: "审核结案", description: "查看理算结果，执行审核回退或审核结案。" },
     ],
   },
   {
@@ -68,6 +70,107 @@ const menus: MenuRegistration[] = [
     pages: [{ pageId: "calculation_config", label: "保单理算配置", description: "按保单、保障计划、险种和责任维护理算参数。" }],
   },
 ];
+
+const claimProcessingListRegion: RegisteredRegion = {
+  regionId: "processing_case_list",
+  label: "待处理案件列表",
+  description: "搜索并打开当前环节的案件；后台结果中的案件 ID 可用于稳定对象操作。",
+  fields: [{ fieldId: "caseKeyword", label: "案件搜索", type: "text", description: "按案件号、保单号、被保人、证件号或事件号搜索。" }],
+  actions: [
+    { actionId: "search", label: "搜索案件", description: "按当前关键词刷新案件列表。", kind: "query", target: "page" },
+    { actionId: "refresh", label: "刷新案件", description: "刷新当前案件列表。", kind: "query", target: "page" },
+    { actionId: "reset", label: "重置页面", description: "清空搜索条件并返回案件列表。", kind: "input", target: "page" },
+    { actionId: "open_case", label: "打开案件", description: "打开列表指定案件。", kind: "view", target: "row" },
+  ],
+};
+
+const claimDetailNavigationRegion: RegisteredRegion = {
+  regionId: "processing_case_detail_navigation",
+  label: "案件详情导航",
+  description: "切换案件资料区域和辅助查看区域。",
+  actions: [
+    { actionId: "show_acceptance", label: "受理信息", description: "查看案件受理信息。", kind: "view", target: "page" },
+    { actionId: "show_bills", label: "账单信息", description: "查看账单列表。", kind: "view", target: "page" },
+    { actionId: "show_events", label: "事件信息", description: "查看被保人的事件列表。", kind: "view", target: "page" },
+    { actionId: "show_diseases", label: "疾病信息", description: "查看案件疾病信息。", kind: "view", target: "page" },
+    { actionId: "toggle_attachments", label: "影像件", description: "打开或收起影像件区域。", kind: "view", target: "page" },
+    { actionId: "open_personal_ledger", label: "个人台账", description: "打开当前被保人的理算台账。", kind: "view", target: "page" },
+    { actionId: "open_calculation_process", label: "理算过程", description: "打开当前案件已保存的理算过程。", kind: "view", target: "page" },
+    { actionId: "back_to_list", label: "返回案件列表", description: "关闭当前案件详情并返回列表。", kind: "navigation", target: "page" },
+  ],
+};
+
+const claimEntryBillRegion: RegisteredRegion = {
+  regionId: "claim_entry_bills",
+  label: "账单录入",
+  description: "新增或编辑医疗账单；必填票据号码、患者姓名、医疗机构、收费日期和医疗总费用。",
+  fields: [
+    { fieldId: "invoiceCode", label: "票据代码", type: "text", description: "电子票据代码，可为空。" },
+    { fieldId: "invoiceNo", label: "票据号码", type: "text", description: "医疗票据号码，必填。" },
+    { fieldId: "checkCode", label: "校验码", type: "text", description: "票据校验码，可为空。" },
+    { fieldId: "billType", label: "票据类型", type: "select", description: "账单类型。", options: [{ value: "1", label: "门诊" }, { value: "2", label: "住院" }, { value: "3", label: "门诊特殊病" }, { value: "4", label: "药店购药" }, { value: "9", label: "其他费用" }] },
+    { fieldId: "patientName", label: "患者姓名", type: "text", description: "账单患者姓名，必填。" },
+    { fieldId: "patientIdNo", label: "患者证件号", type: "text", description: "患者证件号码。" },
+    { fieldId: "visitNo", label: "门诊或住院号", type: "text", description: "医院就诊流水号。" },
+    { fieldId: "institution", label: "医疗机构", type: "text", description: "医院或药店名称，必填。" },
+    { fieldId: "department", label: "就诊科室", type: "text", description: "就诊科室。" },
+    { fieldId: "billDate", label: "收费日期", type: "text", description: "格式 YYYY-MM-DD，必填。" },
+    { fieldId: "admissionDate", label: "入院日期", type: "text", description: "住院账单入院日期。" },
+    { fieldId: "dischargeDate", label: "出院日期", type: "text", description: "住院账单出院日期。" },
+    { fieldId: "diagnosis", label: "主要诊断", type: "text", description: "账单主要诊断。" },
+    { fieldId: "medicalInsuranceType", label: "医保类型", type: "select", description: "医保结算类型。", options: [{ value: "1", label: "城镇职工基本医疗保险" }, { value: "2", label: "城乡居民基本医疗保险" }, { value: "3", label: "新型农村合作医疗" }, { value: "4", label: "商业健康保险" }, { value: "5", label: "全自费" }, { value: "9", label: "其他" }] },
+    { fieldId: "settlementNo", label: "医保结算单号", type: "text", description: "医保结算单号。" },
+    { fieldId: "totalAmount", label: "医疗总费用", type: "number", description: "医疗总费用，单位元，必须大于 0。" },
+    { fieldId: "insuranceFundAmount", label: "医保统筹支付", type: "number", description: "医保统筹支付金额。" },
+    { fieldId: "personalAccountAmount", label: "个人账户支付", type: "number", description: "个人账户支付金额。" },
+    { fieldId: "cashAmount", label: "个人现金支付", type: "number", description: "个人现金支付金额。" },
+    { fieldId: "selfPaidAmount", label: "自费金额", type: "number", description: "其中自费金额。" },
+    { fieldId: "cashier", label: "收费员", type: "text", description: "票据收费员。" },
+  ],
+  actions: [
+    { actionId: "start_new_bill", label: "新增账单", description: "打开空白账单编辑器。", kind: "input", target: "page" },
+    { actionId: "save_bill", label: "保存账单", description: "校验并保存当前账单。", kind: "input", target: "page" },
+  ],
+};
+
+const claimEntryEventRegion: RegisteredRegion = {
+  regionId: "claim_entry_events",
+  label: "事件录入",
+  description: "筛选当前被保人的事件，或新增案件相关事件。",
+  fields: [
+    { fieldId: "eventKeyword", label: "事件关键词", type: "text", description: "按事件号、地点、医院、诊断或经过筛选。" },
+    { fieldId: "eventTypeFilter", label: "事件类型筛选", type: "select", description: "all 表示全部。", options: [{ value: "all", label: "全部" }, { value: "1", label: "疾病" }, { value: "2", label: "意外" }, { value: "9", label: "其他" }] },
+    { fieldId: "eventDateFilter", label: "事件日期筛选", type: "text", description: "格式 YYYY-MM-DD。" },
+    { fieldId: "eventType", label: "事件类型", type: "select", description: "新增事件类型。", options: [{ value: "1", label: "疾病" }, { value: "2", label: "意外" }, { value: "9", label: "其他" }] },
+    { fieldId: "eventOccurredDate", label: "事件发生日期", type: "text", description: "格式 YYYY-MM-DD，必填。" },
+    { fieldId: "eventAdministrativeArea", label: "发生地区", type: "text", description: "省、市、区县路径。" },
+    { fieldId: "eventDetailedAddress", label: "详细地点", type: "text", description: "街道或详细地址。" },
+    { fieldId: "eventHospitalName", label: "就诊医院", type: "text", description: "事件就诊医院。" },
+    { fieldId: "eventDiagnosis", label: "事件诊断", type: "text", description: "事件诊断。" },
+    { fieldId: "eventDescription", label: "事件经过", type: "textarea", description: "事件经过，必填。" },
+  ],
+  actions: [
+    { actionId: "start_new_event", label: "新增事件", description: "打开事件编辑器。", kind: "input", target: "page" },
+    { actionId: "save_event", label: "保存事件", description: "保存当前事件。", kind: "input", target: "page" },
+  ],
+};
+
+const claimEntryDiseaseRegion: RegisteredRegion = {
+  regionId: "claim_entry_diseases",
+  label: "疾病录入",
+  description: "新增案件疾病和确诊信息。",
+  fields: [
+    { fieldId: "diseaseName", label: "疾病名称", type: "text", description: "疾病或诊断名称，必填。" },
+    { fieldId: "diseaseIcdCode", label: "ICD 编码", type: "text", description: "疾病 ICD 编码。" },
+    { fieldId: "diseaseDiagnosisDate", label: "确诊日期", type: "text", description: "格式 YYYY-MM-DD，必填。" },
+    { fieldId: "diseaseHospital", label: "确诊医院", type: "text", description: "确诊医院，必填。" },
+    { fieldId: "diseaseNote", label: "诊断说明", type: "textarea", description: "补充症状或检查说明。" },
+  ],
+  actions: [
+    { actionId: "start_new_disease", label: "新增疾病", description: "打开疾病编辑器。", kind: "input", target: "page" },
+    { actionId: "save_disease", label: "保存疾病", description: "保存当前疾病信息。", kind: "input", target: "page" },
+  ],
+};
 
 const pages: PageRegistration[] = [
   {
@@ -170,7 +273,7 @@ const pages: PageRegistration[] = [
           { fieldId: "policyNo", label: "保单号", type: "text", description: "完整保单号。" },
           { fieldId: "insuredName", label: "被保人姓名", type: "text", description: "支持姓名模糊匹配。" },
           { fieldId: "insuredIdNo", label: "被保人证件号", type: "text", description: "按完整证件号匹配。" },
-          { fieldId: "status", label: "案件状态", type: "select", description: "按案件状态筛选；空值表示全部。", options: [{ value: "", label: "全部状态" }, { value: "registered", label: "受理中" }, { value: "processing", label: "处理中" }, { value: "completed", label: "已结案" }, { value: "cancelled", label: "已撤件" }] },
+          { fieldId: "status", label: "案件状态", type: "select", description: "按案件状态筛选；空值表示全部。", options: [{ value: "", label: "全部状态" }, { value: "registered", label: "受理" }, { value: "entering", label: "录入" }, { value: "calculating", label: "理算" }, { value: "reviewing", label: "审核" }, { value: "completed", label: "结案" }, { value: "cancelled", label: "已撤件" }] },
           { fieldId: "reportDateFrom", label: "报案日期起", type: "text", description: "报案日期范围开始，格式 YYYY-MM-DD。" },
           { fieldId: "reportDateTo", label: "报案日期止", type: "text", description: "报案日期范围结束，格式 YYYY-MM-DD。" },
         ],
@@ -199,12 +302,11 @@ const pages: PageRegistration[] = [
       {
         regionId: "claim_case_basic",
         label: "立案基本信息",
-        description: "通过人员证件号查询其全部关联保单；唯一保单自动选择，多张保单由用户选择，并登记受理日期、渠道和备注。",
+        description: "通过人员证件号查询其全部关联保单；唯一保单自动选择，多张保单由用户选择，并登记受理日期和渠道。",
         fields: [
           { fieldId: "insuredIdNo", label: "被保人证件号", type: "text", description: "用于查询该人员全部关联保单的完整证件号码。" },
           { fieldId: "reportDate", label: "报案日期", type: "text", description: "格式为 YYYY-MM-DD；页面默认当前系统日期，用户未指定时无需覆盖。" },
           { fieldId: "reportChannel", label: "报案渠道", type: "select", description: "客户报案来源。", options: [{ value: "online", label: "线上报案" }, { value: "phone", label: "电话报案" }, { value: "counter", label: "柜面报案" }, { value: "other", label: "其他" }] },
-          { fieldId: "remark", label: "立案备注", type: "textarea", description: "补充报案来源或特殊事项，可为空。" },
         ],
         actions: [
           { actionId: "lock_insured", label: "查询关联保单", description: "按证件号查询承保关系；唯一保单自动锁定，多张保单等待用户选择。", kind: "query", target: "page" },
@@ -212,9 +314,17 @@ const pages: PageRegistration[] = [
         ],
       },
       {
+        regionId: "claim_case_remark",
+        label: "案件备注",
+        description: "独立记录本案受理、理算和审核过程中需要持续关注的补充事项。",
+        fields: [
+          { fieldId: "remark", label: "案件备注", type: "textarea", description: "补充报案来源、特殊情况或后续处理提醒，可为空。" },
+        ],
+      },
+      {
         regionId: "claim_case_list",
-        label: "受理中案件",
-        description: "只展示受理中的案件；提交后转为处理中并进入录入与理算页面。",
+        label: "受理案件",
+        description: "只展示受理状态的案件；提交后转为录入状态并进入录入与理算页面。",
         actions: [
           { actionId: "new_case", label: "新建立案", description: "清空当前案件上下文并进入新建立案状态。", kind: "input", target: "page" },
           { actionId: "edit_case", label: "打开案件", description: "选中并打开列表中的指定案件进行查看或维护，效果与人工双击案件行一致；可按行号或后台返回的稳定对象标识执行。", kind: "view", target: "row" },
@@ -271,9 +381,9 @@ const pages: PageRegistration[] = [
         description: "仅展示当前被保人的事件列表，列表包含被保人姓名；可选择已有事件关联案件、新增事件，或打开已有事件进行编辑。",
         fields: [
           { fieldId: "eventKeyword", label: "事件关键词", type: "text", description: "按事件号、地点、医院、诊断或事件经过筛选当前人员事件。" },
-          { fieldId: "eventTypeFilter", label: "事件类型筛选", type: "select", description: "筛选当前人员事件；all 表示全部。", options: [{ value: "all", label: "全部类型" }, { value: "disease", label: "疾病" }, { value: "accident", label: "意外" }, { value: "other", label: "其他" }] },
+          { fieldId: "eventTypeFilter", label: "事件类型筛选", type: "select", description: "筛选当前人员事件；all 表示全部。", options: [{ value: "all", label: "全部类型" }, { value: "1", label: "疾病" }, { value: "2", label: "意外" }, { value: "9", label: "其他" }] },
           { fieldId: "eventDateFilter", label: "事件日期筛选", type: "text", description: "按发生日期筛选当前人员事件，格式为 YYYY-MM-DD。" },
-          { fieldId: "eventType", label: "事件类型", type: "select", description: "新增事件的类型。", options: [{ value: "disease", label: "疾病" }, { value: "accident", label: "意外" }, { value: "other", label: "其他" }] },
+          { fieldId: "eventType", label: "事件类型", type: "select", description: "新增事件的类型。", options: [{ value: "1", label: "疾病" }, { value: "2", label: "意外" }, { value: "9", label: "其他" }] },
           { fieldId: "occurredDate", label: "事件发生日期", type: "text", description: "必填字段，页面工具值使用 YYYY-MM-DD；用户未提供时必须追问，但不得要求用户遵守技术格式，用户可用自然语言回答。" },
           { fieldId: "administrativeArea", label: "发生地点", type: "text", description: "可选字段。省、市、区县组成的完整行政区路径；仅在用户明确提供地点时填写。" },
           { fieldId: "detailedAddress", label: "详细地点", type: "text", description: "可选字段。街道、门牌号等详细地址；不得自行编造。" },
@@ -306,9 +416,59 @@ const pages: PageRegistration[] = [
         label: "案件操作",
         description: "保存新案件或修改，或者将已保存案件提交、撤件。",
         actions: [
-          { actionId: "save_case", label: "保存立案/保存修改", description: "新建状态显示“保存立案”并创建受理中案件；打开受理中案件后显示“保存修改”。新建立案成功后页面自动清空重置。", kind: "input", target: "page" },
-          { actionId: "cancel_case", label: "撤件", description: "将当前受理中案件变更为已撤件。", kind: "input", target: "page" },
-          { actionId: "submit_case", label: "提交", description: "将当前受理中案件提交为处理中，并转入录入与理算页面。", kind: "input", target: "page" },
+          { actionId: "save_case", label: "保存立案/保存修改", description: "新建状态显示“保存立案”并创建受理案件；打开受理案件后显示“保存修改”。新建立案成功后页面自动清空重置。", kind: "input", target: "page" },
+          { actionId: "cancel_case", label: "撤件", description: "将当前受理案件变更为已撤件。", kind: "input", target: "page" },
+          { actionId: "submit_case", label: "提交", description: "将当前受理案件提交为录入状态，并转入录入与理算页面。", kind: "input", target: "page" },
+        ],
+      },
+    ],
+  },
+  {
+    pageId: "claim_entry_calculation",
+    label: "录入与理算",
+    description: "搜索录入或理算状态案件，录入账单、事件和疾病信息，执行自动理算并提交审核。",
+    menuId: "claim_processing",
+    pagePath: ["理赔处理", "录入与理算"],
+    regions: [
+      claimProcessingListRegion,
+      claimDetailNavigationRegion,
+      claimEntryBillRegion,
+      claimEntryEventRegion,
+      claimEntryDiseaseRegion,
+      {
+        regionId: "claim_calculation_workflow",
+        label: "理算与流转操作",
+        description: "执行理算、回退、提交审核、退回受理或撤件；回退和撤件必须先请求确认，再执行确认动作。",
+        actions: [
+          { actionId: "run_calculation", label: "开始理算", description: "对当前账单执行自动理算并更新台账。", kind: "input", target: "page" },
+          { actionId: "request_calculation_rollback", label: "理算回退", description: "打开理算回退二次确认。", kind: "input", target: "page" },
+          { actionId: "confirm_calculation_rollback", label: "确认理算回退", description: "仅在已经请求理算回退后执行，删除本次理算结果并冲回台账。", kind: "input", target: "page" },
+          { actionId: "submit_review", label: "提交审核", description: "将已完成理算的案件提交审核。", kind: "input", target: "page" },
+          { actionId: "request_case_rollback", label: "退回受理", description: "打开退回上一状态的二次确认。", kind: "input", target: "page" },
+          { actionId: "confirm_case_rollback", label: "确认退回受理", description: "仅在已经请求退回后执行，将案件退回上一状态和提交人。", kind: "input", target: "page" },
+          { actionId: "request_withdraw", label: "撤件", description: "打开撤件二次确认。", kind: "input", target: "page" },
+          { actionId: "confirm_withdraw", label: "确认撤件", description: "仅在已经请求撤件后执行。", kind: "input", target: "page" },
+        ],
+      },
+    ],
+  },
+  {
+    pageId: "claim_review_completion",
+    label: "审核结案",
+    description: "搜索审核状态案件，只读查看受理、账单、事件、疾病、理算过程和台账，并执行审核回退或结案。",
+    menuId: "claim_processing",
+    pagePath: ["理赔处理", "审核结案"],
+    regions: [
+      { ...claimProcessingListRegion, regionId: "review_case_list", label: "审核案件列表" },
+      claimDetailNavigationRegion,
+      {
+        regionId: "claim_review_workflow",
+        label: "审核操作",
+        description: "审核页面数据只读；审核回退必须先请求确认。",
+        actions: [
+          { actionId: "request_case_rollback", label: "审核回退", description: "打开审核回退二次确认。", kind: "input", target: "page" },
+          { actionId: "confirm_case_rollback", label: "确认审核回退", description: "仅在已经请求审核回退后执行，将案件退回理算并退给提交人。", kind: "input", target: "page" },
+          { actionId: "complete_review", label: "审核结案", description: "审核通过并将当前案件结案。", kind: "input", target: "page" },
         ],
       },
     ],

@@ -1,9 +1,9 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import { apiFetch } from "../../src/api/client";
-import type { AutomationValueType, BenefitFormulaView, CalculationVariableCategory, CalculationVariableView, FormulaStep } from "../../src/calculation/automation-types";
+import type { AutomationValueType, BenefitFormulaView, CalculationVariableCategory, CalculationVariableView, FormulaStep, FormulaValidationResult } from "../../src/calculation/automation-types";
 import type {
   CalculationConfigCatalog,
   CalculationConfigTarget,
@@ -60,17 +60,30 @@ const emptyEditor: EditorState = {
 const variableCategoryLabels: Record<CalculationVariableCategory, string> = {
   bill: "账单参数",
   event: "事件参数",
-  case: "案件参数",
   ledger: "台账参数",
-  benefit: "责任参数",
-  custom: "配置参数",
+  benefit: "配置参数",
+  custom: "自定义参数",
 };
 
-const fixedFormulaParameterOptions: Record<string, string[]> = {
-  票据类型: ["门诊账单", "住院账单", "药店购药", "其他费用"],
-  事件类型: ["疾病", "意外", "其他"],
-  医保类型: ["城镇职工基本医疗保险", "城乡居民基本医疗保险", "新型农村合作医疗", "商业健康保险", "全自费", "其他"],
-};
+const formulaDragMime = "application/x-healthagent-formula-elements";
+
+function isNewConfigurationParameterName(name: string) {
+  return name === "限额" || name === "免赔额" || name === "赔付比例";
+}
+
+function formulaVariableOptionLabel(variable: CalculationVariableView) {
+  const name = variable.formulaName ?? variable.variableName;
+  if (variable.category !== "benefit" || variable.defaultValue === undefined || variable.defaultValue === "") {
+    return name;
+  }
+  const numericValue = Number(variable.defaultValue);
+  const value = ["number", "amount", "percentage"].includes(variable.valueType) && Number.isFinite(numericValue)
+    ? numericValue.toLocaleString("zh-CN")
+    : variable.valueType === "boolean"
+      ? variable.defaultValue === "true" ? "是" : "否"
+      : variable.defaultValue;
+  return `${name} · ${value}${variable.unit ?? ""}`;
+}
 
 const emptyCustomVariable = {
   category: "bill" as CalculationVariableCategory,
@@ -313,9 +326,19 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   const [stepEditor, setStepEditor] = useState<FormulaStep>(() => emptyFormulaStep(0));
   const [editingStepIndex, setEditingStepIndex] = useState<number | null>(null);
   const [formulaMessage, setFormulaMessage] = useState("");
+  const [formulaValidationOpen, setFormulaValidationOpen] = useState(false);
+  const [formulaValidationInputs, setFormulaValidationInputs] = useState<Record<string, string>>({});
+  const [formulaValidationResult, setFormulaValidationResult] = useState<FormulaValidationResult | null>(null);
+  const [formulaValidationMessage, setFormulaValidationMessage] = useState("");
   const [customVariableOpen, setCustomVariableOpen] = useState(false);
   const [customVariable, setCustomVariable] = useState(emptyCustomVariable);
   const [draggedExpressionIndex, setDraggedExpressionIndex] = useState<number | null>(null);
+  const [draggedLibraryTokens, setDraggedLibraryTokens] = useState<string[] | null>(null);
+  const [formulaDropTarget, setFormulaDropTarget] = useState<{ target: "match" | "step"; index: number } | null>(null);
+  const draggedExpressionIndexRef = useRef<number | null>(null);
+  const draggedExpressionTargetRef = useRef<"match" | "step" | null>(null);
+  const draggedLibraryTokensRef = useRef<string[] | null>(null);
+  const formulaDropTargetRef = useRef<{ target: "match" | "step"; index: number } | null>(null);
   const [manualFormulaElement, setManualFormulaElement] = useState("");
   const [fixedParameterSelection, setFixedParameterSelection] = useState<{ variableName: string; options: string[] } | null>(null);
   const [fixedParameterOperator, setFixedParameterOperator] = useState<"" | "=" | "≠">("");
@@ -367,21 +390,35 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   useEffect(() => {
     dataReadyRef.current = (async () => {
       const response = await apiFetch("/api/calculation-parameters", { cache: "no-store" });
+      if (!response.ok) throw new Error("calculation_parameters_load_failed");
       const data = await response.json() as {
         catalog: CalculationConfigCatalog;
         policies: Policy[];
         items: CalculationParameter[];
         definitions: CalculationParameterDefinition[];
       };
-      catalogRef.current = data.catalog;
-      policiesRef.current = data.policies;
-      itemsRef.current = data.items;
-      definitionsRef.current = data.definitions;
-      setCatalog(data.catalog);
-      setPolicies(data.policies);
-      setItems(data.items);
-      setDefinitions(data.definitions);
-    })();
+      const nextCatalog = data.catalog ?? emptyCatalog;
+      const nextPolicies = Array.isArray(data.policies) ? data.policies : [];
+      const nextItems = Array.isArray(data.items) ? data.items : [];
+      const nextDefinitions = Array.isArray(data.definitions) ? data.definitions : [];
+      catalogRef.current = nextCatalog;
+      policiesRef.current = nextPolicies;
+      itemsRef.current = nextItems;
+      definitionsRef.current = nextDefinitions;
+      setCatalog(nextCatalog);
+      setPolicies(nextPolicies);
+      setItems(nextItems);
+      setDefinitions(nextDefinitions);
+    })().catch(() => {
+      catalogRef.current = emptyCatalog;
+      policiesRef.current = [];
+      itemsRef.current = [];
+      definitionsRef.current = [];
+      setCatalog(emptyCatalog);
+      setPolicies([]);
+      setItems([]);
+      setDefinitions([]);
+    });
   }, []);
 
   const selectedPolicy = policies.find((policy) => policy.id === selectedPolicyId) ?? null;
@@ -418,6 +455,8 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   useEffect(() => {
     if (!configTarget || configTarget.scope !== "benefit") {
       setFormulaDraft(null);
+      setFormulaValidationOpen(false);
+      setFormulaValidationResult(null);
       return;
     }
     const formula = automationFormulas.find((item) => item.benefitId === configTarget.target.id);
@@ -428,8 +467,16 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       setEditingStepIndex(null);
       setStepEditor(emptyFormulaStep(formula.steps.length));
       setActiveFormulaEditor("step");
+      setFormulaValidationOpen(false);
+      setFormulaValidationResult(null);
+      setFormulaValidationMessage("");
     }
   }, [configTarget?.target.id, configTarget?.scope, automationFormulas]);
+
+  useEffect(() => {
+    setFormulaValidationResult(null);
+    setFormulaValidationMessage("");
+  }, [formulaDraft?.matchExpression, formulaDraft?.steps]);
 
   const visibleParameters = configTarget
     ? items.filter((item) => item.scope === configTarget.scope && item.targetId === configTarget.target.id)
@@ -439,6 +486,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   const definitionOptions: Option<string>[] = configTarget
     ? definitions
       .filter((definition) => definition.applicableScopes.includes(configTarget.scope))
+      .filter((definition) => Boolean(editor.id) || isNewConfigurationParameterName(definition.parameterName))
       .filter((definition) => definition.parameterCode === editor.definitionCode || !visibleParameters.some((item) => item.parameterCode === definition.parameterCode))
       .map((definition) => ({ value: definition.parameterCode, label: definition.parameterName }))
     : [];
@@ -471,10 +519,105 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     };
   }
 
+  const formulaLibraryVariables = automationVariables.filter((variable) => variable.valueType !== "date");
   const knownFormulaElementNames = [
-    ...automationVariables.map((variable) => variable.variableName),
+    ...formulaLibraryVariables.map((variable) => variable.formulaName ?? variable.variableName),
     ...(formulaDraft?.steps.map((step) => step.name) ?? []),
   ];
+  const formulaValidationVariables = (() => {
+    if (!formulaDraft || configTarget?.scope !== "benefit") return [];
+    const availableVariables = formulaLibraryVariables.filter((variable) =>
+      variable.category !== "benefit" || variable.benefitId === configTarget.target.id,
+    );
+    const usedElements = new Set(
+      [formulaDraft.matchExpression, ...formulaDraft.steps.map((step) => step.expression)]
+        .flatMap((expression) => formulaExpressionElements(expression, knownFormulaElementNames)),
+    );
+    const unique = new Map<string, CalculationVariableView>();
+    for (const variable of availableVariables) {
+      const name = variable.formulaName ?? variable.variableName;
+      if (usedElements.has(name) && !unique.has(name)) unique.set(name, variable);
+    }
+    return [...unique.values()];
+  })();
+
+  function openFormulaValidation() {
+    if (!formulaDraft?.matchExpression.trim()) {
+      setFormulaMessage("请先配置并保存自动匹配条件，再进行验算。");
+      return;
+    }
+    if (!formulaDraft.steps.length) {
+      setFormulaMessage("请先保存至少一个公式步骤，再进行验算。");
+      return;
+    }
+    setFormulaValidationInputs((current) => Object.fromEntries(formulaValidationVariables.map((variable) => {
+      const name = variable.formulaName ?? variable.variableName;
+      const initial = current[name] ?? variable.defaultValue ?? (variable.valueType === "boolean" ? "false" : "");
+      return [name, initial];
+    })));
+    setFormulaValidationResult(null);
+    setFormulaValidationMessage("");
+    setFormulaValidationOpen(true);
+  }
+
+  function updateFormulaValidationInput(name: string, value: string) {
+    setFormulaValidationInputs((current) => ({ ...current, [name]: value }));
+    setFormulaValidationResult(null);
+    setFormulaValidationMessage("");
+  }
+
+  async function runFormulaValidation() {
+    if (!formulaDraft) return;
+    const missing = formulaValidationVariables.find((variable) => {
+      const name = variable.formulaName ?? variable.variableName;
+      return formulaValidationInputs[name]?.trim() === "";
+    });
+    if (missing) {
+      setFormulaValidationMessage(`请输入“${missing.formulaName ?? missing.variableName}”。`);
+      return;
+    }
+    const variables = Object.fromEntries(formulaValidationVariables.map((variable) => {
+      const name = variable.formulaName ?? variable.variableName;
+      const rawValue = formulaValidationInputs[name] ?? "";
+      const value = ["number", "amount", "percentage"].includes(variable.valueType)
+        ? Number(rawValue)
+        : variable.valueType === "boolean"
+          ? rawValue === "true"
+          : rawValue;
+      return [name, value];
+    }));
+    if (Object.values(variables).some((value) => typeof value === "number" && !Number.isFinite(value))) {
+      setFormulaValidationMessage("数值参数格式不正确，请检查后重新验算。");
+      return;
+    }
+    setBusy(true);
+    setFormulaValidationMessage("");
+    const response = await apiFetch("/api/automatic-calculation/formulas/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        matchExpression: formulaDraft.matchExpression,
+        steps: formulaDraft.steps,
+        variables,
+      }),
+    });
+    const result = await response.json() as FormulaValidationResult & { message?: string };
+    setBusy(false);
+    if (!response.ok) {
+      setFormulaValidationResult(null);
+      setFormulaValidationMessage(`验算失败：${result.message ?? "请检查公式和输入参数"}`);
+      return;
+    }
+    setFormulaValidationResult(result);
+    setFormulaValidationMessage("验算完成。");
+  }
+
+  function displayValidationValue(value: number | boolean | string | undefined) {
+    if (value === undefined) return "-";
+    if (typeof value === "boolean") return value ? "是" : "否";
+    if (typeof value === "number") return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+    return value;
+  }
 
   function appendFormulaToken(token: string | string[]) {
     const tokens = Array.isArray(token) ? token : formulaExpressionElements(token, knownFormulaElementNames);
@@ -493,13 +636,13 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   }
 
   function selectFormulaVariable(variable: CalculationVariableView) {
-    const options = fixedFormulaParameterOptions[variable.variableName]
+    const options = variable.options
       ?? (variable.valueType === "boolean" ? ["是", "否"] : undefined);
     if (!options) {
-      appendFormulaToken(variable.variableName);
+      appendFormulaToken(variable.formulaName ?? variable.variableName);
       return;
     }
-    setFixedParameterSelection({ variableName: variable.variableName, options });
+    setFixedParameterSelection({ variableName: variable.formulaName ?? variable.variableName, options });
     setFixedParameterOperator("");
     setFixedParameterValue("");
   }
@@ -524,72 +667,154 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     setFormulaMessage("");
   }
 
-  function moveFormulaElement(target: "match" | "step", fromIndex: number, toIndex: number, keepDragging = false) {
+  function setFormulaExpression(target: "match" | "step", elements: string[]) {
+    const expression = elements.join(" ");
+    if (target === "match") setFormulaDraft((current) => current ? { ...current, matchExpression: expression } : current);
+    else setStepEditor((current) => ({ ...current, expression }));
+  }
+
+  function insertFormulaElements(target: "match" | "step", tokens: string[], index: number) {
     const expression = target === "match" ? formulaDraft?.matchExpression ?? "" : stepEditor.expression;
     const elements = formulaExpressionElements(expression, knownFormulaElementNames);
-    if (fromIndex < 0 || fromIndex >= elements.length || toIndex < 0 || toIndex > elements.length) return;
-    if (fromIndex === toIndex) return;
+    elements.splice(Math.max(0, Math.min(index, elements.length)), 0, ...tokens);
+    setFormulaExpression(target, elements);
+  }
+
+  function moveFormulaElement(target: "match" | "step", fromIndex: number, insertionIndex: number) {
+    const expression = target === "match" ? formulaDraft?.matchExpression ?? "" : stepEditor.expression;
+    const elements = formulaExpressionElements(expression, knownFormulaElementNames);
+    if (fromIndex < 0 || fromIndex >= elements.length || insertionIndex < 0 || insertionIndex > elements.length) return;
     const [moved] = elements.splice(fromIndex, 1);
-    elements.splice(toIndex, 0, moved);
-    if (target === "match") setFormulaDraft((current) => current ? { ...current, matchExpression: elements.join(" ") } : current);
-    else setStepEditor((current) => ({ ...current, expression: elements.join(" ") }));
-    setDraggedExpressionIndex(keepDragging ? Math.min(toIndex, elements.length - 1) : null);
+    const adjustedIndex = insertionIndex > fromIndex ? insertionIndex - 1 : insertionIndex;
+    elements.splice(Math.max(0, Math.min(adjustedIndex, elements.length)), 0, moved);
+    setFormulaExpression(target, elements);
   }
 
   function removeFormulaElement(target: "match" | "step", index: number) {
     const expression = target === "match" ? formulaDraft?.matchExpression ?? "" : stepEditor.expression;
     const elements = formulaExpressionElements(expression, knownFormulaElementNames);
     elements.splice(index, 1);
-    if (target === "match") setFormulaDraft((current) => current ? { ...current, matchExpression: elements.join(" ") } : current);
-    else setStepEditor((current) => ({ ...current, expression: elements.join(" ") }));
+    setFormulaExpression(target, elements);
     setDraggedExpressionIndex(null);
+    formulaDropTargetRef.current = null;
+    setFormulaDropTarget(null);
+  }
+
+  function beginLibraryElementDrag(event: ReactDragEvent<HTMLElement>, tokens: string[]) {
+    draggedExpressionIndexRef.current = null;
+    draggedExpressionTargetRef.current = null;
+    draggedLibraryTokensRef.current = tokens;
+    setDraggedLibraryTokens(tokens);
+    formulaDropTargetRef.current = null;
+    setFormulaDropTarget(null);
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(formulaDragMime, JSON.stringify({ kind: "library", tokens }));
+    event.dataTransfer.setData("text/plain", tokens.join(" "));
+  }
+
+  function finishFormulaDrag() {
+    draggedExpressionIndexRef.current = null;
+    draggedExpressionTargetRef.current = null;
+    draggedLibraryTokensRef.current = null;
+    setDraggedExpressionIndex(null);
+    setDraggedLibraryTokens(null);
+    formulaDropTargetRef.current = null;
+    setFormulaDropTarget(null);
+  }
+
+  function updateFormulaDropTarget(target: "match" | "step", index: number) {
+    formulaDropTargetRef.current = { target, index };
+    setFormulaDropTarget((current) =>
+      current?.target === target && current.index === index ? current : { target, index },
+    );
+  }
+
+  function locateFormulaDropIndex(event: ReactDragEvent<HTMLDivElement>, elementCount: number) {
+    const positions = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(":scope > i[data-formula-index]"))
+      .map((node) => ({
+        index: Number(node.dataset.formulaIndex),
+        rect: node.getBoundingClientRect(),
+      }))
+      .filter((item) => Number.isInteger(item.index));
+    if (!positions.length) return 0;
+    const row = positions.filter(({ rect }) => event.clientY >= rect.top - 4 && event.clientY <= rect.bottom + 4);
+    if (row.length) {
+      const before = row.find(({ rect }) => event.clientX < rect.left + rect.width / 2);
+      return before?.index ?? Math.min(elementCount, row[row.length - 1].index + 1);
+    }
+    const nextRow = positions.find(({ rect }) => event.clientY < rect.top);
+    return nextRow?.index ?? elementCount;
+  }
+
+  function dropFormulaElements(target: "match" | "step", insertionIndex: number, event?: ReactDragEvent<HTMLElement>) {
+    setActiveFormulaEditor(target);
+    let payload: { kind?: string; target?: "match" | "step"; index?: number; tokens?: string[] } = {};
+    try {
+      payload = JSON.parse(event?.dataTransfer.getData(formulaDragMime) || "{}") as typeof payload;
+    } catch {
+      payload = {};
+    }
+    const libraryTokens = draggedLibraryTokensRef.current ?? payload.tokens ?? null;
+    const expressionIndex = draggedExpressionIndexRef.current ?? (payload.kind === "expression" ? payload.index ?? null : null);
+    const expressionTarget = draggedExpressionTargetRef.current ?? payload.target ?? null;
+    if (libraryTokens?.length) insertFormulaElements(target, libraryTokens, insertionIndex);
+    else if (expressionIndex !== null && expressionTarget === target) moveFormulaElement(target, expressionIndex, insertionIndex);
+    finishFormulaDrag();
   }
 
   function renderFormulaExpressionEditor(target: "match" | "step", expression: string) {
     const elements = formulaExpressionElements(expression, knownFormulaElementNames);
+    const dragActive = draggedExpressionIndex !== null || draggedLibraryTokens !== null;
     return (
-      <div
-        className={`formula-expression-elements editable ${activeFormulaEditor === target ? "active-editor" : ""}`}
-        onClick={() => setActiveFormulaEditor(target)}
-        onDragOver={(event) => event.preventDefault()}
-        onDrop={(event) => {
-          event.preventDefault();
-          if (draggedExpressionIndex !== null) moveFormulaElement(target, draggedExpressionIndex, elements.length);
-        }}
-      >
-        {!expression.trim() ? <small className="formula-expression-empty">点击此处后，从上方选择参数和公式元素</small> : null}
-        {elements.map((element, index) => (
-          <i
-            key={`${target}-formula-element-${index}`}
-            className={draggedExpressionIndex === index && activeFormulaEditor === target ? "dragging" : ""}
-            draggable
-            title="拖动可修改顺序"
-            onDragStart={(event) => {
-              event.stopPropagation();
-              setActiveFormulaEditor(target);
-              setDraggedExpressionIndex(index);
-              event.dataTransfer.effectAllowed = "move";
-              event.dataTransfer.setData("text/plain", String(index));
-            }}
-            onDragEnd={() => setDraggedExpressionIndex(null)}
-            onDragOver={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-            }}
-            onDragEnter={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              if (activeFormulaEditor === target && draggedExpressionIndex !== null && draggedExpressionIndex !== index) {
-                moveFormulaElement(target, draggedExpressionIndex, index, true);
-              }
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              event.stopPropagation();
-              setDraggedExpressionIndex(null);
-            }}
-          >{element}</i>
-        ))}
+      <div className="formula-expression-editor-stack">
+        <div
+          className={`formula-expression-elements editable ${activeFormulaEditor === target ? "active-editor" : ""}`}
+          onClick={() => setActiveFormulaEditor(target)}
+          onDragOver={(event) => {
+            if (!dragActive && !event.dataTransfer.types.includes(formulaDragMime)) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = draggedLibraryTokens ? "copy" : "move";
+            updateFormulaDropTarget(target, locateFormulaDropIndex(event, elements.length));
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            const dropTarget = formulaDropTargetRef.current;
+            dropFormulaElements(target, dropTarget?.target === target ? dropTarget.index : elements.length, event);
+          }}
+        >
+          {!expression.trim() ? <small className="formula-expression-empty">点击此处后，从上方选择参数和公式元素</small> : null}
+          {elements.map((element, index) => (
+            <i
+              key={`${target}-formula-element-${index}-${element}`}
+              data-formula-index={index}
+              className={[
+                draggedExpressionIndex === index && activeFormulaEditor === target ? "dragging" : "",
+                formulaDropTarget?.target === target && formulaDropTarget.index === index && dragActive ? "formula-drop-before" : "",
+                formulaDropTarget?.target === target && formulaDropTarget.index === elements.length && index === elements.length - 1 && dragActive ? "formula-drop-after" : "",
+              ].filter(Boolean).join(" ")}
+              draggable
+              title="拖动可修改顺序"
+              onDragStart={(event) => {
+                event.stopPropagation();
+                setActiveFormulaEditor(target);
+                draggedExpressionIndexRef.current = index;
+                draggedExpressionTargetRef.current = target;
+                draggedLibraryTokensRef.current = null;
+                setDraggedLibraryTokens(null);
+                setDraggedExpressionIndex(index);
+                formulaDropTargetRef.current = { target, index };
+                setFormulaDropTarget({ target, index });
+                event.dataTransfer.effectAllowed = "move";
+                event.dataTransfer.setData(formulaDragMime, JSON.stringify({ kind: "expression", target, index }));
+                event.dataTransfer.setData("text/plain", element);
+              }}
+              onDragEnd={finishFormulaDrag}
+            >{element}</i>
+          ))}
+          {!elements.length && formulaDropTarget?.target === target && dragActive
+            ? <span className="formula-expression-drop-marker formula-expression-drop-marker-empty" aria-hidden="true" />
+            : null}
+        </div>
         <div
           className={`formula-expression-delete ${draggedExpressionIndex === null || activeFormulaEditor !== target ? "" : "active"}`}
           onDragOver={(event) => {
@@ -599,7 +824,10 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
           onDrop={(event) => {
             event.preventDefault();
             event.stopPropagation();
-            if (activeFormulaEditor === target && draggedExpressionIndex !== null) removeFormulaElement(target, draggedExpressionIndex);
+            const expressionIndex = draggedExpressionIndexRef.current ?? draggedExpressionIndex;
+            const expressionTarget = draggedExpressionTargetRef.current ?? activeFormulaEditor;
+            if (expressionTarget === target && expressionIndex !== null) removeFormulaElement(target, expressionIndex);
+            finishFormulaDrag();
           }}
         >拖到这里删除</div>
       </div>
@@ -625,7 +853,6 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
         ? nextSteps
         : nextSteps.map((step, index) => ({ ...step, result: index === nextSteps.length - 1 }));
     const nextDraft = { ...formulaDraft, steps: normalizedSteps };
-    setFormulaDraft(nextDraft);
     if (!await saveFormula(nextDraft, "步骤和整套公式已保存。")) return;
     setEditingStepIndex(null);
     setStepEditor(emptyFormulaStep(nextSteps.length));
@@ -769,7 +996,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     const response = await apiFetch("/api/automatic-calculation/variables", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...customVariable, policyId: selectedPolicy.id, enabled: true }),
+      body: JSON.stringify({ ...customVariable, policyId: selectedPolicy.id }),
     });
     const result = await response.json() as CalculationVariableView & { message?: string };
     setBusy(false);
@@ -797,6 +1024,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     updateEditorOpen(false);
     updatePendingDeleteId(null);
     setMessage("");
+    if (view === "formula" && selectedPolicyId) void loadAutomation(selectedPolicyId);
     return buildParameterContext(row, itemsRef.current);
   }
 
@@ -806,6 +1034,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     const targetParameters = itemsRef.current.filter((item) => item.scope === target.scope && item.targetId === target.target.id);
     const firstDefinition = definitionsRef.current.find((definition) =>
       definition.applicableScopes.includes(target.scope)
+      && isNewConfigurationParameterName(definition.parameterName)
       && !targetParameters.some((item) => item.parameterCode === definition.parameterCode),
     );
     if (!firstDefinition) {
@@ -857,8 +1086,8 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       body: JSON.stringify({ ...currentEditor, scope: target.scope, targetId: target.target.id }),
     });
     const result = await response.json() as CalculationParameter & { message?: string };
-    setBusy(false);
     if (!response.ok) {
+      setBusy(false);
       setMessage(result.message === "parameter_code_exists" ? "当前对象下已存在相同参数编码。" : "保存失败，请检查输入。");
       return { type: "operation_error", reason: result.message ?? "save_failed" };
     }
@@ -867,6 +1096,8 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       : [...itemsRef.current, result];
     itemsRef.current = nextItems;
     setItems(nextItems);
+    if (selectedPolicyId) await loadAutomation(selectedPolicyId);
+    setBusy(false);
     updateEditorOpen(false);
     setMessage("参数已保存。");
     return {
@@ -884,14 +1115,16 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       method: "DELETE",
       headers: { "Idempotency-Key": operationId ?? crypto.randomUUID() },
     });
-    setBusy(false);
     if (!response.ok) {
+      setBusy(false);
       setMessage("删除失败，请稍后重试。");
       return { type: "operation_error", reason: "delete_failed" };
     }
     const nextItems = itemsRef.current.filter((item) => item.id !== id);
     itemsRef.current = nextItems;
     setItems(nextItems);
+    if (selectedPolicyId) await loadAutomation(selectedPolicyId);
+    setBusy(false);
     updatePendingDeleteId(null);
     if (editorRef.current.id === id) updateEditorOpen(false);
     setMessage("参数已删除。");
@@ -911,6 +1144,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     const targetParameters = itemsRef.current.filter((item) => item.scope === target.scope && item.targetId === target.target.id);
     return definitionsRef.current
       .filter((definition) => definition.applicableScopes.includes(target.scope))
+      .filter((definition) => Boolean(currentEditor.id) || isNewConfigurationParameterName(definition.parameterName))
       .filter((definition) => definition.parameterCode === currentEditor.definitionCode
         || !targetParameters.some((item) => item.parameterCode === definition.parameterCode))
       .map((definition) => ({ value: definition.parameterCode, label: definition.parameterName }));
@@ -1037,6 +1271,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
           </div>
           <div className="page-header-actions">
             {configurationView === "parameter" ? <button type="button" onClick={startCreate} disabled={busy}>新增参数</button> : null}
+            {configurationView === "formula" ? <button type="button" onClick={openFormulaValidation} disabled={busy}>公式验算</button> : null}
             {configurationView === "formula" ? <button type="button" className="danger-button" onClick={() => void deleteFormulaConfiguration()} disabled={busy}>删除公式</button> : null}
             <button type="button" className="page-back-button" onClick={() => { updateConfigTarget(null); updateEditorOpen(false); setConfigurationView("parameter"); setMessage(""); }}>返回上一页</button>
           </div>
@@ -1082,36 +1317,92 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
               </div>
               <div className="formula-variable-groups">
                 {(Object.keys(variableCategoryLabels) as CalculationVariableCategory[]).map((category) => {
-                  const categoryVariables = automationVariables.filter((item) => item.category === category && (category !== "benefit" || item.benefitId === configTarget.target.id));
+                  const categoryVariables = formulaLibraryVariables.filter((item) => item.category === category && (category !== "benefit" || item.benefitId === configTarget.target.id));
                   if (!categoryVariables.length) return null;
                   return (
                     <div key={category}>
                       <strong>{variableCategoryLabels[category]}</strong>
-                      <select value="" onChange={(event) => {
-                        const variable = categoryVariables.find((item) => item.variableName === event.target.value);
+                      <CustomDropdown value="" options={categoryVariables.map((variable) => ({
+                        value: variable.formulaName ?? variable.variableName,
+                        label: formulaVariableOptionLabel(variable),
+                      }))} onChange={(value) => {
+                        const variable = categoryVariables.find((item) => (item.formulaName ?? item.variableName) === value);
                         if (variable) selectFormulaVariable(variable);
-                      }}>
-                        <option value="">请选择{variableCategoryLabels[category]}</option>
-                        {categoryVariables.map((variable) => <option key={`${category}-${variable.id ?? variable.variableName}-${variable.benefitId ?? ""}`} value={variable.variableName}>{variable.variableName}</option>)}
-                      </select>
+                      }} />
                     </div>
                   );
                 })}
-                {activeFormulaEditor === "step" && formulaDraft.steps.length ? <div><strong>已添加步骤</strong><select value="" onChange={(event) => { if (event.target.value) appendFormulaToken(event.target.value); }}><option value="">请选择已有步骤</option>{formulaDraft.steps.slice(0, editingStepIndex ?? formulaDraft.steps.length).map((step, index) => <option key={`${step.id}-${index}`} value={step.name}>{step.name}</option>)}</select></div> : null}
+                {activeFormulaEditor === "step" && formulaDraft.steps.length ? (
+                  <div>
+                    <strong>已添加步骤</strong>
+                    <CustomDropdown
+                      value=""
+                      options={formulaDraft.steps.slice(0, editingStepIndex ?? formulaDraft.steps.length).map((step) => ({ value: step.name, label: step.name }))}
+                      onChange={(value) => { if (value) appendFormulaToken(value); }}
+                    />
+                  </div>
+                ) : null}
               </div>
               <div className="formula-library-tools">
                 <div className="formula-library-tools-heading">
                   <div><strong>符号、逻辑与常数</strong><small>当前加入到：<b>{activeFormulaEditor === "match" ? "第一步 · 自动匹配条件" : editingStepIndex === null ? "新增公式步骤" : `第 ${editingStepIndex + 2} 步`}</b></small></div>
-                  <span>先点击下方自动匹配条件或公式表达式，可切换加入位置</span>
+                  <span>可点击加入，也可直接拖入下方表达式的指定位置</span>
                 </div>
                 <div className="formula-library-tools-content">
                   <div className="formula-tool-group">
                     <strong>符号与逻辑</strong>
-                    <div>{["+", "-", "*", "/", "(", ")", "并且", "或者", "=", "≠", ">", "<", "≥", "≤", "最小(", "最大("].map((operator) => <button type="button" key={operator} onClick={() => appendFormulaToken(operator)}>{operator}</button>)}<button type="button" onClick={() => appendFormulaToken(["如果", "(", ")", "则", "(", ")", "否则", "(", ")"])}>如果（ ）则（ ）否则（ ）</button></div>
+                    <div>
+                      {["+", "-", "*", "/", "(", ")", "并且", "或者", "=", "≠", ">", "<", "≥", "≤"].map((operator) => (
+                        <button
+                          type="button"
+                          key={operator}
+                          draggable
+                          title="点击加入，或拖入公式表达式"
+                          onClick={() => appendFormulaToken(operator)}
+                          onDragStart={(event) => beginLibraryElementDrag(event, formulaExpressionElements(operator, knownFormulaElementNames))}
+                          onDragEnd={finishFormulaDrag}
+                        >{operator}</button>
+                      ))}
+                      {[
+                        { label: "取大（，）", tokens: ["取大", "(", ",", ")"] },
+                        { label: "取小（，）", tokens: ["取小", "(", ",", ")"] },
+                      ].map((item) => (
+                        <button
+                          type="button"
+                          key={item.label}
+                          draggable
+                          title="点击加入，或拖入公式表达式"
+                          onClick={() => appendFormulaToken(item.tokens)}
+                          onDragStart={(event) => beginLibraryElementDrag(event, item.tokens)}
+                          onDragEnd={finishFormulaDrag}
+                        >{item.label}</button>
+                      ))}
+                      <button
+                        type="button"
+                        draggable
+                        title="点击加入，或拖入公式表达式"
+                        onClick={() => appendFormulaToken(["如果", "(", ")", "则", "(", ")", "否则", "(", ")"])}
+                        onDragStart={(event) => beginLibraryElementDrag(event, ["如果", "(", ")", "则", "(", ")", "否则", "(", ")"])}
+                        onDragEnd={finishFormulaDrag}
+                      >如果（ ）则（ ）否则（ ）</button>
+                    </div>
                   </div>
                   <div className="formula-tool-group formula-constant-group">
                     <strong>常数参数</strong>
-                    <div><input type="number" step="any" value={manualFormulaElement} onChange={(event) => setManualFormulaElement(event.target.value)} placeholder="例如 100、0.8" /><button type="button" onClick={appendNumericConstant}>加入常数</button></div>
+                    <div>
+                      <input type="number" step="any" value={manualFormulaElement} onChange={(event) => setManualFormulaElement(event.target.value)} placeholder="例如 100、0.8" />
+                      <button
+                        type="button"
+                        draggable={/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(manualFormulaElement.trim())}
+                        title="输入数字后可点击加入，或拖入公式表达式"
+                        onClick={appendNumericConstant}
+                        onDragStart={(event) => {
+                          const value = manualFormulaElement.trim();
+                          if (/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value)) beginLibraryElementDrag(event, [value]);
+                        }}
+                        onDragEnd={finishFormulaDrag}
+                      >加入常数</button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1129,6 +1420,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
             </section>
 
             <section className="panel formula-editor-panel">
+              {formulaMessage ? <div className={`config-message formula-editor-message ${formulaMessage.includes("已") ? "success" : ""}`}>{formulaMessage}</div> : null}
               <div className="formula-step-operation">
                 <div className="formula-step-control-row">
                   <label><span>步骤名称</span><input value={activeFormulaEditor === "match" ? "自动匹配条件" : stepEditor.name} disabled={activeFormulaEditor === "match"} onChange={(event) => setStepEditor((current) => ({ ...current, name: event.target.value }))} placeholder="请输入中文步骤名称" /></label>
@@ -1177,8 +1469,94 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
                   ))}</tbody>
                 </table>
               </div>
-              {formulaMessage ? <div className={`config-message ${formulaMessage.includes("已") ? "success" : ""}`}>{formulaMessage}</div> : null}
             </section>
+
+            {formulaValidationOpen ? (
+              <section className="panel formula-validation-panel">
+                <div className="panel-title-row">
+                  <div>
+                    <div className="section-title">公式验算</div>
+                    <small className="muted">输入本次验算所需参数，系统将按步骤执行当前公式。</small>
+                  </div>
+                  <button type="button" className="secondary-button" onClick={() => { setFormulaValidationOpen(false); setFormulaValidationResult(null); setFormulaValidationMessage(""); }}>关闭</button>
+                </div>
+
+                {formulaValidationVariables.length ? (
+                  <div className="formula-validation-inputs">
+                    {formulaValidationVariables.map((variable) => {
+                      const name = variable.formulaName ?? variable.variableName;
+                      const fixedOptions = variable.options;
+                      return (
+                        <label key={`${variable.category}-${name}`}>
+                          <span>{name}{variable.unit ? <small>（{variable.unit}）</small> : null}</span>
+                          {fixedOptions ? (
+                            <CustomDropdown
+                              value={formulaValidationInputs[name] ?? ""}
+                              options={fixedOptions.map((value) => ({ value, label: value }))}
+                              onChange={(value) => updateFormulaValidationInput(name, value)}
+                              placeholder="请选择"
+                            />
+                          ) : variable.valueType === "boolean" ? (
+                            <CustomDropdown
+                              value={(formulaValidationInputs[name] || "false") as "true" | "false"}
+                              options={[{ value: "true", label: "是" }, { value: "false", label: "否" }]}
+                              onChange={(value) => updateFormulaValidationInput(name, value)}
+                            />
+                          ) : (
+                            <input
+                              type={["number", "amount", "percentage"].includes(variable.valueType) ? "number" : "text"}
+                              step="any"
+                              value={formulaValidationInputs[name] ?? ""}
+                              onChange={(event) => updateFormulaValidationInput(name, event.target.value)}
+                              placeholder={`请输入${name}`}
+                            />
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                ) : <div className="formula-validation-empty">当前公式未引用需要手工输入的参数，可直接验算。</div>}
+
+                <div className="formula-validation-actions">
+                  {formulaValidationMessage ? <span className={formulaValidationResult ? "success" : ""}>{formulaValidationMessage}</span> : null}
+                  <button type="button" onClick={() => void runFormulaValidation()} disabled={busy}>{busy ? "验算中..." : "开始验算"}</button>
+                </div>
+
+                {formulaValidationResult ? (
+                  <div className="formula-validation-process">
+                    <div className={`formula-validation-summary ${formulaValidationResult.matched ? "matched" : "unmatched"}`}>
+                      <span>自动匹配条件</span>
+                      <strong>{formulaValidationResult.matched ? "符合" : "不符合"}</strong>
+                      <small>{formulaValidationResult.matched ? `公式结果：${displayValidationValue(formulaValidationResult.result)}` : "未进入后续计算"}</small>
+                    </div>
+                    <ol>
+                      <li>
+                        <div className="formula-validation-step-heading"><b>第 1 步 · 自动匹配条件</b><strong>{formulaValidationResult.matched ? "符合" : "不符合"}</strong></div>
+                        <dl>
+                          <div><dt>原表达式</dt><dd>{formulaValidationResult.matchExpression}</dd></div>
+                          <div><dt>代入参数</dt><dd>{formulaValidationResult.substitutedMatchExpression}</dd></div>
+                          <div><dt>计算结果</dt><dd>{formulaValidationResult.matched ? "是（账单进入后续计算）" : "否（验算已停止，不执行后续步骤）"}</dd></div>
+                        </dl>
+                      </li>
+                      {formulaValidationResult.steps.map((step, index) => (
+                        <li key={`${step.id}-${index}`} className={step.result ? "result-step" : ""}>
+                          <div className="formula-validation-step-heading">
+                            <b>第 {index + 2} 步 · {step.name}</b>
+                            {step.result ? <span>公式结果</span> : null}
+                            <strong>{displayValidationValue(step.value)}</strong>
+                          </div>
+                          <dl>
+                            <div><dt>原表达式</dt><dd>{step.expression}</dd></div>
+                            <div><dt>代入参数</dt><dd>{step.substitutedExpression}</dd></div>
+                            <div><dt>计算结果</dt><dd>{displayValidationValue(step.value)}</dd></div>
+                          </dl>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
           </>
         ) : null}
 
@@ -1310,7 +1688,10 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
                             ) : <span className="muted">未配置</span>}
                           </td>
                           <td>{configuredFormula ? <span className="formula-step-count">{configuredFormula.steps.length + 1} 步</span> : <span className="muted">-</span>}</td>
-                          <td className="actions-cell"><button type="button" className="action-link" onClick={() => openConfiguration(row, "parameter")}>参数</button><button type="button" className="action-link" disabled={row.scope !== "benefit"} onClick={() => openConfiguration(row, "formula")}>公式</button></td>
+                          <td className="actions-cell">
+                            <button type="button" className="action-link" onClick={() => openConfiguration(row, "parameter")}>参数</button>
+                            {row.scope === "benefit" ? <button type="button" className="action-link" onClick={() => openConfiguration(row, "formula")}>公式</button> : null}
+                          </td>
                         </tr>
                       );
                     })}</tbody>

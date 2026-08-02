@@ -22,7 +22,7 @@ export function isClaimCaseInput(value: unknown): value is CreateClaimCaseInput 
 export function isClaimEventInput(value: unknown): value is ClaimEventInput {
   if (!value || typeof value !== "object") return false;
   const input = value as Partial<ClaimEventInput>;
-  return ["disease", "accident", "other"].includes(input.eventType ?? "")
+  return ["1", "2", "9"].includes(input.eventType ?? "")
     && typeof input.occurredDate === "string"
     && typeof input.administrativeArea === "string"
     && typeof input.description === "string";

@@ -1,0 +1,42 @@
+ALTER TABLE "claim_ledger_balance" RENAME TO "claim_ledger_current_value";
+ALTER TABLE "claim_ledger_current_value" RENAME COLUMN "used_amount" TO "current_amount";
+ALTER INDEX "claim_ledger_balance_pkey" RENAME TO "claim_ledger_current_value_pkey";
+ALTER INDEX "uk_claim_ledger_balance" RENAME TO "uk_claim_ledger_current_value";
+ALTER INDEX "idx_claim_ledger_person_year" RENAME TO "idx_claim_ledger_current_person_year";
+
+ALTER TABLE "claim_ledger_entry" RENAME TO "claim_ledger_accumulation_record";
+ALTER TABLE "claim_ledger_accumulation_record" RENAME COLUMN "calculation_run_id" TO "calculation_result_id";
+ALTER TABLE "claim_ledger_accumulation_record" RENAME COLUMN "opening_amount" TO "before_amount";
+ALTER TABLE "claim_ledger_accumulation_record" RENAME COLUMN "change_amount" TO "accumulated_amount";
+ALTER TABLE "claim_ledger_accumulation_record" RENAME COLUMN "closing_amount" TO "after_amount";
+ALTER INDEX "claim_ledger_entry_pkey" RENAME TO "claim_ledger_accumulation_record_pkey";
+ALTER INDEX "idx_claim_ledger_entry_case" RENAME TO "idx_claim_ledger_accumulation_case";
+ALTER INDEX "idx_claim_ledger_entry_person_benefit" RENAME TO "idx_claim_ledger_accumulation_person_benefit";
+
+COMMENT ON TABLE "claim_ledger_current_value" IS '台账当前值表；每个保单、被保人、累计范围、台账项目和期间只保留一条最新值';
+COMMENT ON COLUMN "claim_ledger_current_value"."id" IS '台账当前值主键';
+COMMENT ON COLUMN "claim_ledger_current_value"."policy_id" IS '所属保单主键';
+COMMENT ON COLUMN "claim_ledger_current_value"."insured_person_id" IS '被保险人主键';
+COMMENT ON COLUMN "claim_ledger_current_value"."benefit_id" IS '累计范围主键，可表示责任、险种、保障计划或事件';
+COMMENT ON COLUMN "claim_ledger_current_value"."ledger_code" IS '台账项目代码';
+COMMENT ON COLUMN "claim_ledger_current_value"."ledger_name" IS '台账项目名称';
+COMMENT ON COLUMN "claim_ledger_current_value"."period_year" IS '当前值所属年度';
+COMMENT ON COLUMN "claim_ledger_current_value"."current_amount" IS '截至最近一次理算的台账当前累计值';
+COMMENT ON COLUMN "claim_ledger_current_value"."updated_at" IS '当前值最后更新时间';
+COMMENT ON COLUMN "claim_ledger_current_value"."created_at" IS '当前值首次创建时间';
+
+COMMENT ON TABLE "claim_ledger_accumulation_record" IS '台账累计记录表；逐次记录每次理算对台账产生的累计变化';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."id" IS '台账累计记录主键';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."calculation_result_id" IS '产生本次累计的案件理算结果主键';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."claim_case_id" IS '所属案件主键';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."bill_id" IS '产生本次累计的账单主键';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."policy_id" IS '所属保单主键';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."insured_person_id" IS '被保险人主键';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."benefit_id" IS '累计范围主键，可表示责任、险种、保障计划或事件';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."ledger_code" IS '台账项目代码';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."ledger_name" IS '台账项目名称';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."period_year" IS '累计记录所属年度';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."before_amount" IS '本次累计前的台账当前值';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."accumulated_amount" IS '本次理算新增的累计值';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."after_amount" IS '本次累计后的台账当前值';
+COMMENT ON COLUMN "claim_ledger_accumulation_record"."created_at" IS '累计记录生成时间';

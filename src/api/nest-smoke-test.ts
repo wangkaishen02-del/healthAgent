@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "../../apps/api/src/app.module.ts";
-import { buildSystemPrompt, getAssistantPromptMetrics, isDataMutationRequest } from "../assistant/plan-service.ts";
+import { buildSystemPrompt, getAssistantPromptMetrics, isDataMutationRequest, requestAgentPlan } from "../assistant/plan-service.ts";
 import { getCompactPageRegistration, getPageRegistration } from "../assistant/page-registry.ts";
 import { normalizeAssistantModelToolCall } from "../assistant/policy-query-assistant.ts";
 
@@ -19,10 +19,19 @@ const compactRegistration = JSON.stringify(getCompactPageRegistration("claim_reg
 const fullRegistration = JSON.stringify(getPageRegistration("claim_registration"));
 assert.ok(compactRegistration.length < fullRegistration.length * 0.65);
 assert.ok(buildSystemPrompt("查询张晨的保单").length < 4_000);
+assert.ok(buildSystemPrompt("在录入与理算页面查找案件 CL202610070523 并打开").length < 4_000);
 assert.match(buildSystemPrompt("查询所有案件"), /案件号与保单号必须严格区分/);
 assert.match(buildSystemPrompt("清空受理立案页面"), /不需要定位业务对象/);
 assert.equal(getAssistantPromptMetrics(["中".repeat(12_000)]).level, "large");
 assert.equal(normalizeAssistantModelToolCall({ tool: "query_underwriting", args: {} }), null);
+
+const lockedOperationPlan = await requestAgentPlan("打开新增账单表单", "deepseek", {
+  lastOperationResult: { type: "operation_error", reason: "calculation_data_locked" },
+});
+assert.equal(lockedOperationPlan.ok, true);
+assert.equal(lockedOperationPlan.plan.decision, "finish");
+assert.equal(lockedOperationPlan.plan.toolCalls.length, 0);
+assert.match(lockedOperationPlan.plan.reply, /先执行理算回退/);
 
 const app = await NestFactory.create(AppModule, { logger: false });
 app.setGlobalPrefix("api");
@@ -79,6 +88,14 @@ try {
     headers: { "Idempotency-Key": `${operationKey}:delete` },
   });
   assert.equal(repeatedDeleteResponse.status, 200, "repeated idempotent delete should return 200");
+  const missingDeleteResponse = await fetch(
+    `${baseUrl}/api/claim-attachments?uploadId=${randomUUID()}`,
+    {
+      method: "DELETE",
+      headers: { "Idempotency-Key": `${operationKey}:delete-missing` },
+    },
+  );
+  assert.equal(missingDeleteResponse.status, 200, "deleting missing attachment bytes should be idempotent");
 
   console.log("NestJS API smoke tests passed");
 } finally {

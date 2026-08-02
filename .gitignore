@@ -9,3 +9,4 @@ coverage/
 __pycache__/
 *.pyc
 data/*.db
+data/claim-attachments/

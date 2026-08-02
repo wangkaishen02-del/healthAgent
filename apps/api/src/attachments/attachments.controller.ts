@@ -1,15 +1,34 @@
-import { BadRequestException, Body, Controller, Delete, Get, Headers, Inject, NotFoundException, Post, Query, Res, StreamableFile, UploadedFile, UseInterceptors } from "@nestjs/common";
+import { BadRequestException, Body, Controller, Delete, Get, Headers, Inject, NotFoundException, Post, Query, Res, ServiceUnavailableException, StreamableFile, UploadedFile, UseInterceptors } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
 import type { Response } from "express";
 import { getClaimUpload, removeClaimUpload, storeClaimUpload } from "../../../../src/claims/attachment-store.ts";
 import type { ClaimAttachmentCategory } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
+import { AttachmentOcrService } from "./attachment-ocr.service.ts";
 
 const categories: ClaimAttachmentCategory[] = ["application", "identity", "medical", "invoice", "bank", "other"];
 
 @Controller("claim-attachments")
 export class AttachmentsController {
-  constructor(@Inject(IdempotencyService) private readonly idempotency: IdempotencyService) {}
+  constructor(
+    @Inject(IdempotencyService) private readonly idempotency: IdempotencyService,
+    @Inject(AttachmentOcrService) private readonly ocr: AttachmentOcrService,
+  ) {}
+
+  @Get("ocr")
+  async ocrResult(@Query("uploadId") uploadId?: string) {
+    if (!uploadId) throw new BadRequestException("uploadId is required");
+    const result = await this.ocr.get(uploadId);
+    if (!result) throw new NotFoundException("attachment_ocr_not_found");
+    return result;
+  }
+
+  @Post("ocr/retry")
+  async retryOcr(@Body("uploadId") uploadId?: string) {
+    if (!uploadId) throw new BadRequestException("uploadId is required");
+    if (!getClaimUpload(uploadId)) throw new NotFoundException("attachment_not_found");
+    return this.ocr.retry(uploadId);
+  }
 
   @Get()
   preview(
@@ -37,8 +56,9 @@ export class AttachmentsController {
     if (!file || !categories.includes(category as ClaimAttachmentCategory)) {
       throw new BadRequestException("invalid_attachment");
     }
+    let upload;
     try {
-      return storeClaimUpload({
+      upload = storeClaimUpload({
         fileName: file.originalname,
         mimeType: file.mimetype,
         data: new Uint8Array(file.buffer),
@@ -46,6 +66,12 @@ export class AttachmentsController {
       });
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : "attachment_upload_failed");
+    }
+    try {
+      return { ...upload, ocr: await this.ocr.enqueue(upload.uploadId) };
+    } catch {
+      removeClaimUpload(upload.uploadId);
+      throw new ServiceUnavailableException("attachment_ocr_enqueue_failed");
     }
   }
 
@@ -60,7 +86,8 @@ export class AttachmentsController {
       operationKey,
       { uploadId },
       async () => {
-        if (!removeClaimUpload(uploadId)) throw new NotFoundException("attachment_not_found");
+        await this.ocr.remove(uploadId);
+        removeClaimUpload(uploadId);
         return { success: true };
       },
     );
