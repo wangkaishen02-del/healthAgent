@@ -36,7 +36,7 @@ const DEEPSEEK_URL = process.env.DEEPSEEK_URL ?? "https://api.deepseek.com/chat/
 const DEEPSEEK_MODEL = process.env.DEEPSEEK_MODEL ?? "deepseek-v4-flash";
 const LLM_TIMEOUT_MS = Number(process.env.LLM_TIMEOUT_MS ?? 90000);
 const MAX_AGENT_TURNS = 5;
-const ASSISTANT_LOG_DIR = join(process.cwd(), "logs");
+const ASSISTANT_LOG_DIR = process.env.ASSISTANT_LOG_DIR?.trim() || join(process.cwd(), "logs");
 const ASSISTANT_LOG_PATH = join(ASSISTANT_LOG_DIR, "assistant-llm.log");
 const ASSISTANT_LOG_LEVEL = process.env.ASSISTANT_LOG_LEVEL === "redacted"
   ? "redacted"

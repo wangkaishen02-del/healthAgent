@@ -1,0 +1,254 @@
+name: healthagent-production
+
+services:
+  gateway:
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    environment:
+      HEALTHAGENT_HOST: ${HEALTHAGENT_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./infra/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      web:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks: [frontend]
+
+  web:
+    build:
+      context: .
+      dockerfile: infra/docker/web.Dockerfile
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ""
+        NEXT_PUBLIC_AUTH_ENABLED: "true"
+        NEXT_PUBLIC_KEYCLOAK_ISSUER: ${PUBLIC_BASE_URL:-https://localhost}/realms/healthagent
+        NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: healthagent-web
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    expose: ["3000"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    security_opt:
+      - no-new-privileges:true
+    networks: [frontend]
+
+  api:
+    build:
+      context: .
+      dockerfile: infra/docker/api.Dockerfile
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      API_HOST: 0.0.0.0
+      NEST_API_PORT: "3001"
+      WEB_ORIGIN: ${PUBLIC_BASE_URL:-https://localhost}
+      DATABASE_URL: postgresql://${APP_DB_USER:-healthagent}:${APP_DB_PASSWORD:?set APP_DB_PASSWORD}@postgres:5432/${APP_DB_NAME:-healthagent}?schema=public
+      AUTH_ENABLED: "true"
+      KEYCLOAK_ISSUER: ${PUBLIC_BASE_URL:-https://localhost}/realms/healthagent
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/healthagent/protocol/openid-connect/certs
+      KEYCLOAK_AUDIENCE: healthagent-api
+      KEYCLOAK_WEB_CLIENT_ID: healthagent-web
+      LLM_PROVIDER: deepseek
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_URL: https://api.deepseek.com/chat/completions
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-flash}
+      LANGGRAPH_CHECKPOINTER: postgres
+      OCR_URL: http://ocr:8080
+      CLAIM_ATTACHMENT_DIR: /app/data/claim-attachments
+      ASSISTANT_LOG_DIR: /app/data/logs
+      ASSISTANT_LOG_LEVEL: metadata
+    expose: ["3001"]
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      keycloak-config:
+        condition: service_completed_successfully
+      ocr:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3001/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks: [frontend, backend]
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${APP_DB_NAME:-healthagent}
+      POSTGRES_USER: ${APP_DB_USER:-healthagent}
+      POSTGRES_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - app_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APP_DB_USER:-healthagent} -d ${APP_DB_NAME:-healthagent}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [backend]
+
+  keycloak-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+      TZ: Asia/Shanghai
+    volumes:
+      - keycloak_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keycloak -d keycloak"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    networks: [backend]
+
+  keycloak:
+    build:
+      context: .
+      dockerfile: infra/keycloak/Dockerfile
+    restart: unless-stopped
+    command: ["start", "--optimized", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://keycloak-postgres:5432/keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+      KC_HOSTNAME: ${PUBLIC_BASE_URL:-https://localhost}
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      TZ: Asia/Shanghai
+    expose: ["8080", "9000"]
+    volumes:
+      - ./infra/keycloak/realm-healthagent.json:/opt/keycloak/data/import/realm-healthagent.json:ro
+    depends_on:
+      keycloak-postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    networks: [frontend, backend]
+
+  keycloak-config:
+    image: quay.io/keycloak/keycloak:26.7.0
+    restart: "no"
+    entrypoint: ["/bin/sh", "/opt/healthagent/configure-client.sh"]
+    environment:
+      KEYCLOAK_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-https://localhost}
+    volumes:
+      - ./infra/keycloak/configure-client.sh:/opt/healthagent/configure-client.sh:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    networks: [backend]
+
+  ocr:
+    build:
+      context: ./services/ocr
+    restart: unless-stopped
+    init: true
+    environment:
+      OCR_MAX_FILE_BYTES: "12582912"
+      OCR_MAX_IMAGE_PIXELS: "30000000"
+      OCR_MAX_PDF_PAGES: "10"
+      OMP_NUM_THREADS: "4"
+      OPENBLAS_NUM_THREADS: "4"
+      TZ: Asia/Shanghai
+    expose: ["8080"]
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 3g
+    cpus: 4
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json,urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8080/health'))['ready']"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks: [backend]
+
+  backup:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/opt/healthagent/backup.sh"]
+    environment:
+      APP_DB_NAME: ${APP_DB_NAME:-healthagent}
+      APP_DB_USER: ${APP_DB_USER:-healthagent}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?set APP_DB_PASSWORD}
+      KEYCLOAK_DB_NAME: keycloak
+      KEYCLOAK_DB_USER: keycloak
+      KEYCLOAK_DB_PASSWORD: ${KEYCLOAK_DB_PASSWORD:?set KEYCLOAK_DB_PASSWORD}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_ON_START: ${BACKUP_ON_START:-true}
+      BACKUP_ONCE: ${BACKUP_ONCE:-false}
+    volumes:
+      - ./infra/backup/backup.sh:/opt/healthagent/backup.sh:ro
+      - backup_data:/backups
+    depends_on:
+      api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      keycloak-postgres:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks: [backend]
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  app_postgres_data:
+  keycloak_postgres_data:
+  app_data:
+  backup_data:
+  caddy_data:
+  caddy_config:

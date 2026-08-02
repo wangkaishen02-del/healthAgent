@@ -14,9 +14,10 @@ type KeycloakPayload = JWTPayload & {
 export class AuthService {
   readonly enabled = process.env.AUTH_ENABLED !== "false";
   private readonly issuer = process.env.KEYCLOAK_ISSUER ?? "http://127.0.0.1:18081/realms/healthagent";
+  private readonly jwksUrl = process.env.KEYCLOAK_JWKS_URL ?? `${this.issuer}/protocol/openid-connect/certs`;
   private readonly audience = process.env.KEYCLOAK_AUDIENCE ?? "healthagent-api";
   private readonly webClientId = process.env.KEYCLOAK_WEB_CLIENT_ID ?? "healthagent-web";
-  private readonly jwks = createRemoteJWKSet(new URL(`${this.issuer}/protocol/openid-connect/certs`));
+  private readonly jwks = createRemoteJWKSet(new URL(this.jwksUrl));
 
   async verifyAuthorizationHeader(header: string | undefined): Promise<AuthenticatedUser> {
     if (!header?.startsWith("Bearer ")) throw new UnauthorizedException("bearer_token_required");
