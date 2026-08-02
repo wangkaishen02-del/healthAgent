@@ -1,10 +1,19 @@
 import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Headers, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
+import { CLAIM_CASE_STATUSES, requireClaimTransition, type ClaimDirectWorkflowAction } from "../../../../src/claims/state-machine.ts";
 import type { ClaimCaseStatus, CreateClaimCaseInput } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
 import { isClaimCaseInput } from "./claim-validation.ts";
 import { CurrentUser, Roles } from "../auth/auth.decorators.ts";
 import type { AuthenticatedUser } from "../auth/auth.types.ts";
+
+const apiActionMap: Record<string, ClaimDirectWorkflowAction> = {
+  submit: "submit",
+  review: "submit_review",
+  complete: "complete",
+  cancel: "cancel",
+  rollback: "rollback",
+};
 
 function positiveNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
@@ -32,7 +41,7 @@ export class ClaimRegistrationsController {
     const filterKeys = ["id", "keyword", "caseNo", "policyNo", "insuredName", "insuredIdNo", "status", "reportDateFrom", "reportDateTo", "page", "pageSize"];
     if (!filterKeys.some((key) => query[key] !== undefined)) return { items: await this.claims.listCases() };
     const statuses = query.status?.split(",").filter(Boolean) ?? [];
-    if (statuses.some((status) => !["registered", "entering", "calculating", "reviewing", "completed", "cancelled"].includes(status))) {
+    if (statuses.some((status) => !CLAIM_CASE_STATUSES.includes(status as ClaimCaseStatus))) {
       throw new BadRequestException("invalid_claim_status");
     }
     return this.claims.queryCases({
@@ -88,36 +97,31 @@ export class ClaimRegistrationsController {
     @CurrentUser() user: AuthenticatedUser,
     @Headers("idempotency-key") operationKey?: string,
   ) {
-    if (!body || typeof body.id !== "string" || !["submit", "review", "complete", "cancel", "rollback"].includes(String(body.action))) {
+    const action = apiActionMap[String(body?.action ?? "")];
+    if (!body || typeof body.id !== "string" || !action) {
       throw new BadRequestException("invalid_claim_action");
-    }
-    const requiredRole = body.action === "submit"
-      ? "claim_acceptor"
-      : body.action === "review"
-        ? "claim_calculator"
-        : body.action === "complete"
-          ? "claim_reviewer"
-          : null;
-    if (requiredRole && !user.roles.includes(requiredRole) && !user.roles.includes("claim_admin")) {
-      throw new ForbiddenException("claim_action_role_mismatch");
     }
     try {
       const result = await this.idempotency.execute(
-        `claim_case:${body.action}`,
+        `claim_case:${body.action}:${user.id}`,
         operationKey,
         body,
-        () => body.action === "rollback"
-          ? this.claims.rollbackCase(body.id as string, { userId: user.id, userName: user.displayName })
-          : this.claims.changeCaseStatus(
-            body.id as string,
-            body.action === "submit" ? "entering" : body.action === "review" ? "reviewing" : body.action === "complete" ? "completed" : "cancelled",
-            { userId: user.id, userName: user.displayName },
-          ),
+        async () => {
+          const currentStatus = await this.claims.getCaseStatus(body.id as string);
+          if (!currentStatus) throw new NotFoundException("claim_case_not_found");
+          const transition = requireClaimTransition(currentStatus, action);
+          if (!user.roles.includes("claim_admin") && !transition.roles.some((role) => user.roles.includes(role))) {
+            throw new ForbiddenException("claim_action_role_mismatch");
+          }
+          return action === "cancel"
+            ? this.claims.cancelCase(body.id as string, { userId: user.id, userName: user.displayName })
+            : this.claims.transitionCase(body.id as string, action, { userId: user.id, userName: user.displayName });
+        },
       );
       if (!result) throw new NotFoundException("claim_case_not_found");
       return result;
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) throw error;
       throwClaimError(error, true);
     }
   }

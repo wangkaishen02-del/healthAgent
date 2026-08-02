@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import type { ClaimCase, ClaimCaseStatus, ClaimPartySnapshot } from "../../src/claims/types";
+import { CLAIM_CASE_STATUSES, CLAIM_STATUS_LABELS } from "../../src/claims/state-machine";
 import { apiFetch } from "../../src/api/client";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
 import ClaimEntryCalculationPage from "./ClaimEntryCalculationPage";
@@ -22,8 +23,8 @@ type DetailTab = "basic" | "parties" | "event" | "attachments";
 
 const PAGE_SIZE = 10;
 const EMPTY_FILTERS: ClaimFilters = { caseNo: "", policyNo: "", insuredName: "", insuredIdNo: "", status: "", reportDateFrom: "", reportDateTo: "" };
-const statusLabels: Record<ClaimCaseStatus, string> = { registered: "受理", entering: "录入", calculating: "理算", reviewing: "审核", completed: "结案", cancelled: "已撤件" };
-const statusOptions: AppSelectOption<ClaimFilters["status"]>[] = [{ value: "", label: "全部状态" }, { value: "registered", label: "受理" }, { value: "entering", label: "录入" }, { value: "calculating", label: "理算" }, { value: "reviewing", label: "审核" }, { value: "completed", label: "结案" }, { value: "cancelled", label: "已撤件" }];
+const statusLabels: Record<ClaimCaseStatus, string> = CLAIM_STATUS_LABELS;
+const statusOptions: AppSelectOption<ClaimFilters["status"]>[] = [{ value: "", label: "全部状态" }, ...CLAIM_CASE_STATUSES.map((status) => ({ value: status, label: CLAIM_STATUS_LABELS[status] }))];
 const roleLabels: Record<ClaimPartySnapshot["role"], string> = { insured: "被保人", applicant: "申请人", payee: "领款人" };
 const eventTypeLabels = { "1": "疾病", "2": "意外", "9": "其他" } as const;
 const reportChannelLabels = { online: "线上报案", phone: "电话报案", counter: "柜面报案", other: "其他" } as const;

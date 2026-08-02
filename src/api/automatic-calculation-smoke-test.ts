@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "../db/prisma.ts";
 import { getAutomationConfiguration, rollbackAutomaticCalculation, runAutomaticCalculation, saveAutomationVariable, saveClaimBill, validateBenefitFormula } from "../calculation/automation-service.ts";
 import { calculationExpressionIdentifiers, calculationExpressionReferencesAny, evaluateCalculationExpression } from "../calculation/expression-engine.ts";
+import { ClaimsService } from "../../apps/api/src/claims/claims.service.ts";
+import { transitionClaimCaseDb } from "../claims/prisma-service.ts";
 
 const sourceCase = await prisma.claimCase.findFirst({ where: { status: "entering" }, orderBy: { createdAt: "asc" } });
 assert(sourceCase, "a processing claim case is required");
@@ -189,6 +191,12 @@ try {
   assert(rolledBackCurrentValues.every((item) => Number(item.currentAmount) === 0), "rollback should restore ledger current values");
   const recalculated = await runAutomaticCalculation(temporaryCaseId, { userId: "calculation-test-user", userName: "理算测试用户" });
   assert.equal(recalculated.committed, true, "the case should support calculation again after rollback");
+  await transitionClaimCaseDb(temporaryCaseId, "submit_review", { userId: "calculation-test-user", userName: "理算测试用户" });
+  const cancelled = await new ClaimsService().cancelCase(temporaryCaseId, { userId: "review-test-user", userName: "审核测试用户" });
+  assert.equal(cancelled?.status, "cancelled", "withdrawing a calculated case should finish in cancelled state");
+  assert.equal(await prisma.claimLedgerAccumulationRecord.count({ where: { claimCaseId: temporaryCaseId } }), 0, "withdrawing a calculated case should delete its accumulation records");
+  assert.equal(await prisma.claimCaseCalculationResult.count({ where: { claimCaseId: temporaryCaseId } }), 0, "withdrawing a calculated case should delete its calculation result");
+  assert((await prisma.claimLedgerCurrentValue.findMany({ where: { insuredPersonId: temporaryPersonId } })).every((item) => Number(item.currentAmount) === 0), "withdrawing a calculated case should restore ledger current values");
   console.log(JSON.stringify({ bills: 2, selectedFormulaRuns: calculated.billResults.length, ledgerEntries: entryCount, ledgerBalances: carried.length, totalAmount: calculated.totalAmount }));
 } finally {
   const temporaryBillIds = (await prisma.claimBill.findMany({

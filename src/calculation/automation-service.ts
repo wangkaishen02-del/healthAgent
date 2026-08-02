@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ClaimOperator } from "../claims/types.ts";
+import { requireClaimCaseEditable, requireClaimTransition } from "../claims/state-machine.ts";
 import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
 import { calculationExpressionReferencesAny, evaluateCalculationExpression, substituteCalculationExpression, type FormulaValue } from "./expression-engine.ts";
@@ -538,7 +539,8 @@ export async function listInsuredPolicyLedgers(policyId: string, insuredPersonId
 
 async function requireProcessingClaimCase(claimCaseId: string) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId }, select: { id: true, status: true } });
-  if (!claimCase || claimCase.status !== "entering") throw new Error("claim_case_not_entering");
+  if (!claimCase) throw new Error("claim_case_not_entering");
+  requireClaimCaseEditable(claimCase.status, "calculation");
 }
 
 export async function saveClaimEventEntry(input: {
@@ -783,7 +785,8 @@ export async function saveClaimBill(input: {
   selectedBenefitIds: string[];
 }) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: input.claimCaseId } });
-  if (!claimCase || claimCase.status !== "entering") throw new Error("claim_case_not_entering");
+  if (!claimCase) throw new Error("claim_case_not_entering");
+  requireClaimCaseEditable(claimCase.status, "calculation");
   const policyInsured = await prisma.policyInsured.findUnique({ where: { id: claimCase.policyInsuredId } });
   if (!policyInsured?.coveragePlanId) throw new Error("claim_coverage_plan_required");
   const attachmentIds = Array.isArray(input.billData.attachmentIds)
@@ -929,7 +932,8 @@ async function benefitConfigValues(policyId: string, claimCaseId: string, benefi
 export async function runAutomaticCalculation(claimCaseId: string, operator: ClaimOperator = { userId: "default-user", userName: "默认用户" }) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId } });
   if (!claimCase) throw new Error("claim_case_not_found");
-  if (claimCase.status !== "entering") throw new Error("claim_case_not_entering");
+  const transition = requireClaimTransition(claimCase.status, "calculate");
+  if (transition.executor !== "calculation") throw new Error("claim_transition_executor_mismatch");
   const policyInsured = await prisma.policyInsured.findUnique({ where: { id: claimCase.policyInsuredId } });
   if (!policyInsured?.coveragePlanId) throw new Error("claim_coverage_plan_required");
   const benefits = await policyBenefits(claimCase.policyId, policyInsured.coveragePlanId);
@@ -1226,9 +1230,9 @@ export async function runAutomaticCalculation(claimCaseId: string, operator: Cla
         },
       });
     }
-    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "entering" }, data: { status: "calculating", currentHandlerUserId: operator.userId, currentHandlerName: operator.userName } });
+    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: transition.from }, data: { status: transition.to, currentHandlerUserId: operator.userId, currentHandlerName: operator.userName } });
     if (changed.count !== 1) throw new Error("claim_case_status_locked");
-    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "calculate", fromStatus: "entering", toStatus: "calculating", operatorUserId: operator.userId, operatorName: operator.userName, targetUserId: operator.userId, targetUserName: operator.userName, description: "完成理算" } });
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: transition.transitionAction, fromStatus: transition.from, toStatus: transition.to, operatorUserId: operator.userId, operatorName: operator.userName, targetUserId: operator.userId, targetUserName: operator.userName, description: transition.description } });
   });
   return result;
 }
@@ -1236,9 +1240,10 @@ export async function runAutomaticCalculation(claimCaseId: string, operator: Cla
 export async function rollbackAutomaticCalculation(claimCaseId: string, operator: ClaimOperator = { userId: "default-user", userName: "默认用户" }) {
   const claimCase = await prisma.claimCase.findUnique({ where: { id: claimCaseId } });
   if (!claimCase) throw new Error("claim_case_not_found");
-  if (claimCase.status !== "calculating") throw new Error("claim_case_not_calculating");
+  const transition = requireClaimTransition(claimCase.status, "rollback_calculation");
+  if (transition.executor !== "calculation") throw new Error("claim_transition_executor_mismatch");
   await prisma.$transaction(async (tx) => {
-    const submitted = await tx.claimCaseTransition.findFirst({ where: { claimCaseId, toStatus: "calculating" }, orderBy: { occurredAt: "desc" } });
+    const submitted = await tx.claimCaseTransition.findFirst({ where: { claimCaseId, toStatus: transition.from }, orderBy: { occurredAt: "desc" } });
     const targetUserId = submitted?.operatorUserId ?? "default-user";
     const targetUserName = submitted?.operatorName ?? "默认用户";
     const accumulationRecords = await tx.claimLedgerAccumulationRecord.findMany({ where: { claimCaseId } });
@@ -1300,9 +1305,9 @@ export async function rollbackAutomaticCalculation(claimCaseId: string, operator
     }
     await tx.claimLedgerAccumulationRecord.deleteMany({ where: { claimCaseId } });
     await tx.claimCalculationRun.deleteMany({ where: { claimCaseId } });
-    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: "calculating" }, data: { status: "entering", currentHandlerUserId: targetUserId, currentHandlerName: targetUserName } });
+    const changed = await tx.claimCase.updateMany({ where: { id: claimCaseId, status: transition.from }, data: { status: transition.to, currentHandlerUserId: targetUserId, currentHandlerName: targetUserName } });
     if (changed.count !== 1) throw new Error("claim_case_status_locked");
-    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: "rollback_calculation", fromStatus: "calculating", toStatus: "entering", operatorUserId: operator.userId, operatorName: operator.userName, targetUserId, targetUserName, description: `理算回退给提交人 ${targetUserName}` } });
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId, action: transition.transitionAction, fromStatus: transition.from, toStatus: transition.to, operatorUserId: operator.userId, operatorName: operator.userName, targetUserId, targetUserName, description: `${transition.description}给提交人 ${targetUserName}` } });
   });
   const configuration = await getAutomationConfiguration(claimCase.policyId, claimCaseId);
   return { success: true, ledgerBalances: configuration.ledgerBalances };

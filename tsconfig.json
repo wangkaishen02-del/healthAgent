@@ -34,7 +34,7 @@
   "exclude": [
     "node_modules",
     "apps/api",
-    "src/api/nest-smoke-test.ts",
+    "src/api/*-smoke-test.ts",
     "dist"
   ]
 }

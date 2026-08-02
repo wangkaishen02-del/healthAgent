@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ClaimAttachment, ClaimAttachmentOcr, ClaimCase as DbClaimCase, ClaimEvent as DbClaimEvent, ClaimParty as DbClaimParty } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
+import { requireClaimCaseEditable, requireClaimTransition, type ClaimDirectWorkflowAction } from "./state-machine.ts";
 import type { ClaimCase, ClaimCaseStatus, ClaimEventInput, ClaimEventType, ClaimOcrResult, ClaimOperator, ClaimPartySnapshot, ClaimPersonEvent, ClaimRemarkStage, ClaimTransitionAction, ClaimUpload, CreateClaimCaseInput } from "./types.ts";
 
 export const DEFAULT_CLAIM_OPERATOR: ClaimOperator = { userId: "default-user", userName: "默认用户" };
@@ -118,6 +119,10 @@ export async function listClaimCasesDb() {
   return hydrateCases(items);
 }
 
+export async function getClaimCaseStatusDb(id: string) {
+  return prisma.claimCase.findUnique({ where: { id }, select: { status: true } }).then((item) => item?.status ?? null);
+}
+
 export async function queryClaimCasesDb(input: {
   id?: string;
   keyword?: string;
@@ -204,7 +209,7 @@ export async function createClaimCaseDb(input: CreateClaimCaseInput, operator: C
 export async function updateClaimCaseDb(id: string, input: CreateClaimCaseInput) {
   const current = await prisma.claimCase.findUnique({ where: { id } });
   if (!current) return null;
-  if (current.status !== "registered" && current.status !== "entering") throw new Error("claim_case_not_editable");
+  requireClaimCaseEditable(current.status, "acceptance");
   const { policy, policyInsured } = await validateInput(input);
   await prisma.$transaction(async (tx) => {
     await tx.claimCase.update({ where: { id }, data: { policyId: policy.id, policyInsuredId: policyInsured.id, insuredPersonId: policyInsured.insuredPersonId, eventId: input.eventId, reportDate: new Date(`${input.reportDate}T00:00:00.000Z`), reportChannel: input.reportChannel, remark: input.remark?.trim() || null } });
@@ -216,44 +221,19 @@ export async function updateClaimCaseDb(id: string, input: CreateClaimCaseInput)
   return hydrateCase((await prisma.claimCase.findUnique({ where: { id } }))!);
 }
 
-export async function changeClaimCaseStatusDb(id: string, status: ClaimCaseStatus, operator: ClaimOperator = DEFAULT_CLAIM_OPERATOR) {
+export async function transitionClaimCaseDb(id: string, action: ClaimDirectWorkflowAction, operator: ClaimOperator = DEFAULT_CLAIM_OPERATOR) {
   const current = await prisma.claimCase.findUnique({ where: { id } });
   if (!current) return null;
-  const allowed = current.status === "registered"
-    ? ["entering", "cancelled"]
-    : current.status === "entering"
-      ? ["cancelled"]
-      : current.status === "calculating"
-        ? ["reviewing", "cancelled"]
-      : current.status === "reviewing"
-        ? ["completed", "cancelled"]
-        : [];
-  if (!allowed.includes(status)) throw new Error("claim_case_status_locked");
-  const action: "submit" | "submit_review" | "complete" | "cancel" = status === "entering" ? "submit" : status === "reviewing" ? "submit_review" : status === "completed" ? "complete" : "cancel";
-  const descriptions = { submit: "受理提交", submit_review: "提交审核", complete: "审核结案", cancel: "案件撤件" } as const;
+  const transition = requireClaimTransition(current.status, action);
+  if (transition.executor !== "claims") throw new Error("claim_transition_executor_mismatch");
   const updated = await prisma.$transaction(async (tx) => {
-    const changed = await tx.claimCase.updateMany({ where: { id, status: current.status }, data: { status, currentHandlerUserId: operator.userId, currentHandlerName: operator.userName } });
+    const submitted = action === "rollback"
+      ? await tx.claimCaseTransition.findFirst({ where: { claimCaseId: id, toStatus: current.status }, orderBy: { occurredAt: "desc" } })
+      : null;
+    const target = submitted ? { userId: submitted.operatorUserId, userName: submitted.operatorName } : operator;
+    const changed = await tx.claimCase.updateMany({ where: { id, status: transition.from }, data: { status: transition.to, currentHandlerUserId: target.userId, currentHandlerName: target.userName } });
     if (changed.count !== 1) throw new Error("claim_case_status_locked");
-    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId: id, action, fromStatus: current.status, toStatus: status, operatorUserId: operator.userId, operatorName: operator.userName, targetUserId: operator.userId, targetUserName: operator.userName, description: descriptions[action] } });
-    return (await tx.claimCase.findUnique({ where: { id } }))!;
-  });
-  return hydrateCase(updated);
-}
-
-export async function rollbackClaimCaseStatusDb(id: string, operator: ClaimOperator = DEFAULT_CLAIM_OPERATOR) {
-  const current = await prisma.claimCase.findUnique({ where: { id } });
-  if (!current) return null;
-  const previousStatus = current.status === "entering" ? "registered" : current.status === "reviewing" ? "calculating" : current.status === "completed" ? "reviewing" : null;
-  if (!previousStatus) {
-    if (current.status === "calculating") throw new Error("claim_calculation_rollback_required");
-    throw new Error("claim_case_rollback_not_allowed");
-  }
-  const updated = await prisma.$transaction(async (tx) => {
-    const submitted = await tx.claimCaseTransition.findFirst({ where: { claimCaseId: id, toStatus: current.status }, orderBy: { occurredAt: "desc" } });
-    const target = submitted ? { userId: submitted.operatorUserId, userName: submitted.operatorName } : DEFAULT_CLAIM_OPERATOR;
-    const changed = await tx.claimCase.updateMany({ where: { id, status: current.status }, data: { status: previousStatus, currentHandlerUserId: target.userId, currentHandlerName: target.userName } });
-    if (changed.count !== 1) throw new Error("claim_case_status_locked");
-    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId: id, action: "rollback", fromStatus: current.status, toStatus: previousStatus, operatorUserId: operator.userId, operatorName: operator.userName, targetUserId: target.userId, targetUserName: target.userName, description: `回退给提交人 ${target.userName}` } });
+    await tx.claimCaseTransition.create({ data: { id: randomUUID(), claimCaseId: id, action: transition.transitionAction, fromStatus: transition.from, toStatus: transition.to, operatorUserId: operator.userId, operatorName: operator.userName, targetUserId: target.userId, targetUserName: target.userName, description: action === "rollback" ? `${transition.description}给提交人 ${target.userName}` : transition.description } });
     return (await tx.claimCase.findUnique({ where: { id } }))!;
   });
   return hydrateCase(updated);

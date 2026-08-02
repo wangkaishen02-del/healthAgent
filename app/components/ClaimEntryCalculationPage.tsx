@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import type { ClaimCase, ClaimPersonEvent, ClaimUpload } from "../../src/claims/types";
+import { CLAIM_STATUS_LABELS } from "../../src/claims/state-machine";
 import { apiFetch } from "../../src/api/client";
 import AppCombobox, { type AppComboboxOption } from "./AppCombobox";
 import AppDatePicker from "./AppDatePicker";
@@ -182,7 +183,7 @@ type ClaimEntryCalculationPageProps = {
   onClose?: () => void;
 };
 
-const detailStatusLabels: Record<ClaimCase["status"], string> = { registered: "受理", entering: "录入", calculating: "理算", reviewing: "审核", completed: "结案", cancelled: "已撤件" };
+const detailStatusLabels: Record<ClaimCase["status"], string> = CLAIM_STATUS_LABELS;
 
 const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntryCalculationPageProps>(function ClaimEntryCalculationPage({ mode = "processing", initialCase, onClose }, assistantRef) {
   const reviewMode = mode === "review";

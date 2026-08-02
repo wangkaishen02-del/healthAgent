@@ -273,7 +273,7 @@ const pages: PageRegistration[] = [
           { fieldId: "policyNo", label: "保单号", type: "text", description: "完整保单号。" },
           { fieldId: "insuredName", label: "被保人姓名", type: "text", description: "支持姓名模糊匹配。" },
           { fieldId: "insuredIdNo", label: "被保人证件号", type: "text", description: "按完整证件号匹配。" },
-          { fieldId: "status", label: "案件状态", type: "select", description: "按案件状态筛选；空值表示全部。", options: [{ value: "", label: "全部状态" }, { value: "registered", label: "受理" }, { value: "entering", label: "录入" }, { value: "calculating", label: "理算" }, { value: "reviewing", label: "审核" }, { value: "completed", label: "结案" }, { value: "cancelled", label: "已撤件" }] },
+          { fieldId: "status", label: "案件状态", type: "select", description: "按案件状态筛选；空值表示全部。", options: [{ value: "", label: "全部状态" }, ...CLAIM_CASE_STATUSES.map((status) => ({ value: status, label: CLAIM_STATUS_LABELS[status] }))] },
           { fieldId: "reportDateFrom", label: "报案日期起", type: "text", description: "报案日期范围开始，格式 YYYY-MM-DD。" },
           { fieldId: "reportDateTo", label: "报案日期止", type: "text", description: "报案日期范围结束，格式 YYYY-MM-DD。" },
         ],
@@ -643,3 +643,4 @@ export function getAssistantRegistryToolCatalog() {
     ...getAssistantControlToolCatalog(),
   ];
 }
+import { CLAIM_CASE_STATUSES, CLAIM_STATUS_LABELS } from "../claims/state-machine.ts";

@@ -15,6 +15,8 @@
     "start:api": "node dist/nest/apps/api/src/main.js",
     "test:assistant-graph": "AUTH_ENABLED=false LANGGRAPH_CHECKPOINTER=memory node --import tsx src/assistant/assistant-graph-smoke-test.ts",
     "test:assistant-privacy": "node --import tsx src/assistant/privacy-test.ts",
+    "test:claim-state-machine": "node --import tsx src/claims/state-machine-test.ts",
+    "test:claim-workflow": "tsx --tsconfig apps/api/tsconfig.json src/api/claim-workflow-smoke-test.ts",
     "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",
     "test:api": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
     "test:auto-calculation": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/automatic-calculation-smoke-test.ts",
