@@ -45,6 +45,16 @@ export type AssistantTaskResult = {
   requestedFields?: string[];
 };
 
+type CachedAssistantTask = { result: AssistantTaskResult; touchedAt: number };
+
+function boundedSetting(value: string | undefined, fallback: number, minimum: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(minimum, Math.floor(parsed)) : fallback;
+}
+
+const ASSISTANT_TASK_CACHE_MAX = boundedSetting(process.env.ASSISTANT_TASK_CACHE_MAX, 500, 10);
+const ASSISTANT_TASK_CACHE_TTL_MS = boundedSetting(process.env.ASSISTANT_TASK_CACHE_TTL_MS, 3_600_000, 60_000);
+
 const AssistantGraphState = Annotation.Root({
   taskText: Annotation<string>,
   provider: Annotation<LlmProvider>,
@@ -84,7 +94,7 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
     : null;
   private readonly checkpointer = this.postgresCheckpointer ?? new MemorySaver();
   private setupPromise: Promise<void> | null = null;
-  private readonly latestResults = new Map<string, AssistantTaskResult>();
+  private readonly latestResults = new Map<string, CachedAssistantTask>();
   private planner: typeof requestAgentPlan = requestAgentPlan;
 
   private readonly graph = new StateGraph(AssistantGraphState)
@@ -136,6 +146,38 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
 
   setPlannerForTesting(planner: typeof requestAgentPlan) {
     this.planner = planner;
+  }
+
+  private isTerminal(result: AssistantTaskResult) {
+    return result.status === "completed" || result.status === "cancelled";
+  }
+
+  private pruneTaskCache(now = Date.now()) {
+    for (const [taskId, cached] of this.latestResults) {
+      if (this.isTerminal(cached.result) && now - cached.touchedAt >= ASSISTANT_TASK_CACHE_TTL_MS) {
+        this.latestResults.delete(taskId);
+      }
+    }
+    while (this.latestResults.size > ASSISTANT_TASK_CACHE_MAX) {
+      const oldestTerminal = [...this.latestResults].find(([, cached]) => this.isTerminal(cached.result));
+      if (!oldestTerminal) break;
+      this.latestResults.delete(oldestTerminal[0]);
+    }
+  }
+
+  private cacheTask(result: AssistantTaskResult) {
+    this.latestResults.delete(result.taskId);
+    this.latestResults.set(result.taskId, { result, touchedAt: Date.now() });
+    this.pruneTaskCache();
+    return result;
+  }
+
+  private cachedTask(taskId: string) {
+    this.pruneTaskCache();
+    const cached = this.latestResults.get(taskId);
+    if (!cached) return null;
+    cached.touchedAt = Date.now();
+    return cached.result;
   }
 
   async onModuleInit() {
@@ -196,10 +238,10 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async currentTask(taskId: string) {
-    const current = this.latestResults.get(taskId);
+    const current = this.cachedTask(taskId);
     if (current) return current;
     const persisted = await this.loadPersistedTask(taskId);
-    if (persisted) this.latestResults.set(taskId, persisted);
+    if (persisted) this.cacheTask(persisted);
     return persisted;
   }
 
@@ -211,8 +253,8 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
   }) {
     await this.ensureReady();
     const taskId = input.taskId ?? randomUUID();
-    if (this.latestResults.has(taskId)) throw new Error("assistant_task_already_exists");
-    this.latestResults.set(taskId, {
+    if (this.cachedTask(taskId)) throw new Error("assistant_task_already_exists");
+    this.cacheTask({
       taskId,
       status: "running",
       plan: null,
@@ -220,11 +262,11 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
     });
     const persisted = await this.loadPersistedTask(taskId);
     if (persisted) {
-      this.latestResults.set(taskId, persisted);
+      this.cacheTask(persisted);
       throw new Error("assistant_task_already_exists");
     }
-    if (this.latestResults.get(taskId)?.status === "cancelled") {
-      return this.latestResults.get(taskId)!;
+    if (this.cachedTask(taskId)?.status === "cancelled") {
+      return this.cachedTask(taskId)!;
     }
     const result = await this.graph.invoke({
       taskText: input.text,
@@ -234,12 +276,11 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
       status: "running",
     }, this.config(taskId)) as GraphState & { __interrupt__?: Array<{ value?: Record<string, unknown> }> };
     const response = this.toTaskResult(taskId, result);
-    if (this.latestResults.get(taskId)?.status === "cancelled") {
+    if (this.cachedTask(taskId)?.status === "cancelled") {
       await this.graph.updateState(this.config(taskId), { status: "cancelled" });
-      return this.latestResults.get(taskId)!;
+      return this.cachedTask(taskId)!;
     }
-    this.latestResults.set(taskId, response);
-    return response;
+    return this.cacheTask(response);
   }
 
   async resumeTask(taskId: string, resume: AssistantTaskResume) {
@@ -254,8 +295,7 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
       this.config(taskId),
     ) as GraphState & { __interrupt__?: Array<{ value?: Record<string, unknown> }> };
     const response = this.toTaskResult(taskId, result);
-    this.latestResults.set(taskId, response);
-    return response;
+    return this.cacheTask(response);
   }
 
   async cancelTask(taskId: string) {
@@ -266,7 +306,7 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
       ...current,
       status: "cancelled",
     };
-    this.latestResults.set(taskId, cancelled);
+    this.cacheTask(cancelled);
     try {
       await this.graph.updateState(this.config(taskId), { status: "cancelled" });
     } catch {

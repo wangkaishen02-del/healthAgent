@@ -30,7 +30,7 @@ import { inspectClaimCaseForAssistant, summarizeClaimWorkQueueForAssistant } fro
 
 export type LlmProvider = "ollama" | "deepseek";
 
-const DEFAULT_LLM_PROVIDER: LlmProvider = process.env.LLM_PROVIDER === "deepseek" ? "deepseek" : "ollama";
+const DEFAULT_LLM_PROVIDER: LlmProvider = process.env.LLM_PROVIDER === "ollama" ? "ollama" : "deepseek";
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://localhost:11434/api/chat";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL ?? "qwen3:8b";
 const DEEPSEEK_URL = process.env.DEEPSEEK_URL ?? "https://api.deepseek.com/chat/completions";

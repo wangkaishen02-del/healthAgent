@@ -82,6 +82,8 @@ Agent 工具校验以注册中心为准，不维护页面字段和动作的硬�
 
 Web、API、Keycloak、OCR、HTTPS、持久化卷和数据库备份的生产容器部署见 [`docs/production-deployment.md`](docs/production-deployment.md)。
 
+Agent 独立服务的收益、前置条件、量化触发标准和目标边界见 [`docs/agent-service-evaluation.md`](docs/agent-service-evaluation.md)。当前结论是保持 NestJS 内模块化部署，先完成可拆边界，不立即增加容器。
+
 案件状态、正向流转、逐级回退、数据锁定和并发规则见 [`docs/claim-state-machine.md`](docs/claim-state-machine.md)。
 
 复杂页面可以实现通用 `RegisteredPageController`，统一提供字段设置、页面动作、列表行动作和运行时选项。理算配置页通过该控制器维护独立页面状态，Agent 外层执行器不依赖具体配置业务。

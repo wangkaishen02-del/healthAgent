@@ -18,6 +18,8 @@ cp .env.production.example .env.production
 - `KEYCLOAK_DB_PASSWORD`：Keycloak 数据库密码，必须与业务库不同
 - `KEYCLOAK_ADMIN_PASSWORD`：Keycloak 管理员密码
 - `DEEPSEEK_API_KEY`：外部模型密钥；不配置时 Agent 的 DeepSeek 调用不可用
+- `ASSISTANT_TASK_CACHE_MAX`：单个 API 实例最多缓存的 Agent 任务结果，默认 500；活动任务不会因达到上限被驱逐
+- `ASSISTANT_TASK_CACHE_TTL_MS`：已完成或已取消 Agent 任务的内存缓存保留时间，默认 1 小时
 
 `.env.production` 已被 Git 和 Docker 构建上下文排除，不要提交它。
 

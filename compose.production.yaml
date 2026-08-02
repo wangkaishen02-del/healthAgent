@@ -77,6 +77,8 @@ services:
       CLAIM_ATTACHMENT_DIR: /app/data/claim-attachments
       ASSISTANT_LOG_DIR: /app/data/logs
       ASSISTANT_LOG_LEVEL: metadata
+      ASSISTANT_TASK_CACHE_MAX: ${ASSISTANT_TASK_CACHE_MAX:-500}
+      ASSISTANT_TASK_CACHE_TTL_MS: ${ASSISTANT_TASK_CACHE_TTL_MS:-3600000}
     expose: ["3001"]
     volumes:
       - app_data:/app/data
