@@ -9,6 +9,11 @@ until /opt/keycloak/bin/kcadm.sh config credentials \
   sleep 2
 done
 
+/opt/keycloak/bin/kcadm.sh update realms/master \
+  -s 'internationalizationEnabled=true' \
+  -s 'defaultLocale=zh-CN' \
+  -s 'supportedLocales=["zh-CN","en"]'
+
 client_id=$(/opt/keycloak/bin/kcadm.sh get clients -r healthagent -q clientId=healthagent-web --fields id --format csv --noquotes | tail -n 1)
 if [ -z "$client_id" ]; then
   echo "healthagent-web client not found" >&2
