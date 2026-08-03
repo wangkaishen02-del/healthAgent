@@ -10,7 +10,7 @@ import CalculationConfigPage from "./components/CalculationConfigPage";
 import ClaimEntryCalculationPage from "./components/ClaimEntryCalculationPage";
 import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
-import { useAuth, type AppRole } from "./auth/AuthProvider";
+import { APP_ROLE_LABELS, useAuth, type AppRole } from "./auth/AuthProvider";
 import AuditLogPage from "./components/AuditLogPage";
 import { BasicView, BenefitsView, delay, formatPolicyStatus, INSURED_PAGE_SIZE, InsuredsView, Pagination, throwIfAssistantAborted } from "./components/PolicyWorkspaceViews";
 
@@ -87,6 +87,12 @@ const policyStatusOptions = [
   { value: "disabled", label: "停用" },
 ] as const;
 
+function userInitials(displayName: string) {
+  const normalized = displayName.trim();
+  if (!normalized) return "U";
+  return [...normalized].slice(-2).join("").toUpperCase();
+}
+
 function pageIdToMainTab(pageId: string): MainTab | null {
   if (pageId === "policy_query" || pageId === "policy_detail") return "policy";
   if (pageId === "claim_query") return "claim";
@@ -156,7 +162,9 @@ export default function Page() {
   const [claimMenuOpen, setClaimMenuOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
   const [systemMenuOpen, setSystemMenuOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const topNavRef = useRef<HTMLElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
   const [policies, setPolicies] = useState<PolicyListItem[]>([]);
@@ -277,6 +285,9 @@ export default function Page() {
       if (modelSelectRef.current && !modelSelectRef.current.contains(event.target as Node)) {
         setModelSelectOpen(false);
       }
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenuOpen(false);
+      }
     }
     function handleEscape(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
@@ -284,6 +295,7 @@ export default function Page() {
       setClaimMenuOpen(false);
       setConfigMenuOpen(false);
       setSystemMenuOpen(false);
+      setUserMenuOpen(false);
     }
     document.addEventListener("click", handleClickOutside);
     document.addEventListener("keydown", handleEscape);
@@ -993,7 +1005,10 @@ export default function Page() {
     <>
       <header className="topbar">
         <div className="topbar-left">
-          <div className="topbar-brand">healthAgent 承保管理系统</div>
+          <div className="topbar-brand">
+            <span className="topbar-brand-mark" aria-hidden="true">hA</span>
+            <span><strong>healthAgent</strong><small>团体健康险理赔平台</small></span>
+          </div>
           <nav className="topnav" ref={topNavRef}>
             {hasAnyRole("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer") && <div className="menu-item active">
               <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setClaimMenuOpen(false); setConfigMenuOpen(false); setSystemMenuOpen(false); }}>
@@ -1044,13 +1059,40 @@ export default function Page() {
             type="button"
             onClick={() => setAssistantOpen((value) => !value)}
           >
-            智能助手
+            <span aria-hidden="true">✦</span> 智能助手
           </button>
-          <div className="current-user">
-            <span>{user.displayName}</span>
-            <small>{user.username}</small>
+          <div className="user-menu" ref={userMenuRef}>
+            <button
+              className={`user-menu-trigger ${userMenuOpen ? "open" : ""}`}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              onClick={() => setUserMenuOpen((value) => !value)}
+            >
+              <span className="user-avatar">{userInitials(user.displayName)}</span>
+              <span className="current-user">
+                <strong>{user.displayName}</strong>
+                <small>{user.roles.includes("claim_admin") ? "系统管理员" : APP_ROLE_LABELS[user.roles[0]] ?? "业务用户"}</small>
+              </span>
+              <span className="user-menu-caret" aria-hidden="true">⌄</span>
+            </button>
+            <div className={`user-dropdown ${userMenuOpen ? "" : "hidden"}`} role="menu">
+              <div className="user-dropdown-profile">
+                <span className="user-avatar large">{userInitials(user.displayName)}</span>
+                <div><strong>{user.displayName}</strong><small>@{user.username}</small></div>
+              </div>
+              <div className="user-dropdown-section">
+                <span className="user-dropdown-label">当前角色</span>
+                <div className="user-role-list">
+                  {user.roles.map((role) => <span key={role}>{APP_ROLE_LABELS[role]}</span>)}
+                </div>
+              </div>
+              <div className="user-dropdown-meta"><span>账号 ID</span><strong>{user.id}</strong></div>
+              <button className="user-logout-button" role="menuitem" type="button" onClick={() => void logout()}>
+                <span aria-hidden="true">↪</span> 退出登录
+              </button>
+            </div>
           </div>
-          <button className="logout-button" type="button" onClick={() => void logout()}>退出</button>
         </div>
       </header>
 

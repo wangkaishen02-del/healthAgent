@@ -2,7 +2,8 @@ import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("healthAgent 承保管理系统")).toBeVisible();
+  await expect(page.locator(".topbar-brand")).toContainText("healthAgent");
+  await expect(page.locator(".topbar-brand")).toContainText("团体健康险理赔平台");
   await expect(page.locator(".current-user")).toContainText("默认用户");
 });
 

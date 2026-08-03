@@ -1,0 +1,10 @@
+.pf-v5-c-login__header::after {
+  content: "安全连接业务工作台\A统一身份，权限随行";
+  top: 43%;
+  color: #fff;
+  font-size: 28px;
+  font-weight: 720;
+  line-height: 1.55;
+  letter-spacing: -.5px;
+  white-space: pre-line;
+}

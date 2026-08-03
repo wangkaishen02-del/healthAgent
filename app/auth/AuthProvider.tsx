@@ -7,6 +7,14 @@ import { setApiAccessToken } from "../../src/api/client";
 export const APP_ROLES = ["claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer", "claim_admin"] as const;
 export type AppRole = typeof APP_ROLES[number];
 
+export const APP_ROLE_LABELS: Record<AppRole, string> = {
+  claim_viewer: "查询人员",
+  claim_acceptor: "受理人员",
+  claim_calculator: "理算人员",
+  claim_reviewer: "审核人员",
+  claim_admin: "系统管理员",
+};
+
 type AuthUser = {
   id: string;
   username: string;
@@ -152,15 +160,55 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     logout,
   } : null, [logout, user]);
 
-  if (loading) return <main className="auth-screen"><section className="auth-card"><h1>healthAgent</h1><p>正在检查登录状态…</p></section></main>;
+  if (loading) return (
+    <main className="auth-screen">
+      <section className="auth-card auth-card-loading" aria-live="polite">
+        <div className="auth-brand-mark" aria-hidden="true"><span>hA</span></div>
+        <div className="auth-loading-ring" aria-hidden="true" />
+        <h1>正在进入 healthAgent</h1>
+        <p>正在安全校验登录状态，请稍候…</p>
+      </section>
+    </main>
+  );
   if (!value) return (
     <main className="auth-screen">
-      <section className="auth-card">
-        <h1>healthAgent</h1>
-        <p>请使用分配给你的账号登录理赔系统。</p>
-        {error && <div className="auth-error">{error}</div>}
-        <button type="button" onClick={() => void login()}>登录</button>
-      </section>
+      <div className="auth-shell">
+        <section className="auth-intro" aria-label="平台介绍">
+          <div className="auth-brand">
+            <div className="auth-brand-mark" aria-hidden="true"><span>hA</span></div>
+            <div><strong>healthAgent</strong><small>团体健康险理赔平台</small></div>
+          </div>
+          <div className="auth-intro-copy">
+            <span className="auth-eyebrow">智能 · 准确 · 可追溯</span>
+            <h1>让每一次理赔处理<br />更清晰、更高效</h1>
+            <p>统一管理案件受理、资料录入、自动理算与审核结案，Agent 全程协助业务人员完成工作。</p>
+          </div>
+          <div className="auth-feature-list" aria-label="平台能力">
+            <span><i aria-hidden="true">01</i>案件全流程管理</span>
+            <span><i aria-hidden="true">02</i>智能 OCR 与理算</span>
+            <span><i aria-hidden="true">03</i>操作全程留痕</span>
+          </div>
+          <div className="auth-orbit auth-orbit-one" aria-hidden="true" />
+          <div className="auth-orbit auth-orbit-two" aria-hidden="true" />
+        </section>
+        <section className="auth-card">
+          <div className="auth-mobile-brand">
+            <div className="auth-brand-mark" aria-hidden="true"><span>hA</span></div>
+            <strong>healthAgent</strong>
+          </div>
+          <span className="auth-card-kicker">欢迎回来</span>
+          <h2>登录理赔工作台</h2>
+          <p>使用企业统一身份认证账号安全登录。</p>
+          {error && <div className="auth-error" role="alert"><strong>登录遇到问题</strong><span>{error}</span></div>}
+          <button className="auth-login-button" type="button" onClick={() => void login()}>
+            <span className="auth-login-icon" aria-hidden="true">→</span>
+            使用统一身份认证登录
+          </button>
+          <div className="auth-security-note"><span aria-hidden="true">✓</span>由 Keycloak 提供安全身份认证</div>
+          <small className="auth-help">如无法登录，请联系系统管理员确认账号与角色权限。</small>
+        </section>
+      </div>
+      <footer className="auth-footer">© 2026 healthAgent · 企业级团体健康险理赔平台</footer>
     </main>
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

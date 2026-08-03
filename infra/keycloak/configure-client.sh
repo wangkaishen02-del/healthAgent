@@ -15,6 +15,12 @@ if [ -z "$client_id" ]; then
   exit 1
 fi
 
+/opt/keycloak/bin/kcadm.sh update realms/healthagent \
+  -s 'loginTheme=healthagent' \
+  -s 'internationalizationEnabled=true' \
+  -s 'defaultLocale=zh-CN' \
+  -s 'supportedLocales=["zh-CN","en"]'
+
 /opt/keycloak/bin/kcadm.sh update "clients/$client_id" -r healthagent \
   -s "rootUrl=$PUBLIC_BASE_URL" \
   -s "baseUrl=$PUBLIC_BASE_URL" \

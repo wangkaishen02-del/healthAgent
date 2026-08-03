@@ -57,6 +57,7 @@ services:
       - "127.0.0.1:18081:8080"
     volumes:
       - ./infra/keycloak/realm-healthagent.json:/opt/keycloak/data/import/realm-healthagent.json:ro
+      - ./infra/keycloak/themes/healthagent:/opt/keycloak/themes/healthagent:ro
     depends_on:
       keycloak-postgres:
         condition: service_healthy
