@@ -21,6 +21,7 @@ const ADDRESS_KEYS = /(?:address|occurredLocation|hospitalAddress|地址|事故�
 
 export function minimizeAssistantData(value: unknown, key = "", depth = 0): unknown {
   if (depth > 8) return "[已裁剪：嵌套层级过深]";
+  if (value === undefined) return undefined;
   if (value === null || typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "string") {
     if (OCR_TEXT_KEYS.test(key)) return `[已裁剪 OCR 正文，共 ${[...value].length} 字符]`;

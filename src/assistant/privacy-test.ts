@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { ExternalDataProtector, minimizeAssistantData, redactSensitiveText } from "./privacy.ts";
 
+assert.equal(minimizeAssistantData(undefined), undefined);
+assert.deepEqual(
+  minimizeAssistantData({ currentPagePath: undefined, actorRoles: ["claim_viewer"] }),
+  { currentPagePath: undefined, actorRoles: ["claim_viewer"] },
+);
+
 const protector = new ExternalDataProtector();
 const original = JSON.stringify({
   insuredName: "张晨",

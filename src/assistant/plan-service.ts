@@ -138,6 +138,13 @@ async function writeAssistantLog(entry: AssistantLogEntry) {
 function buildContextualRules(userText: string, context?: AssistantContinuationContext) {
   const scope = `${userText}\n${context?.currentPagePath?.join("/") ?? ""}`.replace(/\s+/g, "");
   const rules: string[] = [];
+  if (/^(?:请)?(?:帮我)?(?:处理|办理|操作)(?:一下)?[。！!？?]*$/.test(userText.replace(/\s+/g, ""))) {
+    rules.push("用户没有说明要处理的业务或对象。立即使用 ask_user 追问具体任务，requestedFields 使用 taskDescription；不要反复发现注册信息，也不要自行选择页面。");
+  }
+  if (/(撤件|提交审核|审核结案|理算回退|审核回退)/.test(scope)
+    && !/(CL[A-Z0-9-]{6,}|GI[A-Z0-9-]{6,}|\d{15,18}[0-9Xx]?|[\u4e00-\u9fa5·]{2,4}(?:的案件|的保单))/i.test(scope)) {
+    rules.push("用户要求执行案件流转但没有提供定位条件。优先使用 ask_user 询问案件号，requestedFields 使用 caseNo；同时告知不知道案件号时也可以提供被保人姓名或证件号。不得用保单号代替案件号。");
+  }
   if (/(案件|CL[A-Z0-9-]{6,}|案件查询|受理立案)/i.test(scope)) {
     rules.push("案件号与保单号必须严格区分：CL 是案件号，GI 是保单号。仅查询案件时使用只读案件查询页；只有明确修改、提交或撤件时才进入受理立案。用户已给案件号时不得再索要其他定位条件。");
   }

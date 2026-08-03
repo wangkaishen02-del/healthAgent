@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { AssistantGraphService } from "../../apps/api/src/assistant/assistant-graph.service.ts";
-import { requestAgentPlan } from "./plan-service.ts";
+import { buildSystemPrompt, requestAgentPlan } from "./plan-service.ts";
+
+assert.match(buildSystemPrompt("帮我处理一下"), /requestedFields 使用 taskDescription/);
+assert.match(buildSystemPrompt("帮我撤件"), /优先使用 ask_user 询问案件号/);
 
 const graphService = new AssistantGraphService();
 const fakePlanner: typeof requestAgentPlan = async (text, _provider, context) => {
