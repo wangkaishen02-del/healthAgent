@@ -19,6 +19,7 @@ import {
   getAutomationConfiguration,
   listInsuredPolicyLedgers,
   listStandardFormulas,
+  queryStandardFormulas,
   rollbackAutomaticCalculation,
   referenceStandardFormula,
   runAutomaticCalculation,
@@ -46,6 +47,7 @@ export class CalculationService {
   saveBenefitFormula(input: Parameters<typeof saveBenefitFormula>[0]) { return saveBenefitFormula(input); }
   createStandardFormula(policyId: string, benefitId: string) { return createStandardFormula(policyId, benefitId); }
   listStandardFormulas() { return listStandardFormulas(); }
+  queryStandardFormulas(input: Parameters<typeof queryStandardFormulas>[0]) { return queryStandardFormulas(input); }
   createManagedStandardFormula(input: Parameters<typeof createManagedStandardFormula>[0]) { return createManagedStandardFormula(input); }
   updateManagedStandardFormula(input: Parameters<typeof updateManagedStandardFormula>[0]) { return updateManagedStandardFormula(input); }
   deleteManagedStandardFormula(id: number) { return deleteManagedStandardFormula(id); }

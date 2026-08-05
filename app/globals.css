@@ -3337,6 +3337,33 @@ fieldset.claim-form-grid {
   scrollbar-gutter: stable;
 }
 
+.standard-formula-page.list-view {
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow-y: hidden;
+}
+
+.standard-formula-query-panel,
+.standard-formula-list-panel,
+.standard-formula-list-panel .standard-formula-table {
+  margin-bottom: 0;
+}
+
+.standard-formula-query-form {
+  grid-template-columns: minmax(320px, 2fr) auto;
+  margin-top: 14px;
+}
+
+.standard-formula-list-panel .standard-formula-table {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.standard-formula-list-panel .pagination {
+  flex: 0 0 auto;
+}
+
 .standard-formula-header,
 .standard-formula-toolbar,
 .standard-formula-tag-editor > div,

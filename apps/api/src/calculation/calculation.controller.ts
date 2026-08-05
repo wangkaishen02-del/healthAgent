@@ -199,8 +199,13 @@ export class AutomaticCalculationController {
   }
 
   @Get("standard-formulas")
-  standardFormulas() {
-    return this.calculation.listStandardFormulas();
+  standardFormulas(@Query("page") page?: string, @Query("pageSize") pageSize?: string, @Query("keyword") keyword?: string) {
+    const parsedPage = Number(page ?? 1);
+    const parsedPageSize = Number(pageSize ?? 10);
+    if (!Number.isInteger(parsedPage) || parsedPage <= 0 || !Number.isInteger(parsedPageSize) || parsedPageSize <= 0 || parsedPageSize > 100) {
+      throw new BadRequestException("invalid_standard_formula_pagination");
+    }
+    return this.calculation.queryStandardFormulas({ page: parsedPage, pageSize: parsedPageSize, keyword });
   }
 
   @Post("standard-formulas")

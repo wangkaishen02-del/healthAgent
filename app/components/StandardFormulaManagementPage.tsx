@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import { apiFetch } from "../../src/api/client";
 import type { CalculationVariableCategory, CalculationVariableView, FormulaStep, StandardFormulaView } from "../../src/calculation/automation-types";
@@ -15,6 +15,7 @@ import {
 } from "./CalculationConfigSupport";
 
 type EditorMode = "create" | "view" | "edit";
+const PAGE_SIZE = 10;
 type FormulaDraft = {
   id?: number;
   formulaCode?: string;
@@ -41,6 +42,9 @@ function standardFormulaVariableOptionLabel(variable: CalculationVariableView) {
 const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(function StandardFormulaManagementPage(_, assistantRef) {
   const [items, setItems] = useState<StandardFormulaView[]>([]);
   const [keyword, setKeyword] = useState("");
+  const [queryKeyword, setQueryKeyword] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
   const [mode, setMode] = useState<EditorMode | null>(null);
@@ -58,22 +62,27 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
   const [fixedParameterOperator, setFixedParameterOperator] = useState<"" | "=" | "≠">("");
   const [fixedParameterValue, setFixedParameterValue] = useState("");
 
-  async function load() {
+  async function load(nextPage = page, nextKeyword = queryKeyword) {
     setLoading(true);
-    const response = await apiFetch("/api/automatic-calculation/standard-formulas", { cache: "no-store" });
-    const result = await response.json() as StandardFormulaView[] | { message?: string };
+    const params = new URLSearchParams({ page: String(nextPage), pageSize: String(PAGE_SIZE) });
+    if (nextKeyword.trim()) params.set("keyword", nextKeyword.trim());
+    const response = await apiFetch(`/api/automatic-calculation/standard-formulas?${params.toString()}`, { cache: "no-store" });
+    const result = await response.json() as { items?: StandardFormulaView[]; total?: number; page?: number; message?: string };
     setLoading(false);
-    if (!response.ok || !Array.isArray(result)) {
-      setMessage(`标准公式加载失败：${Array.isArray(result) ? "请稍后重试" : result.message ?? "请稍后重试"}`);
+    if (!response.ok || !Array.isArray(result.items)) {
+      setMessage(`标准公式加载失败：${result.message ?? "请稍后重试"}`);
       return;
     }
-    setItems(result.map((item) => ({
+    setItems(result.items.map((item) => ({
       ...item,
       tags: Array.isArray(item.tags) ? item.tags : [],
       steps: Array.isArray(item.steps) ? item.steps : [],
       referenceCount: Number.isFinite(item.referenceCount) ? item.referenceCount : 0,
       updatedAt: item.updatedAt ?? item.createdAt,
     })));
+    setTotal(result.total ?? 0);
+    setPage(result.page ?? nextPage);
+    setQueryKeyword(nextKeyword.trim());
     setMessage("");
   }
 
@@ -87,7 +96,7 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
   }
 
   useEffect(() => {
-    void load();
+    void load(1, "");
     void (async () => {
       const response = await apiFetch("/api/calculation-parameters", { cache: "no-store" });
       if (!response.ok) return;
@@ -99,11 +108,7 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
     })();
   }, []);
 
-  const filteredItems = useMemo(() => {
-    const normalized = keyword.trim().toLowerCase();
-    if (!normalized) return items;
-    return items.filter((item) => [item.formulaCode, item.formulaName, ...(item.tags ?? [])].some((value) => value.toLowerCase().includes(normalized)));
-  }, [items, keyword]);
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const formulaLibraryVariables = [...new Map(
     [
@@ -330,9 +335,16 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
       setMessage(`标准公式删除失败：${result.message ?? "请稍后重试"}`);
       return;
     }
-    setItems((current) => current.filter((formula) => formula.id !== item.id));
+    const remainingOnPage = items.length - 1;
     if (draft.id === item.id) setMode(null);
+    await load(remainingOnPage === 0 && page > 1 ? page - 1 : page, queryKeyword);
     setMessage(result.unlinkedReferenceCount ? `标准公式已删除，并解除 ${result.unlinkedReferenceCount} 个责任的引用关系。` : "标准公式已删除。");
+  }
+
+  function returnToList() {
+    setMode(null);
+    setMessage("");
+    void load(page, queryKeyword);
   }
 
   useImperativeHandle(assistantRef, () => ({
@@ -341,41 +353,45 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
       return { type: "operation_error", reason: "field_not_supported", fieldId };
     },
     async executeAction(actionId) {
-      if (actionId === "refresh") { await load(); return { type: "page_action", pageId: "standard_formula_management", actionId }; }
+      if (actionId === "refresh") { await load(page, queryKeyword); return { type: "page_action", pageId: "standard_formula_management", actionId }; }
       if (actionId === "new_formula") { startCreate(); return { type: "page_action", pageId: "standard_formula_management", actionId }; }
-      if (actionId === "reset") { setKeyword(""); setMode(null); return { type: "page_action", pageId: "standard_formula_management", actionId }; }
+      if (actionId === "reset") { setKeyword(""); setMode(null); await load(1, ""); return { type: "page_action", pageId: "standard_formula_management", actionId }; }
       return { type: "operation_error", reason: "action_not_supported", actionId };
     },
     async executeRowAction(actionId, row) {
-      const item = filteredItems[row - 1];
+      const item = items[row - 1];
       if (!item) return { type: "operation_error", reason: "row_not_found", row };
       if (actionId === "view") { openItem(item, "view"); return { type: "detail_view", pageId: "standard_formula_management", itemId: item.id }; }
       if (actionId === "edit") { openItem(item, "edit"); return { type: "edit_view", pageId: "standard_formula_management", itemId: item.id }; }
       return { type: "operation_error", reason: "row_action_not_supported", actionId };
     },
     getRuntimeFieldOptions() { return {}; },
-  }), [filteredItems]);
+  }), [items, page, queryKeyword]);
 
   const readOnly = mode === "view";
   return (
-    <div className="standard-formula-page">
-      <section className="panel standard-formula-header">
-        <div><div className="section-title">标准公式管理</div><p>统一维护可复用的责任理算公式。编辑会同步到仍在引用该公式的责任。</p></div>
-        <div className="page-header-actions"><button type="button" onClick={() => void load()} disabled={loading}>刷新</button><button type="button" onClick={startCreate} disabled={loading}>新增标准公式</button></div>
-      </section>
-      <section className="panel standard-formula-list-panel">
-        <div className="standard-formula-toolbar"><label><span>公式编号 / 名称 / 标签</span><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入关键词筛选" /></label><span className="muted">共 {filteredItems.length} 条</span></div>
-        {message && !mode ? <div className={`config-message ${message.includes("已") ? "success" : ""}`}>{message}</div> : null}
-        <div className="table-wrapper standard-formula-table"><table><thead><tr><th>公式编号</th><th>公式名称</th><th>标签</th><th>步骤</th><th>引用责任</th><th>更新时间</th><th className="actions-col">操作</th></tr></thead><tbody>
-          {filteredItems.map((item) => <tr key={item.id}><td><code>{item.formulaCode}</code></td><td><strong>{item.formulaName}</strong></td><td><div className="standard-formula-tags">{item.tags?.length ? item.tags.map((tag) => <span key={tag}>{tag}</span>) : <span className="muted">未设置</span>}</div></td><td>{(item.steps?.length ?? 0) + 1} 步</td><td>{item.referenceCount ?? 0}</td><td>{item.updatedAt ? new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="actions-cell"><button type="button" className="action-link" onClick={() => openItem(item, "view")}>查看</button><button type="button" className="action-link" onClick={() => openItem(item, "edit")}>编辑</button><button type="button" className="danger-link" onClick={() => void remove(item)}>删除</button></td></tr>)}
-          {!loading && !filteredItems.length ? <tr><td colSpan={7} className="config-empty-cell">暂无标准公式，可点击“新增标准公式”创建。</td></tr> : null}
-        </tbody></table></div>
-      </section>
-
-      {mode ? <div className="standard-formula-workspace">
+    <div className={`standard-formula-page ${mode ? "child-view" : "list-view"}`}>
+      {!mode ? <>
+        <section className="panel query-panel standard-formula-query-panel">
+          <div className="panel-title-row"><div><div className="section-title">标准公式管理</div><small className="muted">统一维护可复用的责任理算公式。</small></div><button type="button" onClick={startCreate} disabled={loading}>新增标准公式</button></div>
+          <form className="query-form standard-formula-query-form" onSubmit={(event) => { event.preventDefault(); void load(1, keyword); }}>
+            <label><span>公式编号 / 名称 / 标签</span><input className="filter-control" value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="请输入公式编号、名称或完整标签" /></label>
+            <div className="query-actions"><button type="submit" disabled={loading}>查询</button><button type="button" className="secondary-button" disabled={loading} onClick={() => { setKeyword(""); void load(1, ""); }}>重置</button></div>
+          </form>
+        </section>
+        <section className="panel result-panel standard-formula-list-panel">
+          <div className="panel-title-row"><div className="section-title">查询结果</div><div className="page-header-actions"><span className="muted">共 {total} 条</span><button type="button" className="secondary-button" onClick={() => void load(page, queryKeyword)} disabled={loading}>刷新</button></div></div>
+          {message ? <div className={`config-message ${message.includes("已") ? "success" : ""}`}>{message}</div> : null}
+          <div className="table-wrapper standard-formula-table"><table><thead><tr><th>公式编号</th><th>公式名称</th><th>标签</th><th>步骤</th><th>引用责任</th><th>更新时间</th><th className="actions-col">操作</th></tr></thead><tbody>
+            {items.map((item) => <tr key={item.id}><td><code>{item.formulaCode}</code></td><td><strong>{item.formulaName}</strong></td><td><div className="standard-formula-tags">{item.tags?.length ? item.tags.map((tag) => <span key={tag}>{tag}</span>) : <span className="muted">未设置</span>}</div></td><td>{(item.steps?.length ?? 0) + 1} 步</td><td>{item.referenceCount ?? 0}</td><td>{item.updatedAt ? new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false }) : "-"}</td><td className="actions-cell"><button type="button" className="action-link" onClick={() => openItem(item, "view")}>查看</button><button type="button" className="action-link" onClick={() => openItem(item, "edit")}>编辑</button><button type="button" className="danger-link" onClick={() => void remove(item)}>删除</button></td></tr>)}
+            {!loading && !items.length ? <tr><td colSpan={7} className="config-empty-cell">没有查询到标准公式。</td></tr> : null}
+          </tbody></table></div>
+          <div className="pagination"><span className="pagination-info">第 {page} / {totalPages} 页，共 {total} 条，每页 {PAGE_SIZE} 条</span><button type="button" className="page-btn" disabled={page <= 1 || loading} onClick={() => void load(page - 1, queryKeyword)}>上一页</button><button type="button" className="page-btn" disabled={page >= totalPages || loading} onClick={() => void load(page + 1, queryKeyword)}>下一页</button></div>
+        </section>
+      </> : <div className="standard-formula-workspace standard-formula-child-page">
         <section className="panel standard-formula-editor-heading">
           <div><div className="section-title">{mode === "create" ? "新增标准公式" : mode === "edit" ? "编辑标准公式" : "查看标准公式"}</div>{draft.formulaCode ? <small className="muted">公式编号：{draft.formulaCode} · 当前引用 {draft.referenceCount} 个责任</small> : <small className="muted">编辑方式与责任公式配置一致，先组合表达式，再加入步骤列表。</small>}</div>
-          <div className="page-header-actions">{readOnly ? <button type="button" onClick={() => setMode("edit")}>编辑</button> : <button type="button" onClick={() => void save()} disabled={loading}>{loading ? "保存中..." : "保存标准公式"}</button>}<button type="button" className="secondary-button" onClick={() => setMode(null)}>关闭</button></div>
+          <div className="page-header-actions">{readOnly ? <button type="button" onClick={() => setMode("edit")}>编辑</button> : <button type="button" onClick={() => void save()} disabled={loading}>{loading ? "保存中..." : "保存标准公式"}</button>}<button type="button" className="page-back-button" onClick={returnToList}>返回列表</button></div>
         </section>
 
         {message ? <div className={`config-message standard-formula-editor-message ${message.includes("已") ? "success" : ""}`}>{message}</div> : null}
@@ -420,7 +436,7 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
             </tbody></table></div>
           </section>
         </fieldset>
-      </div> : null}
+      </div>}
     </div>
   );
 });

@@ -856,6 +856,30 @@ export async function listStandardFormulas() {
   return formulas.map(mapManagedStandardFormula);
 }
 
+export async function queryStandardFormulas(input: { page: number; pageSize: number; keyword?: string }) {
+  const page = Math.max(1, input.page);
+  const pageSize = Math.min(100, Math.max(1, input.pageSize));
+  const keyword = input.keyword?.trim() ?? "";
+  const where: Prisma.StandardCalculationFormulaWhereInput = keyword ? {
+    OR: [
+      { formulaCode: { contains: keyword, mode: "insensitive" } },
+      { formulaName: { contains: keyword, mode: "insensitive" } },
+      { tags: { has: keyword } },
+    ],
+  } : {};
+  const [total, formulas] = await prisma.$transaction([
+    prisma.standardCalculationFormula.count({ where }),
+    prisma.standardCalculationFormula.findMany({
+      where,
+      include: { _count: { select: { referencedFormulas: true } } },
+      orderBy: { updatedAt: "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
+  ]);
+  return { total, page, pageSize, items: formulas.map(mapManagedStandardFormula) };
+}
+
 export async function createManagedStandardFormula(input: {
   formulaName: string;
   matchExpression: string;

@@ -6,6 +6,7 @@ import {
   deleteManagedStandardFormula,
   getAutomationConfiguration,
   listStandardFormulas,
+  queryStandardFormulas,
   referenceStandardFormula,
   saveBenefitFormula,
   updateManagedStandardFormula,
@@ -52,6 +53,12 @@ try {
   assert.deepEqual(updatedStandard.tags, ["医疗", "住院"]);
   assert.equal(updatedStandard.referenceCount, 1);
   assert.equal((await listStandardFormulas()).find((item) => item.id === standard.id)?.formulaName, updatedStandard.formulaName);
+  const queried = await queryStandardFormulas({ page: 1, pageSize: 1, keyword: standard.formulaCode });
+  assert.equal(queried.page, 1);
+  assert.equal(queried.pageSize, 1);
+  assert.equal(queried.total, 1);
+  assert.equal(queried.items[0]?.id, standard.id);
+  assert((await queryStandardFormulas({ page: 1, pageSize: 100, keyword: "医疗" })).items.some((item) => item.id === standard.id));
   assert.equal((await prisma.benefitCalculationFormula.findUnique({ where: { benefitId: targetBenefit.id } }))?.formulaName, updatedStandard.formulaName);
 
   const configuration = await getAutomationConfiguration(targetBenefit.policyProduct.policyId);
