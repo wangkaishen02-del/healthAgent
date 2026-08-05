@@ -52,9 +52,12 @@ export type StandardFormulaView = {
   formulaName: string;
   matchExpression: string;
   steps: FormulaStep[];
+  tags: string[];
+  referenceCount: number;
   sourcePolicyId?: string;
   sourceBenefitId?: string;
   createdAt: string;
+  updatedAt: string;
 };
 
 export type CalculationVariableView = {

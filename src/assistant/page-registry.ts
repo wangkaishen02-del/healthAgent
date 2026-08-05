@@ -1,5 +1,5 @@
 export type AssistantMenuId = "comprehensive_query" | "claim_processing" | "underwriting_config";
-export type RegisteredPageId = "policy_query" | "policy_detail" | "claim_query" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config";
+export type RegisteredPageId = "policy_query" | "policy_detail" | "claim_query" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config" | "standard_formula_management";
 
 export type RegisteredField = {
   fieldId: string;
@@ -67,7 +67,10 @@ const menus: MenuRegistration[] = [
     menuId: "underwriting_config",
     label: "理赔配置",
     description: "维护理赔和理算相关的业务配置。",
-    pages: [{ pageId: "calculation_config", label: "保单理算配置", description: "按保单、保障计划、险种和责任维护理算参数。" }],
+    pages: [
+      { pageId: "calculation_config", label: "保单理算配置", description: "按保单、保障计划、险种和责任维护理算参数。" },
+      { pageId: "standard_formula_management", label: "标准公式管理", description: "维护可被责任引用的标准公式和自定义标签。" },
+    ],
   },
 ];
 
@@ -532,6 +535,28 @@ const pages: PageRegistration[] = [
           { actionId: "request_delete_parameter", label: "删除", description: "请求删除选中行；需要页面确认动作后才会实际删除。", kind: "input", target: "row" },
           { actionId: "confirm_delete_parameter", label: "确认删除", description: "确认删除当前待删除参数。", kind: "input", target: "page" },
           { actionId: "cancel_delete_parameter", label: "取消删除", description: "取消当前删除请求。", kind: "input", target: "page" },
+        ],
+      },
+    ],
+  },
+  {
+    pageId: "standard_formula_management",
+    label: "标准公式管理",
+    description: "新增、查看、编辑和删除标准理算公式，并维护自定义标签。",
+    menuId: "underwriting_config",
+    pagePath: ["理赔配置", "标准公式管理"],
+    regions: [
+      {
+        regionId: "standard_formula_list",
+        label: "标准公式列表",
+        description: "按公式编号、名称或标签筛选标准公式。",
+        fields: [{ fieldId: "keyword", label: "公式关键词", type: "text", description: "公式编号、名称或自定义标签。" }],
+        actions: [
+          { actionId: "refresh", label: "刷新", description: "刷新标准公式列表。", kind: "query", target: "page" },
+          { actionId: "reset", label: "重置", description: "清空筛选并关闭详情。", kind: "input", target: "page" },
+          { actionId: "new_formula", label: "新增标准公式", description: "打开标准公式新增编辑器。", kind: "input", target: "page" },
+          { actionId: "view", label: "查看", description: "查看选中标准公式。", kind: "view", target: "row" },
+          { actionId: "edit", label: "编辑", description: "编辑选中标准公式。", kind: "input", target: "row" },
         ],
       },
     ],

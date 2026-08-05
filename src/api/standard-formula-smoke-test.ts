@@ -3,10 +3,12 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.ts";
 import {
   createStandardFormula,
+  deleteManagedStandardFormula,
   getAutomationConfiguration,
+  listStandardFormulas,
   referenceStandardFormula,
   saveBenefitFormula,
-  unlinkStandardFormula,
+  updateManagedStandardFormula,
 } from "../calculation/automation-service.ts";
 
 const source = await prisma.benefitCalculationFormula.findFirst({
@@ -40,6 +42,18 @@ try {
   assert.equal(referenced.standardFormulaCode, standard.formulaCode);
   assert.equal(referenced.standardFormulaId, standard.id);
 
+  const updatedStandard = await updateManagedStandardFormula({
+    id: standard.id,
+    formulaName: `${standard.formulaName}测试`,
+    matchExpression: standard.matchExpression,
+    steps: standard.steps,
+    tags: ["医疗", "住院", "医疗"],
+  });
+  assert.deepEqual(updatedStandard.tags, ["医疗", "住院"]);
+  assert.equal(updatedStandard.referenceCount, 1);
+  assert.equal((await listStandardFormulas()).find((item) => item.id === standard.id)?.formulaName, updatedStandard.formulaName);
+  assert.equal((await prisma.benefitCalculationFormula.findUnique({ where: { benefitId: targetBenefit.id } }))?.formulaName, updatedStandard.formulaName);
+
   const configuration = await getAutomationConfiguration(targetBenefit.policyProduct.policyId);
   const configuredTarget = configuration.formulas.find((item) => item.benefitId === targetBenefit.id);
   assert.equal(configuredTarget?.standardFormulaCode, standard.formulaCode, "保单理赔配置应返回标准公式编号");
@@ -54,13 +68,16 @@ try {
     /formula_reference_locked/,
   );
 
-  const unlinked = await unlinkStandardFormula(targetBenefit.policyProduct.policyId, targetBenefit.id);
-  assert.equal(unlinked.standardFormulaId, undefined);
+  const deleted = await deleteManagedStandardFormula(standard.id);
+  standardId = undefined;
+  assert.equal(deleted.unlinkedReferenceCount, 1);
+  const unlinked = await prisma.benefitCalculationFormula.findUniqueOrThrow({ where: { benefitId: targetBenefit.id } });
+  assert.equal(unlinked.standardFormulaId, null);
   await saveBenefitFormula({
     policyId: targetBenefit.policyProduct.policyId,
     benefitId: targetBenefit.id,
-    matchExpression: unlinked.matchExpression,
-    steps: unlinked.steps,
+    matchExpression: unlinked.matchExpression ?? "",
+    steps: referenced.steps,
   });
 } finally {
   await prisma.benefitCalculationFormula.deleteMany({ where: { benefitId: targetBenefit.id } });

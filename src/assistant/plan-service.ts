@@ -445,6 +445,7 @@ function explicitRequestedPage(userText: string) {
   if (/受理立案/.test(text)) return "claim_registration";
   if (/录入与理算|录入理算|理算页面/.test(text)) return "claim_entry_calculation";
   if (/审核结案|审核页面/.test(text)) return "claim_review_completion";
+  if (/标准公式/.test(text)) return "standard_formula_management";
   if (/理算配置|配置页面/.test(text)) return "calculation_config";
   return null;
 }

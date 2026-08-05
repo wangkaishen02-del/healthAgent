@@ -349,7 +349,7 @@ export async function getAutomationConfiguration(policyId: string, claimCaseId?:
       include: { standardFormula: { select: { formulaCode: true } } },
       orderBy: { updatedAt: "desc" },
     }),
-    prisma.standardCalculationFormula.findMany({ orderBy: { createdAt: "desc" } }),
+    prisma.standardCalculationFormula.findMany({ include: { _count: { select: { referencedFormulas: true } } }, orderBy: { createdAt: "desc" } }),
     prisma.calculationParameterCatalog.findMany({
       where: { OR: [{ policyId: null }, { policyId }] },
       orderBy: [{ category: "asc" }, { parameterName: "asc" }],
@@ -400,9 +400,12 @@ export async function getAutomationConfiguration(policyId: string, claimCaseId?:
     formulaName: formula.formulaName,
     matchExpression: formula.matchExpression,
     steps: normalizeFormulaSteps(formula.steps),
+    tags: formula.tags ?? [],
+    referenceCount: formula._count.referencedFormulas,
     sourcePolicyId: formula.sourcePolicyId ?? undefined,
     sourceBenefitId: formula.sourceBenefitId ?? undefined,
     createdAt: formula.createdAt.toISOString(),
+    updatedAt: formula.updatedAt.toISOString(),
   }));
   const inheritedParameterVariables = benefits.flatMap((benefit) => {
     const targetByScope = {
@@ -786,10 +789,135 @@ export async function createStandardFormula(policyId: string, benefitId: string)
     formulaName: standard.formulaName,
     matchExpression: standard.matchExpression,
     steps: normalizeFormulaSteps(standard.steps),
+    tags: standard.tags ?? [],
+    referenceCount: 0,
     sourcePolicyId: standard.sourcePolicyId ?? undefined,
     sourceBenefitId: standard.sourceBenefitId ?? undefined,
     createdAt: standard.createdAt.toISOString(),
+    updatedAt: standard.updatedAt.toISOString(),
   } satisfies StandardFormulaView;
+}
+
+function normalizeStandardFormulaTags(tags: string[]) {
+  return [...new Set(tags.map((tag) => tag.trim()).filter(Boolean))].slice(0, 20).map((tag) => tag.slice(0, 30));
+}
+
+async function validateManagedStandardFormula(input: {
+  formulaName: string;
+  matchExpression: string;
+  steps: FormulaStep[];
+}) {
+  if (!input.formulaName.trim()) throw new Error("standard_formula_name_required");
+  if (!input.matchExpression.trim()) throw new Error("formula_match_expression_required");
+  if (!input.steps.length) throw new Error("formula_step_required");
+  if (!input.steps.some((step) => step.result)) throw new Error("formula_result_step_required");
+  if (new Set(input.steps.map((step) => step.name.trim())).size !== input.steps.length || input.steps.some((step) => !step.name.trim())) {
+    throw new Error("formula_step_name_duplicate");
+  }
+  for (let index = 0; index < input.steps.length; index += 1) {
+    const laterNames = input.steps.slice(index + 1).map((step) => step.name.trim()).filter(Boolean);
+    if (calculationExpressionReferencesAny(input.steps[index].expression, laterNames)) throw new Error("formula_step_dependency_order_invalid");
+  }
+}
+
+function mapManagedStandardFormula(formula: {
+  id: number;
+  formulaCode: string;
+  formulaName: string;
+  matchExpression: string;
+  steps: Prisma.JsonValue;
+  tags: string[];
+  sourcePolicyId: string | null;
+  sourceBenefitId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  _count: { referencedFormulas: number };
+}): StandardFormulaView {
+  return {
+    id: formula.id,
+    formulaCode: formula.formulaCode,
+    formulaName: formula.formulaName,
+    matchExpression: formula.matchExpression,
+    steps: normalizeFormulaSteps(formula.steps),
+    tags: formula.tags ?? [],
+    referenceCount: formula._count?.referencedFormulas ?? 0,
+    sourcePolicyId: formula.sourcePolicyId ?? undefined,
+    sourceBenefitId: formula.sourceBenefitId ?? undefined,
+    createdAt: formula.createdAt.toISOString(),
+    updatedAt: formula.updatedAt.toISOString(),
+  };
+}
+
+export async function listStandardFormulas() {
+  const formulas = await prisma.standardCalculationFormula.findMany({
+    include: { _count: { select: { referencedFormulas: true } } },
+    orderBy: { updatedAt: "desc" },
+  });
+  return formulas.map(mapManagedStandardFormula);
+}
+
+export async function createManagedStandardFormula(input: {
+  formulaName: string;
+  matchExpression: string;
+  steps: FormulaStep[];
+  tags: string[];
+}) {
+  await validateManagedStandardFormula(input);
+  const formula = await prisma.standardCalculationFormula.create({
+    data: {
+      formulaName: input.formulaName.trim(),
+      matchExpression: input.matchExpression.trim(),
+      steps: input.steps as unknown as Prisma.InputJsonValue,
+      tags: normalizeStandardFormulaTags(input.tags),
+    },
+    include: { _count: { select: { referencedFormulas: true } } },
+  });
+  return mapManagedStandardFormula(formula);
+}
+
+export async function updateManagedStandardFormula(input: {
+  id: number;
+  formulaName: string;
+  matchExpression: string;
+  steps: FormulaStep[];
+  tags: string[];
+}) {
+  await validateManagedStandardFormula(input);
+  if (!await prisma.standardCalculationFormula.findUnique({ where: { id: input.id }, select: { id: true } })) {
+    throw new Error("standard_formula_not_found");
+  }
+  const data = {
+    formulaName: input.formulaName.trim(),
+    matchExpression: input.matchExpression.trim(),
+    steps: input.steps as unknown as Prisma.InputJsonValue,
+    tags: normalizeStandardFormulaTags(input.tags),
+  };
+  return prisma.$transaction(async (transaction) => {
+    const formula = await transaction.standardCalculationFormula.update({
+      where: { id: input.id },
+      data,
+      include: { _count: { select: { referencedFormulas: true } } },
+    });
+    await transaction.benefitCalculationFormula.updateMany({
+      where: { standardFormulaId: input.id },
+      data: { formulaName: data.formulaName, matchExpression: data.matchExpression, steps: data.steps },
+    });
+    return mapManagedStandardFormula(formula);
+  });
+}
+
+export async function deleteManagedStandardFormula(id: number) {
+  if (!await prisma.standardCalculationFormula.findUnique({ where: { id }, select: { id: true } })) {
+    throw new Error("standard_formula_not_found");
+  }
+  return prisma.$transaction(async (transaction) => {
+    const unlinked = await transaction.benefitCalculationFormula.updateMany({
+      where: { standardFormulaId: id },
+      data: { standardFormulaId: null },
+    });
+    await transaction.standardCalculationFormula.delete({ where: { id } });
+    return { success: true, unlinkedReferenceCount: unlinked.count };
+  });
 }
 
 export async function referenceStandardFormula(input: { policyId: string; benefitId: string; standardFormulaId: number }) {

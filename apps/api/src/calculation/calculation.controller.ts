@@ -198,6 +198,55 @@ export class AutomaticCalculationController {
       .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "standard_formula_save_failed"); });
   }
 
+  @Get("standard-formulas")
+  standardFormulas() {
+    return this.calculation.listStandardFormulas();
+  }
+
+  @Post("standard-formulas")
+  createManagedStandardFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.formulaName !== "string"
+      || typeof body.matchExpression !== "string"
+      || !Array.isArray(body.steps)
+      || !Array.isArray(body.tags)
+      || !body.tags.every((tag) => typeof tag === "string")) {
+      throw new BadRequestException("invalid_standard_formula");
+    }
+    return this.calculation.createManagedStandardFormula({
+      formulaName: body.formulaName,
+      matchExpression: body.matchExpression,
+      steps: body.steps as FormulaStep[],
+      tags: body.tags as string[],
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "standard_formula_save_failed"); });
+  }
+
+  @Put("standard-formulas")
+  updateManagedStandardFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.id !== "number"
+      || typeof body.formulaName !== "string"
+      || typeof body.matchExpression !== "string"
+      || !Array.isArray(body.steps)
+      || !Array.isArray(body.tags)
+      || !body.tags.every((tag) => typeof tag === "string")) {
+      throw new BadRequestException("invalid_standard_formula");
+    }
+    return this.calculation.updateManagedStandardFormula({
+      id: body.id,
+      formulaName: body.formulaName,
+      matchExpression: body.matchExpression,
+      steps: body.steps as FormulaStep[],
+      tags: body.tags as string[],
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "standard_formula_update_failed"); });
+  }
+
+  @Delete("standard-formulas")
+  deleteManagedStandardFormula(@Query("id") id?: string) {
+    const numericId = Number(id);
+    if (!Number.isInteger(numericId) || numericId <= 0) throw new BadRequestException("invalid_standard_formula_id");
+    return this.calculation.deleteManagedStandardFormula(numericId)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "standard_formula_delete_failed"); });
+  }
+
   @Post("formulas/reference")
   referenceStandardFormula(@Body() body: Record<string, unknown>) {
     if (typeof body.policyId !== "string"

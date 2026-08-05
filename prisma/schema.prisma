@@ -585,6 +585,7 @@ model StandardCalculationFormula {
   formulaName     String   @map("formula_name") @db.VarChar(150)
   matchExpression String   @map("match_expression") @db.Text
   steps           Json
+  tags            String[] @default([])
   sourcePolicyId  String?  @map("source_policy_id") @db.VarChar(50)
   sourceBenefitId String?  @map("source_benefit_id") @db.VarChar(50)
   createdAt       DateTime @default(now()) @map("created_at")

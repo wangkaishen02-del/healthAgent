@@ -10,6 +10,7 @@ const PAGE_ROLES: Record<RegisteredPageId, AssistantRole[]> = {
   claim_entry_calculation: ["claim_calculator"],
   claim_review_completion: ["claim_reviewer"],
   calculation_config: ["claim_admin"],
+  standard_formula_management: ["claim_admin"],
 };
 
 export function canAccessAssistantPage(pageId: string, roles: readonly string[] = []) {

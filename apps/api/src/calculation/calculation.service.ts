@@ -10,12 +10,15 @@ import type { SaveCalculationParameterInput } from "../../../../src/underwriting
 import type { CalculationParameterScope } from "../../../../src/underwriting/types.ts";
 import {
   createStandardFormula,
+  createManagedStandardFormula,
+  deleteManagedStandardFormula,
   deleteBenefitFormula,
   deleteClaimBill,
   deleteClaimDiseaseEntry,
   deleteClaimEventEntry,
   getAutomationConfiguration,
   listInsuredPolicyLedgers,
+  listStandardFormulas,
   rollbackAutomaticCalculation,
   referenceStandardFormula,
   runAutomaticCalculation,
@@ -25,6 +28,7 @@ import {
   saveClaimDiseaseEntry,
   saveClaimEventEntry,
   unlinkStandardFormula,
+  updateManagedStandardFormula,
   validateBenefitFormula,
 } from "../../../../src/calculation/automation-service.ts";
 import type { ClaimOperator } from "../../../../src/claims/types.ts";
@@ -41,6 +45,10 @@ export class CalculationService {
   saveAutomationVariable(input: Parameters<typeof saveAutomationVariable>[0]) { return saveAutomationVariable(input); }
   saveBenefitFormula(input: Parameters<typeof saveBenefitFormula>[0]) { return saveBenefitFormula(input); }
   createStandardFormula(policyId: string, benefitId: string) { return createStandardFormula(policyId, benefitId); }
+  listStandardFormulas() { return listStandardFormulas(); }
+  createManagedStandardFormula(input: Parameters<typeof createManagedStandardFormula>[0]) { return createManagedStandardFormula(input); }
+  updateManagedStandardFormula(input: Parameters<typeof updateManagedStandardFormula>[0]) { return updateManagedStandardFormula(input); }
+  deleteManagedStandardFormula(id: number) { return deleteManagedStandardFormula(id); }
   referenceStandardFormula(input: Parameters<typeof referenceStandardFormula>[0]) { return referenceStandardFormula(input); }
   unlinkStandardFormula(policyId: string, benefitId: string) { return unlinkStandardFormula(policyId, benefitId); }
   validateBenefitFormula(input: Parameters<typeof validateBenefitFormula>[0]) { return validateBenefitFormula(input); }

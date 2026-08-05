@@ -7,6 +7,7 @@ import type { PageRegistration, RegisteredRegion } from "../src/assistant/page-r
 import { apiFetch } from "../src/api/client";
 import type { PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem } from "../src/underwriting/types";
 import CalculationConfigPage from "./components/CalculationConfigPage";
+import StandardFormulaManagementPage from "./components/StandardFormulaManagementPage";
 import ClaimEntryCalculationPage from "./components/ClaimEntryCalculationPage";
 import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
@@ -14,7 +15,7 @@ import { APP_ROLE_LABELS, useAuth, type AppRole } from "./auth/AuthProvider";
 import AuditLogPage from "./components/AuditLogPage";
 import { BasicView, BenefitsView, delay, formatPolicyStatus, INSURED_PAGE_SIZE, InsuredsView, Pagination, throwIfAssistantAborted } from "./components/PolicyWorkspaceViews";
 
-type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config" | "audit_logs";
+type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config" | "standard_formulas" | "audit_logs";
 type DrawerTab = "basic" | "benefits" | "insureds";
 type InsuredPolicyLedgerItem = {
   id: string;
@@ -100,6 +101,7 @@ function pageIdToMainTab(pageId: string): MainTab | null {
   if (pageId === "claim_entry_calculation") return "claim_entry_calculation";
   if (pageId === "claim_review_completion") return "claim_review_completion";
   if (pageId === "calculation_config") return "calculation_config";
+  if (pageId === "standard_formula_management") return "standard_formulas";
   return null;
 }
 
@@ -211,6 +213,7 @@ export default function Page() {
   const drawerDataRef = useRef<PolicyDetailView | null>(null);
   const insuredPlanIdRef = useRef("");
   const calculationConfigControllerRef = useRef<RegisteredPageController | null>(null);
+  const standardFormulaControllerRef = useRef<RegisteredPageController | null>(null);
   const claimQueryControllerRef = useRef<RegisteredPageController | null>(null);
   const claimRegistrationControllerRef = useRef<RegisteredPageController | null>(null);
   const claimEntryCalculationControllerRef = useRef<RegisteredPageController | null>(null);
@@ -231,6 +234,7 @@ export default function Page() {
       claim_entry_calculation: ["claim_calculator"],
       claim_review_completion: ["claim_reviewer"],
       calculation_config: ["claim_admin"],
+      standard_formulas: ["claim_admin"],
       audit_logs: ["claim_admin"],
     };
     if (!hasAnyRole(...requiredRoles[tab])) return;
@@ -401,6 +405,7 @@ export default function Page() {
     const steps: string[] = [];
     const getRegisteredPageController = (pageId: string) => {
       if (pageId === "calculation_config") return calculationConfigControllerRef.current;
+      if (pageId === "standard_formula_management") return standardFormulaControllerRef.current;
       if (pageId === "claim_query") return claimQueryControllerRef.current;
       if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
       if (pageId === "claim_entry_calculation") return claimEntryCalculationControllerRef.current;
@@ -565,6 +570,9 @@ export default function Page() {
         if (targetTab === "calculation_config") {
           await getRegisteredPageController("calculation_config")?.executeAction("reset");
         }
+        if (targetTab === "standard_formulas") {
+          await getRegisteredPageController("standard_formula_management")?.executeAction("reset");
+        }
         if (targetTab === "claim") {
           await getRegisteredPageController("claim_query")?.executeAction("reset");
         }
@@ -723,6 +731,7 @@ export default function Page() {
       Object.entries(runtimeOptionProviders).map(([fieldKey, provider]) => [fieldKey, provider()]),
     ) satisfies RuntimeFieldOptions;
     Object.assign(runtimeFieldOptions, calculationConfigControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, standardFormulaControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimQueryControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimRegistrationControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimEntryCalculationControllerRef.current?.getRuntimeFieldOptions() ?? {});
@@ -768,6 +777,8 @@ export default function Page() {
         ? ["综合查询", "保单信息查询"]
         : mainTab === "calculation_config"
           ? ["理赔配置", "保单理算配置"]
+          : mainTab === "standard_formulas"
+            ? ["理赔配置", "标准公式管理"]
           : mainTab === "claim_registration"
             ? ["理赔处理", "受理立案"]
             : mainTab === "claim_entry_calculation"
@@ -787,6 +798,8 @@ export default function Page() {
         ? "policy_query"
         : mainTab === "calculation_config"
           ? "calculation_config"
+          : mainTab === "standard_formulas"
+            ? "standard_formula_management"
           : mainTab === "claim_registration"
             ? "claim_registration"
             : mainTab === "claim_entry_calculation"
@@ -1031,6 +1044,9 @@ export default function Page() {
                 <button className="dropdown-item" onClick={() => { openMainTab("calculation_config"); setConfigMenuOpen(false); }}>
                   保单理算配置
                 </button>
+                <button className="dropdown-item" onClick={() => { openMainTab("standard_formulas"); setConfigMenuOpen(false); }}>
+                  标准公式管理
+                </button>
               </div>
             </div>}
             {hasAnyRole("claim_acceptor", "claim_calculator", "claim_reviewer") && <div className="menu-item">
@@ -1111,6 +1127,8 @@ export default function Page() {
                       ? "审核结案"
                     : tab === "calculation_config"
                       ? "保单理算配置"
+                      : tab === "standard_formulas"
+                        ? "标准公式管理"
                       : "操作审计";
             return (
               <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
@@ -1334,6 +1352,10 @@ export default function Page() {
 
         <section className={`page-section ${openTabs.includes("calculation_config") && mainTab === "calculation_config" ? "" : "hidden"}`}>
           <CalculationConfigPage ref={calculationConfigControllerRef} />
+        </section>
+
+        <section className={`page-section ${openTabs.includes("standard_formulas") && mainTab === "standard_formulas" ? "" : "hidden"}`}>
+          <StandardFormulaManagementPage ref={standardFormulaControllerRef} />
         </section>
       </main>
 

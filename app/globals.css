@@ -3325,6 +3325,184 @@ fieldset.claim-form-grid {
   opacity: .72;
 }
 
+.standard-formula-page {
+  display: grid;
+  gap: 14px;
+}
+
+.standard-formula-header,
+.standard-formula-toolbar,
+.standard-formula-tag-editor > div,
+.standard-formula-step-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.standard-formula-header p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.standard-formula-toolbar label {
+  display: grid;
+  gap: 5px;
+  width: min(460px, 60%);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.standard-formula-toolbar input,
+.standard-formula-basic-fields input,
+.standard-formula-basic-fields textarea,
+.standard-formula-tag-editor input,
+.standard-formula-step-card input,
+.standard-formula-step-card textarea,
+.standard-formula-step-card select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+}
+
+.standard-formula-table {
+  margin-top: 12px;
+}
+
+.standard-formula-table code {
+  color: #245f9f;
+  font-weight: 700;
+}
+
+.standard-formula-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.standard-formula-tags > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: #e9f2ff;
+  color: #2f639d;
+  font-size: 12px;
+}
+
+.standard-formula-tags > span.muted {
+  background: transparent;
+  color: var(--muted);
+}
+
+.standard-formula-tags button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.standard-formula-fieldset {
+  min-width: 0;
+  margin: 14px 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.standard-formula-fieldset:disabled {
+  opacity: .78;
+}
+
+.standard-formula-basic-fields {
+  display: grid;
+  grid-template-columns: minmax(260px, .7fr) minmax(420px, 1.3fr);
+  gap: 12px;
+}
+
+.standard-formula-basic-fields label,
+.standard-formula-step-card label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.standard-formula-basic-fields textarea,
+.standard-formula-step-card textarea {
+  min-height: 68px;
+  resize: vertical;
+}
+
+.standard-formula-tag-editor {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #f8faff;
+}
+
+.standard-formula-tag-editor > div:last-child {
+  justify-content: flex-start;
+}
+
+.standard-formula-tag-editor input {
+  max-width: 360px;
+}
+
+.standard-formula-step-heading {
+  margin-top: 18px;
+}
+
+.standard-formula-step-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.standard-formula-step-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.standard-formula-step-card {
+  display: grid;
+  grid-template-columns: 80px minmax(150px, .75fr) minmax(300px, 1.5fr) 150px 100px 50px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: #fbfcff;
+}
+
+.standard-formula-step-card .expression textarea {
+  min-height: 54px;
+}
+
+.standard-formula-result {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: center;
+  color: var(--text) !important;
+}
+
+.standard-formula-result input {
+  width: auto;
+}
+
+@media (max-width: 1100px) {
+  .standard-formula-basic-fields { grid-template-columns: 1fr; }
+  .standard-formula-step-card { grid-template-columns: 70px minmax(150px, 1fr) minmax(260px, 1.5fr); }
+}
+
 .formula-variable-groups {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
