@@ -41,7 +41,20 @@ export type BenefitFormulaView = {
   matchExpression: string;
   steps: FormulaStep[];
   enabled: boolean;
+  standardFormulaId?: number;
+  standardFormulaCode?: string;
   updatedAt?: string;
+};
+
+export type StandardFormulaView = {
+  id: number;
+  formulaCode: string;
+  formulaName: string;
+  matchExpression: string;
+  steps: FormulaStep[];
+  sourcePolicyId?: string;
+  sourceBenefitId?: string;
+  createdAt: string;
 };
 
 export type CalculationVariableView = {

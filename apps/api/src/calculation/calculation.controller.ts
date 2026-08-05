@@ -189,10 +189,43 @@ export class AutomaticCalculationController {
     }
   }
 
+  @Post("formulas/standards")
+  createStandardFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.policyId !== "string" || typeof body.benefitId !== "string") {
+      throw new BadRequestException("invalid_standard_formula");
+    }
+    return this.calculation.createStandardFormula(body.policyId, body.benefitId)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "standard_formula_save_failed"); });
+  }
+
+  @Post("formulas/reference")
+  referenceStandardFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.policyId !== "string"
+      || typeof body.benefitId !== "string"
+      || typeof body.standardFormulaId !== "number") {
+      throw new BadRequestException("invalid_formula_reference");
+    }
+    return this.calculation.referenceStandardFormula({
+      policyId: body.policyId,
+      benefitId: body.benefitId,
+      standardFormulaId: body.standardFormulaId,
+    }).catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "formula_reference_failed"); });
+  }
+
+  @Post("formulas/unlink")
+  unlinkStandardFormula(@Body() body: Record<string, unknown>) {
+    if (typeof body.policyId !== "string" || typeof body.benefitId !== "string") {
+      throw new BadRequestException("invalid_formula_unlink");
+    }
+    return this.calculation.unlinkStandardFormula(body.policyId, body.benefitId)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "formula_unlink_failed"); });
+  }
+
   @Delete("formulas")
   async removeFormula(@Query("policyId") policyId?: string, @Query("benefitId") benefitId?: string) {
     if (!policyId || !benefitId) throw new BadRequestException("policyId and benefitId are required");
-    await this.calculation.deleteBenefitFormula(policyId, benefitId);
+    await this.calculation.deleteBenefitFormula(policyId, benefitId)
+      .catch((error: unknown) => { throw new BadRequestException(error instanceof Error ? error.message : "formula_delete_failed"); });
     return { success: true };
   }
 

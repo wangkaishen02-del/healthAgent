@@ -16,6 +16,7 @@ import type {
   FormulaStep,
   FormulaValidationResult,
   LedgerBalanceView,
+  StandardFormulaView,
 } from "./automation-types.ts";
 
 const billVariableFields: Record<string, string> = {
@@ -342,11 +343,13 @@ export async function getAutomationConfiguration(policyId: string, claimCaseId?:
     policyId,
     ...benefits.flatMap((benefit) => [benefit.planId, benefit.productId, benefit.id]),
   ].filter((item): item is string => Boolean(item));
-  const [storedFormulas, parameterCatalog, ledgerParameterCatalog, dictionaryRows, responsibilityParameters, loadedBills, eventEntries, diseaseEntries] = await Promise.all([
+  const [storedFormulas, standardFormulaRows, parameterCatalog, ledgerParameterCatalog, dictionaryRows, responsibilityParameters, loadedBills, eventEntries, diseaseEntries] = await Promise.all([
     prisma.benefitCalculationFormula.findMany({
       where: { policyId, benefitId: coveragePlanId ? { in: [...allowedBenefitIds] } : undefined },
+      include: { standardFormula: { select: { formulaCode: true } } },
       orderBy: { updatedAt: "desc" },
     }),
+    prisma.standardCalculationFormula.findMany({ orderBy: { createdAt: "desc" } }),
     prisma.calculationParameterCatalog.findMany({
       where: { OR: [{ policyId: null }, { policyId }] },
       orderBy: [{ category: "asc" }, { parameterName: "asc" }],
@@ -386,9 +389,21 @@ export async function getAutomationConfiguration(policyId: string, claimCaseId?:
       matchExpression: formula?.matchExpression ?? "",
       steps: formula ? normalizeFormulaSteps(formula.steps) : [],
       enabled: formula?.enabled ?? true,
+      standardFormulaId: formula?.standardFormulaId ?? undefined,
+      standardFormulaCode: formula?.standardFormula?.formulaCode ?? undefined,
       updatedAt: formula?.updatedAt.toISOString(),
     };
   });
+  const standardFormulas: StandardFormulaView[] = standardFormulaRows.map((formula) => ({
+    id: formula.id,
+    formulaCode: formula.formulaCode,
+    formulaName: formula.formulaName,
+    matchExpression: formula.matchExpression,
+    steps: normalizeFormulaSteps(formula.steps),
+    sourcePolicyId: formula.sourcePolicyId ?? undefined,
+    sourceBenefitId: formula.sourceBenefitId ?? undefined,
+    createdAt: formula.createdAt.toISOString(),
+  }));
   const inheritedParameterVariables = benefits.flatMap((benefit) => {
     const targetByScope = {
       policy: policyId,
@@ -464,6 +479,7 @@ export async function getAutomationConfiguration(policyId: string, claimCaseId?:
   return {
     benefits,
     formulas,
+    standardFormulas,
     variables,
     bills,
     events: eventEntries.map((item) => ({
@@ -694,6 +710,11 @@ export async function saveBenefitFormula(input: {
   matchExpression: string;
   steps: FormulaStep[];
 }) {
+  const existingFormula = await prisma.benefitCalculationFormula.findUnique({
+    where: { benefitId: input.benefitId },
+    select: { standardFormulaId: true },
+  });
+  if (existingFormula?.standardFormulaId) throw new Error("formula_reference_locked");
   if (!input.matchExpression.trim()) throw new Error("formula_match_expression_required");
   if (input.steps.length && !input.steps.some((step) => step.result)) throw new Error("formula_result_step_required");
   if (new Set(input.steps.map((step) => step.name.trim())).size !== input.steps.length || input.steps.some((step) => !step.name.trim())) throw new Error("formula_step_name_duplicate");
@@ -732,7 +753,95 @@ export async function saveBenefitFormula(input: {
     update: { formulaName: `${benefit.benefitName}自动理算`, matchExpression: input.matchExpression.trim(), steps: input.steps as unknown as Prisma.InputJsonValue, enabled: true },
     create: { policyId: input.policyId, benefitId: input.benefitId, formulaName: `${benefit.benefitName}自动理算`, matchExpression: input.matchExpression.trim(), steps: input.steps as unknown as Prisma.InputJsonValue, enabled: true },
   });
-  return { ...item, steps: normalizeFormulaSteps(item.steps), matchExpression: item.matchExpression ?? "" };
+  return {
+    ...item,
+    standardFormulaId: item.standardFormulaId ?? undefined,
+    steps: normalizeFormulaSteps(item.steps),
+    matchExpression: item.matchExpression ?? "",
+  };
+}
+
+export async function createStandardFormula(policyId: string, benefitId: string) {
+  const formula = await prisma.benefitCalculationFormula.findFirst({
+    where: { policyId, benefitId },
+  });
+  if (!formula || !formula.matchExpression?.trim() || !normalizeFormulaSteps(formula.steps).length) {
+    throw new Error("formula_not_configured");
+  }
+  if (formula.standardFormulaId) throw new Error("formula_reference_locked");
+  const benefit = await prisma.policyBenefit.findUnique({ where: { id: benefitId }, include: { policyProduct: true } });
+  if (!benefit || benefit.policyProduct.policyId !== policyId) throw new Error("benefit_not_found");
+  const standard = await prisma.standardCalculationFormula.create({
+    data: {
+      formulaName: formula.formulaName,
+      matchExpression: formula.matchExpression,
+      steps: formula.steps as unknown as Prisma.InputJsonValue,
+      sourcePolicyId: policyId,
+      sourceBenefitId: benefitId,
+    },
+  });
+  return {
+    id: standard.id,
+    formulaCode: standard.formulaCode,
+    formulaName: standard.formulaName,
+    matchExpression: standard.matchExpression,
+    steps: normalizeFormulaSteps(standard.steps),
+    sourcePolicyId: standard.sourcePolicyId ?? undefined,
+    sourceBenefitId: standard.sourceBenefitId ?? undefined,
+    createdAt: standard.createdAt.toISOString(),
+  } satisfies StandardFormulaView;
+}
+
+export async function referenceStandardFormula(input: { policyId: string; benefitId: string; standardFormulaId: number }) {
+  const [benefit, standard] = await Promise.all([
+    prisma.policyBenefit.findUnique({ where: { id: input.benefitId }, include: { policyProduct: true } }),
+    prisma.standardCalculationFormula.findUnique({ where: { id: input.standardFormulaId } }),
+  ]);
+  if (!benefit || benefit.policyProduct.policyId !== input.policyId) throw new Error("benefit_not_found");
+  if (!standard) throw new Error("standard_formula_not_found");
+  const formula = await prisma.benefitCalculationFormula.upsert({
+    where: { benefitId: input.benefitId },
+    update: {
+      formulaName: standard.formulaName,
+      matchExpression: standard.matchExpression,
+      steps: standard.steps as unknown as Prisma.InputJsonValue,
+      enabled: true,
+      standardFormulaId: standard.id,
+    },
+    create: {
+      policyId: input.policyId,
+      benefitId: input.benefitId,
+      formulaName: standard.formulaName,
+      matchExpression: standard.matchExpression,
+      steps: standard.steps as unknown as Prisma.InputJsonValue,
+      enabled: true,
+      standardFormulaId: standard.id,
+    },
+  });
+  return {
+    ...formula,
+    standardFormulaId: standard.id,
+    standardFormulaCode: standard.formulaCode,
+    matchExpression: formula.matchExpression ?? "",
+    steps: normalizeFormulaSteps(formula.steps),
+  };
+}
+
+export async function unlinkStandardFormula(policyId: string, benefitId: string) {
+  const formula = await prisma.benefitCalculationFormula.findFirst({ where: { policyId, benefitId } });
+  if (!formula) throw new Error("formula_not_configured");
+  if (!formula.standardFormulaId) throw new Error("formula_not_referenced");
+  const unlinked = await prisma.benefitCalculationFormula.update({
+    where: { benefitId },
+    data: { standardFormulaId: null },
+  });
+  return {
+    ...unlinked,
+    standardFormulaId: undefined,
+    standardFormulaCode: undefined,
+    matchExpression: unlinked.matchExpression ?? "",
+    steps: normalizeFormulaSteps(unlinked.steps),
+  };
 }
 
 export function validateBenefitFormula(input: {
@@ -774,6 +883,11 @@ export function validateBenefitFormula(input: {
 }
 
 export async function deleteBenefitFormula(policyId: string, benefitId: string) {
+  const formula = await prisma.benefitCalculationFormula.findFirst({
+    where: { policyId, benefitId },
+    select: { standardFormulaId: true },
+  });
+  if (formula?.standardFormulaId) throw new Error("formula_reference_locked");
   return (await prisma.benefitCalculationFormula.deleteMany({ where: { policyId, benefitId } })).count > 0;
 }
 

@@ -299,8 +299,8 @@ model ClaimCase {
   reportDate      DateTime           @map("report_date") @db.Date
   reportChannel   ClaimReportChannel @map("report_channel")
   status          ClaimCaseStatus    @default(registered)
-  currentHandlerUserId String        @default("default-user") @map("current_handler_user_id") @db.VarChar(50)
-  currentHandlerName   String        @default("默认用户") @map("current_handler_name") @db.VarChar(100)
+  currentHandlerUserId String             @default("default-user") @map("current_handler_user_id") @db.VarChar(50)
+  currentHandlerName   String             @default("默认用户") @map("current_handler_name") @db.VarChar(100)
   remark          String?            @db.Text
   createdAt       DateTime           @default(now()) @map("created_at")
   updatedAt       DateTime           @updatedAt @map("updated_at")
@@ -561,18 +561,39 @@ model CalculationLedgerParameterCatalog {
 }
 
 model BenefitCalculationFormula {
+  id                Int      @id @default(autoincrement())
+  policyId          String   @map("policy_id") @db.VarChar(50)
+  benefitId         String   @unique @map("benefit_id") @db.VarChar(50)
+  formulaName       String   @map("formula_name") @db.VarChar(150)
+  matchExpression   String?  @map("match_expression") @db.Text
+  steps             Json
+  enabled           Boolean  @default(true)
+  standardFormulaId Int?     @map("standard_formula_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  standardFormula StandardCalculationFormula? @relation(fields: [standardFormulaId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([policyId], map: "idx_benefit_formula_policy")
+  @@index([standardFormulaId], map: "idx_benefit_formula_standard")
+  @@map("benefit_calculation_formula")
+}
+
+model StandardCalculationFormula {
   id              Int      @id @default(autoincrement())
-  policyId        String   @map("policy_id") @db.VarChar(50)
-  benefitId       String   @unique @map("benefit_id") @db.VarChar(50)
+  formulaCode     String   @unique @default(dbgenerated()) @map("formula_code") @db.VarChar(20)
   formulaName     String   @map("formula_name") @db.VarChar(150)
-  matchExpression String?  @map("match_expression") @db.Text
+  matchExpression String   @map("match_expression") @db.Text
   steps           Json
-  enabled         Boolean  @default(true)
+  sourcePolicyId  String?  @map("source_policy_id") @db.VarChar(50)
+  sourceBenefitId String?  @map("source_benefit_id") @db.VarChar(50)
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  @@index([policyId], map: "idx_benefit_formula_policy")
-  @@map("benefit_calculation_formula")
+  referencedFormulas BenefitCalculationFormula[]
+
+  @@index([createdAt], map: "idx_standard_formula_created")
+  @@map("standard_calculation_formula")
 }
 
 model ClaimBill {

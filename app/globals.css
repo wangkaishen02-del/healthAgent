@@ -3265,6 +3265,66 @@ fieldset.claim-form-grid {
   margin-bottom: 14px;
 }
 
+.formula-reference-panel {
+  margin-bottom: 14px;
+  padding: 12px 16px;
+}
+
+.formula-reference-panel.locked {
+  border-color: #a9c8ee;
+  background: #f2f7ff;
+}
+
+.formula-reference-picker,
+.formula-reference-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.formula-reference-picker > div {
+  display: grid;
+  min-width: 230px;
+}
+
+.formula-reference-picker small,
+.formula-reference-status small {
+  color: var(--muted);
+}
+
+.formula-reference-picker select {
+  min-width: 320px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+}
+
+.formula-reference-status strong {
+  padding: 4px 9px;
+  border-radius: 7px;
+  background: #dcecff;
+  color: #235f9f;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.formula-reference-lock {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.formula-reference-lock:disabled {
+  pointer-events: none;
+}
+
+.formula-reference-lock:disabled > section {
+  opacity: .72;
+}
+
 .formula-variable-groups {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

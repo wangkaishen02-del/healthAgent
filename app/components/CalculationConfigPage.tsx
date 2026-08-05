@@ -3,7 +3,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState, type DragEvent as ReactDragEvent } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import { apiFetch } from "../../src/api/client";
-import type { BenefitFormulaView, CalculationVariableCategory, CalculationVariableView, FormulaStep, FormulaValidationResult } from "../../src/calculation/automation-types";
+import type { BenefitFormulaView, CalculationVariableCategory, CalculationVariableView, FormulaStep, FormulaValidationResult, StandardFormulaView } from "../../src/calculation/automation-types";
 import type {
   CalculationConfigCatalog,
   CalculationParameter,
@@ -50,6 +50,8 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [automationFormulas, setAutomationFormulas] = useState<BenefitFormulaView[]>([]);
+  const [standardFormulas, setStandardFormulas] = useState<StandardFormulaView[]>([]);
+  const [selectedStandardFormulaId, setSelectedStandardFormulaId] = useState("");
   const [automationVariables, setAutomationVariables] = useState<CalculationVariableView[]>([]);
   const [formulaDraft, setFormulaDraft] = useState<BenefitFormulaView | null>(null);
   const [stepEditor, setStepEditor] = useState<FormulaStep>(() => emptyFormulaStep(0));
@@ -176,8 +178,9 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   async function loadAutomation(policyId: string) {
     const response = await apiFetch(`/api/automatic-calculation?policyId=${encodeURIComponent(policyId)}`, { cache: "no-store" });
     if (!response.ok) return;
-    const data = await response.json() as { formulas: BenefitFormulaView[]; variables: CalculationVariableView[] };
+    const data = await response.json() as { formulas: BenefitFormulaView[]; standardFormulas: StandardFormulaView[]; variables: CalculationVariableView[] };
     setAutomationFormulas(data.formulas);
+    setStandardFormulas(data.standardFormulas ?? []);
     setAutomationVariables(data.variables);
   }
 
@@ -249,6 +252,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   }
 
   const formulaLibraryVariables = automationVariables.filter((variable) => variable.valueType !== "date");
+  const formulaLocked = Boolean(formulaDraft?.standardFormulaId);
   const knownFormulaElementNames = [
     ...formulaLibraryVariables.map((variable) => variable.formulaName ?? variable.variableName),
     ...(formulaDraft?.steps.map((step) => step.name) ?? []),
@@ -680,6 +684,8 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
             ? "步骤名称不能与账单、事件、台账、责任或自定义参数名称重复。"
             : result.message === "formula_step_dependency_order_invalid"
               ? "步骤顺序无效：当前步骤引用了排在它后面的步骤，请调整顺序。"
+              : result.message === "formula_reference_locked"
+                ? "当前责任引用了标准公式，请先解除引用关系后再修改。"
           : `公式保存失败：${result.message ?? "请检查表达式"}`);
       return false;
     }
@@ -688,6 +694,78 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     setFormulaDraft({ ...draft, ...result });
     setFormulaMessage(successMessage);
     return true;
+  }
+
+  async function saveAsStandardFormula() {
+    if (!selectedPolicy || !formulaDraft || configTarget?.scope !== "benefit") return;
+    if (!formulaDraft.matchExpression.trim() || !formulaDraft.steps.length) {
+      setFormulaMessage("请先配置完整公式，再保存为标准公式。");
+      return;
+    }
+    const saved = await saveFormula(formulaDraft, "公式已保存，正在生成标准公式编号。");
+    if (!saved) return;
+    setBusy(true);
+    const response = await apiFetch("/api/automatic-calculation/formulas/standards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policyId: selectedPolicy.id, benefitId: configTarget.target.id }),
+    });
+    const result = await response.json() as StandardFormulaView & { message?: string };
+    setBusy(false);
+    if (!response.ok) {
+      setFormulaMessage(`保存标准公式失败：${result.message ?? "请稍后重试"}`);
+      return;
+    }
+    setStandardFormulas((items) => [result, ...items]);
+    setFormulaMessage(`已保存为标准公式 ${result.formulaCode}，其他责任现在可以直接引用。`);
+  }
+
+  async function referenceSelectedFormula() {
+    if (!selectedPolicy || !formulaDraft || configTarget?.scope !== "benefit" || !selectedStandardFormulaId) return;
+    if (formulaDraft.steps.length && !globalThis.confirm("引用标准公式将覆盖当前责任已有的公式内容，是否继续？")) return;
+    setBusy(true);
+    setFormulaMessage("");
+    const response = await apiFetch("/api/automatic-calculation/formulas/reference", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        policyId: selectedPolicy.id,
+        benefitId: configTarget.target.id,
+        standardFormulaId: Number(selectedStandardFormulaId),
+      }),
+    });
+    const result = await response.json() as BenefitFormulaView & { message?: string };
+    setBusy(false);
+    if (!response.ok) {
+      setFormulaMessage(`引用标准公式失败：${result.message ?? "请稍后重试"}`);
+      return;
+    }
+    const merged = { ...formulaDraft, ...result };
+    setAutomationFormulas((items) => items.map((item) => item.benefitId === merged.benefitId ? { ...item, ...merged } : item));
+    setFormulaDraft(merged);
+    setSelectedStandardFormulaId("");
+    setFormulaMessage(`已引用标准公式 ${result.standardFormulaCode}，解除引用前不可修改。`);
+  }
+
+  async function unlinkReferencedFormula() {
+    if (!selectedPolicy || !formulaDraft || configTarget?.scope !== "benefit" || !formulaDraft.standardFormulaId) return;
+    if (!globalThis.confirm(`解除与标准公式 ${formulaDraft.standardFormulaCode ?? ""} 的引用关系后，当前公式将成为可编辑副本。是否继续？`)) return;
+    setBusy(true);
+    const response = await apiFetch("/api/automatic-calculation/formulas/unlink", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ policyId: selectedPolicy.id, benefitId: configTarget.target.id }),
+    });
+    const result = await response.json() as BenefitFormulaView & { message?: string };
+    setBusy(false);
+    if (!response.ok) {
+      setFormulaMessage(`解除引用失败：${result.message ?? "请稍后重试"}`);
+      return;
+    }
+    const merged = { ...formulaDraft, ...result, standardFormulaId: undefined, standardFormulaCode: undefined };
+    setAutomationFormulas((items) => items.map((item) => item.benefitId === merged.benefitId ? { ...item, ...merged } : item));
+    setFormulaDraft(merged);
+    setFormulaMessage("引用关系已解除，当前公式内容已保留并可以修改。");
   }
 
   async function deleteFormulaConfiguration() {
@@ -1001,10 +1079,33 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
           <div className="page-header-actions">
             {configurationView === "parameter" ? <button type="button" onClick={startCreate} disabled={busy}>新增参数</button> : null}
             {configurationView === "formula" ? <button type="button" onClick={openFormulaValidation} disabled={busy}>公式验算</button> : null}
-            {configurationView === "formula" ? <button type="button" className="danger-button" onClick={() => void deleteFormulaConfiguration()} disabled={busy}>删除公式</button> : null}
+            {configurationView === "formula" && !formulaLocked ? <button type="button" onClick={() => void saveAsStandardFormula()} disabled={busy || !formulaDraft?.steps.length}>保存为标准公式</button> : null}
+            {configurationView === "formula" && formulaLocked ? <button type="button" onClick={() => void unlinkReferencedFormula()} disabled={busy}>解除引用关系</button> : null}
+            {configurationView === "formula" && !formulaLocked ? <button type="button" className="danger-button" onClick={() => void deleteFormulaConfiguration()} disabled={busy}>删除公式</button> : null}
             <button type="button" className="page-back-button" onClick={() => { updateConfigTarget(null); updateEditorOpen(false); setConfigurationView("parameter"); setMessage(""); }}>返回上一页</button>
           </div>
         </section>
+
+        {configurationView === "formula" && configTarget.scope === "benefit" && formulaDraft ? (
+          <section className={`panel formula-reference-panel ${formulaLocked ? "locked" : ""}`}>
+            {formulaLocked ? (
+              <div className="formula-reference-status">
+                <span>当前责任引用标准公式</span>
+                <strong>{formulaDraft.standardFormulaCode}</strong>
+                <small>公式内容已锁定；如需调整，请先解除引用关系。</small>
+              </div>
+            ) : (
+              <div className="formula-reference-picker">
+                <div><strong>引用标准公式</strong><small>选择后将整套公式应用到当前责任，并锁定修改。</small></div>
+                <select value={selectedStandardFormulaId} onChange={(event) => setSelectedStandardFormulaId(event.target.value)} disabled={busy || !standardFormulas.length}>
+                  <option value="">{standardFormulas.length ? "请选择标准公式" : "暂无标准公式"}</option>
+                  {standardFormulas.map((formula) => <option key={formula.id} value={formula.id}>{formula.formulaCode}｜{formula.formulaName}</option>)}
+                </select>
+                <button type="button" onClick={() => void referenceSelectedFormula()} disabled={busy || !selectedStandardFormulaId}>引用标准公式</button>
+              </div>
+            )}
+          </section>
+        ) : null}
 
         {configurationView === "parameter" && editorOpen ? (
           <section className="panel config-editor-panel">
@@ -1036,6 +1137,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
 
         {configurationView === "formula" && configTarget.scope === "benefit" && formulaDraft ? (
           <>
+            <fieldset className="formula-reference-lock" disabled={formulaLocked}>
             <section className="panel formula-parameter-library">
               <div className="panel-title-row">
                 <div>
@@ -1199,6 +1301,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
                 </table>
               </div>
             </section>
+            </fieldset>
 
             {formulaValidationOpen ? (
               <section className="panel formula-validation-panel">
@@ -1416,7 +1519,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
                               </div>
                             ) : <span className="muted">未配置</span>}
                           </td>
-                          <td>{configuredFormula ? <span className="formula-step-count">{configuredFormula.steps.length + 1} 步</span> : <span className="muted">-</span>}</td>
+                          <td>{configuredFormula ? <span className="formula-step-count">{configuredFormula.standardFormulaCode ? `${configuredFormula.standardFormulaCode} · ` : ""}{configuredFormula.steps.length + 1} 步</span> : <span className="muted">-</span>}</td>
                           <td className="actions-cell">
                             <button type="button" className="action-link" onClick={() => openConfiguration(row, "parameter")}>参数</button>
                             {row.scope === "benefit" ? <button type="button" className="action-link" onClick={() => openConfiguration(row, "formula")}>公式</button> : null}

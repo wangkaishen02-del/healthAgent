@@ -21,6 +21,7 @@
     "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",
     "test:api": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/nest-smoke-test.ts",
     "test:auto-calculation": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/automatic-calculation-smoke-test.ts",
+    "test:standard-formula": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/standard-formula-smoke-test.ts",
     "test:e2e": "node scripts/run-e2e.mjs",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",

@@ -9,6 +9,7 @@ import {
 import type { SaveCalculationParameterInput } from "../../../../src/underwriting/contracts.ts";
 import type { CalculationParameterScope } from "../../../../src/underwriting/types.ts";
 import {
+  createStandardFormula,
   deleteBenefitFormula,
   deleteClaimBill,
   deleteClaimDiseaseEntry,
@@ -16,12 +17,14 @@ import {
   getAutomationConfiguration,
   listInsuredPolicyLedgers,
   rollbackAutomaticCalculation,
+  referenceStandardFormula,
   runAutomaticCalculation,
   saveAutomationVariable,
   saveBenefitFormula,
   saveClaimBill,
   saveClaimDiseaseEntry,
   saveClaimEventEntry,
+  unlinkStandardFormula,
   validateBenefitFormula,
 } from "../../../../src/calculation/automation-service.ts";
 import type { ClaimOperator } from "../../../../src/claims/types.ts";
@@ -37,6 +40,9 @@ export class CalculationService {
   insuredPolicyLedgers(policyId: string, insuredPersonId: string) { return listInsuredPolicyLedgers(policyId, insuredPersonId); }
   saveAutomationVariable(input: Parameters<typeof saveAutomationVariable>[0]) { return saveAutomationVariable(input); }
   saveBenefitFormula(input: Parameters<typeof saveBenefitFormula>[0]) { return saveBenefitFormula(input); }
+  createStandardFormula(policyId: string, benefitId: string) { return createStandardFormula(policyId, benefitId); }
+  referenceStandardFormula(input: Parameters<typeof referenceStandardFormula>[0]) { return referenceStandardFormula(input); }
+  unlinkStandardFormula(policyId: string, benefitId: string) { return unlinkStandardFormula(policyId, benefitId); }
   validateBenefitFormula(input: Parameters<typeof validateBenefitFormula>[0]) { return validateBenefitFormula(input); }
   deleteBenefitFormula(policyId: string, benefitId: string) { return deleteBenefitFormula(policyId, benefitId); }
   saveClaimBill(input: Parameters<typeof saveClaimBill>[0]) { return saveClaimBill(input); }
