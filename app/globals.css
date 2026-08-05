@@ -3327,7 +3327,14 @@ fieldset.claim-form-grid {
 
 .standard-formula-page {
   display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
   gap: 14px;
+  padding-right: 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .standard-formula-header,
