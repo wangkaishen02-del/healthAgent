@@ -4,6 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from "r
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import { apiFetch } from "../../src/api/client";
 import type { CalculationVariableCategory, CalculationVariableView, FormulaStep, StandardFormulaView } from "../../src/calculation/automation-types";
+import { placeFormulaStep } from "../../src/calculation/formula-step-order";
 import {
   CustomDropdown,
   emptyFormulaStep,
@@ -249,9 +250,7 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
       return;
     }
     const nextStep = { ...stepEditor, id: stepEditor.id || crypto.randomUUID(), name: stepEditor.name.trim(), expression: stepEditor.expression.trim() };
-    const nextSteps = editingStepIndex === null
-      ? [...draft.steps, nextStep]
-      : draft.steps.map((step, index) => index === editingStepIndex ? nextStep : step);
+    const nextSteps = placeFormulaStep(draft.steps, nextStep, editingStepIndex);
     const normalizedSteps = nextSteps.some((step) => step.result)
       ? nextSteps
       : nextSteps.map((step, index) => ({ ...step, result: index === nextSteps.length - 1 }));

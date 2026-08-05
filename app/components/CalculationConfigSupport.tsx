@@ -301,5 +301,3 @@ export function formatPolicyStatus(status: Policy["policyStatus"]) {
 export function valueTypeLabel(value: CalculationParameterValueType) {
   return valueTypeOptions.find((option) => option.value === value)?.label ?? value;
 }
-
-

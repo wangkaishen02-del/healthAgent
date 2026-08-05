@@ -11,6 +11,7 @@ import type {
   Policy,
 } from "../../src/underwriting/types";
 import { sortCalculationParameters } from "../../src/underwriting/calculation-parameter-order";
+import { placeFormulaStep } from "../../src/calculation/formula-step-order";
 import {
   buildHierarchyContext,
   buildHierarchyRows,
@@ -578,14 +579,10 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
       return;
     }
     const nextStep = { ...stepEditor, name: stepEditor.name.trim(), expression: stepEditor.expression.trim() };
-    const nextSteps = editingStepIndex === null
-      ? [...formulaDraft.steps, nextStep]
-      : formulaDraft.steps.map((step, index) => index === editingStepIndex ? nextStep : step);
-    const normalizedSteps = editingStepIndex === null
-      ? nextSteps.map((step, index) => ({ ...step, result: index === nextSteps.length - 1 }))
-      : nextSteps.some((step) => step.result)
-        ? nextSteps
-        : nextSteps.map((step, index) => ({ ...step, result: index === nextSteps.length - 1 }));
+    const nextSteps = placeFormulaStep(formulaDraft.steps, nextStep, editingStepIndex);
+    const normalizedSteps = nextSteps.some((step) => step.result)
+      ? nextSteps
+      : nextSteps.map((step, index) => ({ ...step, result: index === nextSteps.length - 1 }));
     const nextDraft = { ...formulaDraft, steps: normalizedSteps };
     if (!await saveFormula(nextDraft, "步骤和整套公式已保存。")) return;
     setEditingStepIndex(null);
