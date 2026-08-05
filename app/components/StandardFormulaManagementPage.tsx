@@ -5,6 +5,8 @@ import type { RegisteredPageController } from "../../src/assistant/page-controll
 import { apiFetch } from "../../src/api/client";
 import type { CalculationVariableCategory, CalculationVariableView, FormulaStep, StandardFormulaView } from "../../src/calculation/automation-types";
 import { placeFormulaStep } from "../../src/calculation/formula-step-order";
+import { buildStandardFormulaConfigurationVariables } from "../../src/calculation/standard-formula-variables";
+import type { CalculationParameterDefinition } from "../../src/underwriting/types";
 import {
   CustomDropdown,
   emptyFormulaStep,
@@ -47,6 +49,7 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
   const [draft, setDraft] = useState<FormulaDraft>(emptyDraft);
   const [tagInput, setTagInput] = useState("");
   const [automationVariables, setAutomationVariables] = useState<CalculationVariableView[]>([]);
+  const [parameterDefinitions, setParameterDefinitions] = useState<CalculationParameterDefinition[]>([]);
   const [defaultPolicyId, setDefaultPolicyId] = useState("");
   const [variablePolicyId, setVariablePolicyId] = useState("");
   const [stepEditor, setStepEditor] = useState<FormulaStep>(() => emptyFormulaStep(0));
@@ -90,8 +93,9 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
     void (async () => {
       const response = await apiFetch("/api/calculation-parameters", { cache: "no-store" });
       if (!response.ok) return;
-      const result = await response.json() as { policies?: Array<{ id: string; status?: string }> };
-      const policyId = result.policies?.find((item) => item.status === "active")?.id ?? result.policies?.[0]?.id ?? "";
+      const result = await response.json() as { policies?: Array<{ id: string; policyStatus?: string }>; definitions?: CalculationParameterDefinition[] };
+      const policyId = result.policies?.find((item) => item.policyStatus === "enabled")?.id ?? result.policies?.[0]?.id ?? "";
+      setParameterDefinitions(result.definitions ?? []);
       setDefaultPolicyId(policyId);
       if (policyId) await loadVariableLibrary(policyId);
     })();
@@ -104,7 +108,10 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
   }, [items, keyword]);
 
   const formulaLibraryVariables = [...new Map(
-    automationVariables
+    [
+      ...automationVariables.filter((variable) => variable.category !== "benefit"),
+      ...buildStandardFormulaConfigurationVariables(parameterDefinitions, variablePolicyId || defaultPolicyId),
+    ]
       .filter((variable) => variable.valueType !== "date")
       .map((variable) => [`${variable.category}:${variable.formulaName ?? variable.variableName}`, variable]),
   ).values()];

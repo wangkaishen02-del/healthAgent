@@ -23,6 +23,7 @@
     "test:auto-calculation": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/automatic-calculation-smoke-test.ts",
     "test:standard-formula": "AUTH_ENABLED=false tsx --tsconfig apps/api/tsconfig.json src/api/standard-formula-smoke-test.ts",
     "test:formula-step-order": "node --import tsx src/calculation/formula-step-order-test.ts",
+    "test:standard-formula-variables": "node --import tsx src/calculation/standard-formula-variables-test.ts",
     "test:e2e": "node scripts/run-e2e.mjs",
     "db:up": "docker compose up -d postgres",
     "db:down": "docker compose down",
