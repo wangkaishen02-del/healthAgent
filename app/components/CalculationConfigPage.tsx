@@ -10,6 +10,7 @@ import type {
   CalculationParameterDefinition,
   Policy,
 } from "../../src/underwriting/types";
+import { sortCalculationParameters } from "../../src/underwriting/calculation-parameter-order";
 import {
   buildHierarchyContext,
   buildHierarchyRows,
@@ -211,7 +212,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
   }, [formulaDraft?.matchExpression, formulaDraft?.steps]);
 
   const visibleParameters = configTarget
-    ? items.filter((item) => item.scope === configTarget.scope && item.targetId === configTarget.target.id)
+    ? sortCalculationParameters(items.filter((item) => item.scope === configTarget.scope && item.targetId === configTarget.target.id))
     : [];
   const configTargetPath = configTarget ? buildTargetPath(catalog, configTarget) : [];
   const selectedDefinition = definitions.find((definition) => definition.parameterCode === editor.definitionCode);
@@ -1482,7 +1483,7 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
                   <table className="hierarchy-fixed-table calculation-hierarchy-table">
                     <thead><tr><th>层级 / 对象名称</th><th>对象编码</th><th>已配置参数</th><th>公式</th><th className="actions-col">操作</th></tr></thead>
                     <tbody>{visibleHierarchyRows.map((row) => {
-                      const configuredParameters = items.filter((item) => item.scope === row.scope && item.targetId === row.target.id);
+                      const configuredParameters = sortCalculationParameters(items.filter((item) => item.scope === row.scope && item.targetId === row.target.id));
                       const configuredFormula = row.scope === "benefit" ? automationFormulas.find((formula) => formula.benefitId === row.target.id && formula.id) : undefined;
                       return (
                         <tr key={row.key}>

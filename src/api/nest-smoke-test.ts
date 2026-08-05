@@ -9,6 +9,16 @@ import { getCompactPageRegistration, getPageRegistration } from "../assistant/pa
 import { normalizeAssistantModelToolCall } from "../assistant/policy-query-assistant.ts";
 import { canAccessAssistantPage, filterAssistantMenus } from "../assistant/access-control.ts";
 import { getNavigationRegistry } from "../assistant/page-registry.ts";
+import { sortCalculationParameters } from "../underwriting/calculation-parameter-order.ts";
+
+assert.deepEqual(
+  sortCalculationParameters([
+    { parameterCode: "PAYMENT_RATIO" },
+    { parameterCode: "DEDUCTIBLE" },
+    { parameterCode: "LIMIT" },
+  ]).map((item) => item.parameterCode),
+  ["LIMIT", "DEDUCTIBLE", "PAYMENT_RATIO"],
+);
 
 assert.equal(isDataMutationRequest("打开保单理算配置并查询保单 GI2026000001，不要修改参数"), false);
 assert.equal(isDataMutationRequest("只查看保单理算配置"), false);
@@ -68,6 +78,13 @@ try {
     const response = await fetch(`${baseUrl}${path}`);
     assert.equal(response.status, 200, `${path} should return 200`);
   }
+
+  const invalidStandardFormula = await fetch(`${baseUrl}/api/automatic-calculation/formulas/standards`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+  assert.equal(invalidStandardFormula.status, 400, "standard formula route should be registered");
 
   const invalidPlan = await fetch(`${baseUrl}/api/assistant/plan`, {
     method: "POST",

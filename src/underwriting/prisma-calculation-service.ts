@@ -2,6 +2,7 @@ import type { CalculationParameter as DbCalculationParameter, CalculationParamet
 import { prisma } from "../db/prisma.ts";
 import type { CalculationParameterScope } from "./types.ts";
 import type { SaveCalculationParameterInput } from "./contracts.ts";
+import { sortCalculationParameters } from "./calculation-parameter-order.ts";
 
 function mapDefinition(item: DbDefinition) {
   return { parameterCode: item.parameterCode, parameterName: item.parameterName, valueType: item.valueType, unit: item.unit ?? undefined, applicableScopes: item.applicableScopes as CalculationParameterScope[], description: item.description ?? undefined };
@@ -35,8 +36,9 @@ export async function getCalculationParameterDefinitionsDb() {
 }
 
 export async function listCalculationParametersDb(scope?: CalculationParameterScope, targetId?: string) {
-  return (await prisma.calculationParameter.findMany({ where: { scope, targetId }, include: { definition: true }, orderBy: { updatedAt: "desc" } }))
-    .map(mapParameter);
+  return sortCalculationParameters(
+    (await prisma.calculationParameter.findMany({ where: { scope, targetId }, include: { definition: true } })).map(mapParameter),
+  );
 }
 
 export async function createCalculationParameterDb(input: SaveCalculationParameterInput) {
