@@ -35,9 +35,7 @@ const emptyDraft = (): FormulaDraft => ({
 });
 
 function standardFormulaVariableOptionLabel(variable: CalculationVariableView) {
-  const name = variable.formulaName ?? variable.variableName;
-  if (variable.category !== "benefit" || !variable.unit) return name;
-  return `${name} · 单位：${variable.unit}`;
+  return variable.formulaName ?? variable.variableName;
 }
 
 const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(function StandardFormulaManagementPage(_, assistantRef) {
