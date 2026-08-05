@@ -3409,6 +3409,8 @@ fieldset.claim-form-grid {
 }
 
 .standard-formula-fieldset {
+  display: grid;
+  gap: 14px;
   min-width: 0;
   margin: 14px 0 0;
   padding: 0;
@@ -3421,8 +3423,45 @@ fieldset.claim-form-grid {
 
 .standard-formula-basic-fields {
   display: grid;
-  grid-template-columns: minmax(260px, .7fr) minmax(420px, 1.3fr);
+  grid-template-columns: minmax(280px, 1fr);
   gap: 12px;
+}
+
+.standard-formula-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+.standard-formula-editor-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.standard-formula-editor-heading > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.standard-formula-editor-message {
+  margin: 0;
+}
+
+.standard-formula-meta-panel {
+  display: grid;
+  grid-template-columns: minmax(280px, .7fr) minmax(420px, 1.3fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.standard-formula-meta-panel .standard-formula-tag-editor {
+  margin-top: 0;
+}
+
+.standard-formula-expression-tip {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .standard-formula-basic-fields label,
@@ -3500,6 +3539,7 @@ fieldset.claim-form-grid {
 
 @media (max-width: 1100px) {
   .standard-formula-basic-fields { grid-template-columns: 1fr; }
+  .standard-formula-meta-panel { grid-template-columns: 1fr; }
   .standard-formula-step-card { grid-template-columns: 70px minmax(150px, 1fr) minmax(260px, 1.5fr); }
 }
 
