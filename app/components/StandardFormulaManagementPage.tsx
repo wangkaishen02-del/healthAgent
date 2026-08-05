@@ -9,7 +9,6 @@ import {
   CustomDropdown,
   emptyFormulaStep,
   formulaExpressionElements,
-  formulaVariableOptionLabel,
   variableCategoryLabels,
 } from "./CalculationConfigSupport";
 
@@ -32,6 +31,12 @@ const emptyDraft = (): FormulaDraft => ({
   steps: [],
   referenceCount: 0,
 });
+
+function standardFormulaVariableOptionLabel(variable: CalculationVariableView) {
+  const name = variable.formulaName ?? variable.variableName;
+  if (variable.category !== "benefit" || !variable.unit) return name;
+  return `${name} · 单位：${variable.unit}`;
+}
 
 const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(function StandardFormulaManagementPage(_, assistantRef) {
   const [items, setItems] = useState<StandardFormulaView[]>([]);
@@ -381,7 +386,7 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
               {(Object.keys(variableCategoryLabels) as CalculationVariableCategory[]).map((category) => {
                 const variables = formulaLibraryVariables.filter((item) => item.category === category);
                 if (!variables.length) return null;
-                return <div key={category}><strong>{variableCategoryLabels[category]}</strong><CustomDropdown value="" options={variables.map((variable) => ({ value: variable.formulaName ?? variable.variableName, label: formulaVariableOptionLabel(variable) }))} onChange={(value) => { const variable = variables.find((item) => (item.formulaName ?? item.variableName) === value); if (variable) selectFormulaVariable(variable); }} /></div>;
+                return <div key={category}><strong>{variableCategoryLabels[category]}</strong><CustomDropdown value="" options={variables.map((variable) => ({ value: variable.formulaName ?? variable.variableName, label: standardFormulaVariableOptionLabel(variable) }))} onChange={(value) => { const variable = variables.find((item) => (item.formulaName ?? item.variableName) === value); if (variable) selectFormulaVariable(variable); }} /></div>;
               })}
               {activeFormulaEditor === "step" && draft.steps.length ? <div><strong>已添加步骤</strong><CustomDropdown value="" options={draft.steps.slice(0, editingStepIndex ?? draft.steps.length).map((step) => ({ value: step.name, label: step.name }))} onChange={(value) => { if (value) appendFormulaToken(value); }} /></div> : null}
             </div>
