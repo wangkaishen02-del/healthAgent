@@ -72,6 +72,7 @@ try {
     "/api/automatic-calculation/standard-formulas",
     "/api/assistant/registry?resource=tools",
     "/api/assistant/registry?resource=page&view=compact&pageId=claim_registration",
+    "/api/assistant/memory?limit=1",
     "/api/audit-logs?page=1&pageSize=1",
   ];
 

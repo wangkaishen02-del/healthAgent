@@ -5410,10 +5410,26 @@ fieldset.claim-form-grid {
   color: var(--primary);
 }
 
-.assistant-close {
+.assistant-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.assistant-close,
+.assistant-clear-memory {
   background: #fff;
   color: var(--text);
   border-color: var(--border);
+}
+
+.assistant-clear-memory {
+  color: var(--muted);
+}
+
+.assistant-clear-memory:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .assistant-messages {

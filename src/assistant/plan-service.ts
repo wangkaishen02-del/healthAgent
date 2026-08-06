@@ -27,6 +27,7 @@ import { queryClaimCasesDb } from "../claims/prisma-service.ts";
 import { ExternalDataProtector, minimizeAssistantData, redactSensitiveText } from "./privacy.ts";
 import { canAccessAssistantPage, filterAssistantMenus } from "./access-control.ts";
 import { inspectClaimCaseForAssistant, summarizeClaimWorkQueueForAssistant } from "./backend-tools.ts";
+import type { AssistantMemorySnapshot } from "./memory-service.ts";
 
 export type LlmProvider = "ollama" | "deepseek";
 
@@ -65,6 +66,7 @@ export type AssistantContinuationContext = {
   lastOperationResult?: unknown;
   backendToolResults?: unknown[];
   actorRoles?: string[];
+  memory?: AssistantMemorySnapshot;
 };
 
 type AssistantLogEntry =
@@ -192,7 +194,7 @@ ${JSON.stringify(getAssistantControlToolCatalog())}
 1. 已有可信注册信息时直接执行；缺少或不确定时先查询注册信息。
 2. 不猜测注册 ID；工具参数必须使用注册中心返回的菜单、页面、字段和动作 ID。
 3. 可分多轮发现和操作，每轮根据上一步结果决定继续或结束。
-4. 优先使用上下文中的历史动作和上次结果，不猜测更早结果。
+4. 优先使用本任务上下文中的历史动作和上次结果。跨任务历史记忆只用于理解“继续、刚才、上一个”等连续表达，可能已经过期；当前用户明确输入始终优先。
 5. 原始用户请求中如果包含明确的筛选值，执行查询动作前必须使用注册字段生成对应的 set_field；不能只在 recognized 中描述而省略字段动作。
 6. 字段选择必须依据注册字段的标签、描述和所在区域，不要根据字段ID命名习惯猜测用途。
 7. select 字段必须使用当前页面注册信息声明的 options 值；运行时选项会随页面上下文提供，不要自行创造选项值。
@@ -205,6 +207,7 @@ ${JSON.stringify(getAssistantControlToolCatalog())}
 14. 不得编造用户没有提供且系统结果中不存在的日期、地点、医院、诊断、账号等事实。页面已有默认值时保留默认值；可选字段缺失时保持为空。可以把用户原话整理为必填的简短事件描述，但不得添加原话没有表达的具体事实。
 15. 当任务缺少系统无法查询且用户未提供的必填信息时，使用 ask_user 明确询问并列出 requestedFields。ask_user 会暂停任务，用户回答后继续原任务；不要用普通 reply 或 finish_task 代替追问。
 16. 追问使用自然语言，不要求字段ID、枚举值或技术日期格式；内部自行转换。引用用户描述须保留原意，不把改写冒充原话。
+17. 历史记忆中的案件号、人员、筛选值不得在有歧义时直接用于数据变更。当前请求未明确指向哪个历史对象时先 ask_user 确认，不得静默沿用。
 ${buildContextualRules(userText, context)}
 
 输出结构：
@@ -548,6 +551,7 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
   const llm = getLlmIdentity(provider);
   const protector = new ExternalDataProtector();
   const minimizedContext = context ? minimizeAssistantData({
+    memory: context.memory ? { recentTurns: context.memory.recentTurns.slice(-8) } : undefined,
     history: context.history?.slice(-8),
     currentPageRegistry: context.currentPageRegistry,
     lastOperationResult: context.lastOperationResult,
@@ -559,6 +563,9 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
     ? `${userText}
 
 当前 Agent 状态如下，请只根据以下信息决定下一步：
+
+当前用户的跨任务历史记忆（仅作连续性参考，当前明确输入优先）：
+${JSON.stringify(minimizedContext?.memory?.recentTurns ?? [])}
 
 历史操作记录：
 ${JSON.stringify(minimizedContext?.history ?? [])}

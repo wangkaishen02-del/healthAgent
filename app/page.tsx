@@ -63,6 +63,15 @@ type AssistantTaskResponse = {
   question?: string;
   requestedFields?: string[];
 };
+type AssistantMemoryTurn = {
+  taskId: string;
+  userText: string;
+  assistantReply: string;
+  recognized: string[];
+  toolCalls: string[];
+  pagePath: string[];
+  createdAt: string;
+};
 
 const POLICY_PAGE_SIZE = 10;
 const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
@@ -70,6 +79,11 @@ const ASSISTANT_LIST_CONTEXT_LIMIT = 5;
 const MAX_ASSISTANT_HISTORY_ROUNDS = 8;
 const MAX_ASSISTANT_BACKEND_RESULTS = 4;
 const LLM_PROVIDER_STORAGE_KEY = "health-agent-llm-provider";
+const ASSISTANT_WELCOME_MESSAGE: AssistantMessage = {
+  id: "assistant-welcome",
+  role: "assistant",
+  content: "你好，我是智能助手。你可以直接说：查张三有哪些保单、查华曜科技的保单、查停用保单。",
+};
 const llmProviderOptions: Array<{ value: LlmProvider; label: string }> = [
   { value: "ollama", label: "本地模型" },
   { value: "deepseek", label: "DeepSeek" },
@@ -191,14 +205,9 @@ export default function Page() {
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantStopping, setAssistantStopping] = useState(false);
   const [assistantProgress, setAssistantProgress] = useState<string | null>(null);
-  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
-    {
-      id: "assistant-welcome",
-      role: "assistant",
-      content:
-        "你好，我是智能助手。你可以直接说：查张三有哪些保单、查华曜科技的保单、查停用保单。",
-    },
-  ]);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([ASSISTANT_WELCOME_MESSAGE]);
+  const [assistantMemoryLoading, setAssistantMemoryLoading] = useState(false);
+  const [assistantMemoryClearing, setAssistantMemoryClearing] = useState(false);
   const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
   const [assistantPendingTask, setAssistantPendingTask] = useState<{
     taskId: string;
@@ -264,6 +273,40 @@ export default function Page() {
     const savedProvider = window.localStorage.getItem(LLM_PROVIDER_STORAGE_KEY);
     if (savedProvider === "ollama" || savedProvider === "deepseek") setLlmProvider(savedProvider);
   }, []);
+
+  useEffect(() => {
+    const abortController = new AbortController();
+    setAssistantMemoryLoading(true);
+    void apiFetch("/api/assistant/memory?limit=20", { signal: abortController.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("assistant_memory_load_failed");
+        const payload = await response.json() as { turns?: AssistantMemoryTurn[] };
+        const historyMessages = (payload.turns ?? []).flatMap<AssistantMessage>((turn) => [
+          {
+            id: `memory-user-${turn.taskId}`,
+            role: "user",
+            content: turn.userText,
+          },
+          {
+            id: `memory-assistant-${turn.taskId}`,
+            role: "assistant",
+            content: turn.assistantReply,
+            source: "历史记忆",
+            steps: turn.toolCalls,
+          },
+        ]);
+        setAssistantMessages((current) => current.length === 1 && current[0]?.id === ASSISTANT_WELCOME_MESSAGE.id
+          ? [ASSISTANT_WELCOME_MESSAGE, ...historyMessages]
+          : current);
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.warn("assistant memory load failed");
+        }
+      })
+      .finally(() => setAssistantMemoryLoading(false));
+    return () => abortController.abort();
+  }, [user.id]);
 
   useEffect(() => {
     filtersRef.current = filters;
@@ -1010,6 +1053,22 @@ export default function Page() {
     setAssistantPendingTask(null);
   }
 
+  async function clearAssistantHistory() {
+    if (assistantBusy || assistantPendingTask || assistantMemoryClearing) return;
+    if (!window.confirm("确定清除当前账号的 Agent 历史记忆吗？清除后无法恢复。")) return;
+    setAssistantMemoryClearing(true);
+    try {
+      const response = await apiFetch("/api/assistant/memory", { method: "DELETE" });
+      if (!response.ok) throw new Error("assistant_memory_clear_failed");
+      setAssistantMessages([ASSISTANT_WELCOME_MESSAGE]);
+      setAssistantRecognized([]);
+    } catch {
+      window.alert("清除历史记忆失败，请稍后重试。");
+    } finally {
+      setAssistantMemoryClearing(false);
+    }
+  }
+
   const totalPolicyPages = Math.max(1, Math.ceil(policyTotal / POLICY_PAGE_SIZE));
   const selectedStatusLabel =
     policyStatusOptions.find((option) => option.value === filters.policyStatus)?.label ?? "全部";
@@ -1399,9 +1458,19 @@ export default function Page() {
               </div>
             </div>
           </div>
-          <button className="assistant-close" type="button" onClick={() => setAssistantOpen(false)}>
-            收起
-          </button>
+          <div className="assistant-header-actions">
+            <button
+              className="assistant-clear-memory"
+              type="button"
+              disabled={assistantBusy || Boolean(assistantPendingTask) || assistantMemoryLoading || assistantMemoryClearing}
+              onClick={() => void clearAssistantHistory()}
+            >
+              {assistantMemoryClearing ? "清除中" : "清除记忆"}
+            </button>
+            <button className="assistant-close" type="button" onClick={() => setAssistantOpen(false)}>
+              收起
+            </button>
+          </div>
         </div>
 
         <div className="assistant-messages" ref={assistantMessagesRef}>

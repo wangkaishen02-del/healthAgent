@@ -4,6 +4,7 @@ import { buildSystemPrompt, requestAgentPlan } from "./plan-service.ts";
 
 assert.match(buildSystemPrompt("帮我处理一下"), /requestedFields 使用 taskDescription/);
 assert.match(buildSystemPrompt("帮我撤件"), /优先使用 ask_user 询问案件号/);
+assert.match(buildSystemPrompt("继续刚才的任务"), /当前用户明确输入始终优先/);
 
 const graphService = new AssistantGraphService();
 const fakePlanner: typeof requestAgentPlan = async (text, _provider, context) => {
@@ -103,5 +104,50 @@ assert.equal(
   "cancelled",
 );
 assert.equal((await startingTask).status, "cancelled");
+
+const remembered: Array<{ taskId: string; userId: string; assistantReply: string }> = [];
+let loadedMemoryUser = "";
+const memoryGraph = new AssistantGraphService();
+memoryGraph.setMemoryForTesting({
+  load: async (userId) => {
+    loadedMemoryUser = userId;
+    return {
+      recentTurns: [{
+        taskId: "previous-task",
+        userText: "查询案件 CL202607260011",
+        assistantReply: "案件处于理算状态。",
+        recognized: ["CL202607260011"],
+        toolCalls: [],
+        pagePath: ["综合查询", "案件查询"],
+        createdAt: new Date().toISOString(),
+      }],
+    };
+  },
+  remember: async (input) => {
+    remembered.push({ taskId: input.taskId, userId: input.userId, assistantReply: input.assistantReply });
+  },
+});
+const memoryPlanner: typeof requestAgentPlan = async (_text, _provider, context) => ({
+  ok: true,
+  rawReplies: [],
+  plan: {
+    reply: context?.memory?.recentTurns[0]?.assistantReply ?? "没有历史记忆",
+    recognized: [],
+    decision: "finish",
+    toolCalls: [],
+  },
+}) as unknown as Awaited<ReturnType<typeof requestAgentPlan>>;
+memoryGraph.setPlannerForTesting(memoryPlanner);
+const memoryTask = await memoryGraph.startTask({
+  taskId: "graph-smoke-memory",
+  text: "继续刚才的任务",
+  provider: "deepseek",
+  actor: { userId: "user-a", username: "user-a" },
+});
+assert.equal(loadedMemoryUser, "user-a");
+assert.equal(memoryTask.plan?.reply, "案件处于理算状态。");
+assert.equal(remembered.length, 1);
+assert.equal(memoryTask.context?.memory, undefined, "历史记忆不能回传到浏览器任务上下文");
+await assert.rejects(memoryGraph.getTask(memoryTask.taskId, "user-b"), /assistant_task_not_found/);
 
 console.log("LangGraph assistant task tests passed");

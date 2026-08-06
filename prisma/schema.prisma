@@ -805,3 +805,19 @@ model IdempotencyRecord {
   @@index([createdAt], map: "idx_idempotency_created_at")
   @@map("idempotency_record")
 }
+
+model AssistantMemoryTurn {
+  id             String   @id @default(uuid()) @db.VarChar(50)
+  taskId         String   @unique @map("task_id") @db.VarChar(50)
+  userId         String   @map("user_id") @db.VarChar(100)
+  username       String   @db.VarChar(100)
+  userText       String   @map("user_text") @db.Text
+  assistantReply String   @map("assistant_reply") @db.Text
+  recognized     Json
+  toolCalls      Json     @map("tool_calls")
+  pagePath       Json     @map("page_path")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt], map: "idx_assistant_memory_user_created")
+  @@map("assistant_memory_turn")
+}

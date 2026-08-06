@@ -38,6 +38,13 @@ assert.equal(minimized.imageData, "[已移除文件内容]");
 assert.equal((minimized.items as unknown[]).length, 21);
 assert.match(String(minimized.description), /已裁剪 100 字符/);
 
+const memoryProtector = new ExternalDataProtector();
+const protectedMemory = memoryProtector.protect(JSON.stringify({
+  recentTurns: [{ userText: "继续处理张晨的案件 CL202607260011", assistantReply: "已找到张晨的案件" }],
+}));
+assert.equal(protectedMemory.includes("张晨"), false);
+assert.equal(protectedMemory.includes("CL202607260011"), false);
+
 const redacted = redactSensitiveText(original);
 assert.equal(redacted.includes("310101198901140066"), false);
 assert.equal(redacted.includes("13812345678"), false);

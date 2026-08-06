@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpException, Inject, Param, Post, Query } from "@nestjs/common";
+import { Body, Controller, Delete, Get, HttpException, Inject, Param, Post, Query } from "@nestjs/common";
 import {
   getAssistantRegistryToolCatalog,
   getCompactPageRegistration,
@@ -15,6 +15,11 @@ import { Roles } from "../auth/auth.decorators.ts";
 import { CurrentUser } from "../auth/auth.decorators.ts";
 import type { AuthenticatedUser } from "../auth/auth.types.ts";
 import { canAccessAssistantPage, filterAssistantMenus } from "../../../../src/assistant/access-control.ts";
+import {
+  clearAssistantMemory,
+  listAssistantMemory,
+  loadAssistantMemory,
+} from "../../../../src/assistant/memory-service.ts";
 
 @Controller("assistant")
 @Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer", "claim_admin")
@@ -41,7 +46,8 @@ export class AssistantController {
 
   @Post("plan")
   async plan(@Body() body: { text?: string; provider?: unknown; context?: AssistantContinuationContext } | null, @CurrentUser() user: AuthenticatedUser) {
-    const result = await createAssistantPlan(body ? { ...body, context: { ...body.context, actorRoles: user.roles } } : body);
+    const memory = await loadAssistantMemory(user.id).catch(() => ({ recentTurns: [] }));
+    const result = await createAssistantPlan(body ? { ...body, context: { ...body.context, actorRoles: user.roles, memory } } : body);
     if (result.status !== 200) throw new HttpException(result.body, result.status);
     return result.body;
   }
@@ -65,6 +71,7 @@ export class AssistantController {
         text,
         provider,
         context: { ...body?.context, actorRoles: user.roles },
+        actor: { userId: user.id, username: user.username },
       });
     } catch (error) {
       throw this.toTaskException(error);
@@ -84,28 +91,40 @@ export class AssistantController {
       const resume = body.type === "page_result"
         ? { ...body, context: { ...body.context, actorRoles: user.roles } }
         : body;
-      return await this.graphService.resumeTask(taskId, resume);
+      return await this.graphService.resumeTask(taskId, resume, user.id);
     } catch (error) {
       throw this.toTaskException(error);
     }
   }
 
   @Post("tasks/:taskId/cancel")
-  async cancelTask(@Param("taskId") taskId: string) {
+  async cancelTask(@Param("taskId") taskId: string, @CurrentUser() user: AuthenticatedUser) {
     try {
-      return await this.graphService.cancelTask(taskId);
+      return await this.graphService.cancelTask(taskId, user.id);
     } catch (error) {
       throw this.toTaskException(error);
     }
   }
 
   @Get("tasks/:taskId")
-  async task(@Param("taskId") taskId: string) {
+  async task(@Param("taskId") taskId: string, @CurrentUser() user: AuthenticatedUser) {
     try {
-      return await this.graphService.getTask(taskId);
+      return await this.graphService.getTask(taskId, user.id);
     } catch (error) {
       throw this.toTaskException(error);
     }
+  }
+
+  @Get("memory")
+  async memory(@Query("limit") rawLimit: string | undefined, @CurrentUser() user: AuthenticatedUser) {
+    const parsed = Number(rawLimit ?? 20);
+    const limit = Number.isFinite(parsed) ? Math.min(50, Math.max(1, Math.floor(parsed))) : 20;
+    return { turns: await listAssistantMemory(user.id, limit) };
+  }
+
+  @Delete("memory")
+  async clearMemory(@CurrentUser() user: AuthenticatedUser) {
+    return { cleared: await clearAssistantMemory(user.id) };
   }
 
   private toTaskException(error: unknown) {

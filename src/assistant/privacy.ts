@@ -61,6 +61,7 @@ function maskBank(value: string) {
 
 export function redactSensitiveText(content: string) {
   return content
+    .replace(/\b(?:CL|GI|EV)[A-Z0-9-]{6,}\b/gi, "***")
     .replace(/\b\d{17}[0-9Xx]\b/g, (value) => maskId(value))
     .replace(/\b\d{15}\b/g, (value) => maskId(value))
     .replace(/\b1[3-9]\d{9}\b/g, (value) => maskPhone(value))
@@ -71,12 +72,12 @@ export function redactSensitiveText(content: string) {
     .replace(/((?:被保人|申请人|领款人|患者|操作人)?姓名\s*[：:=]\s*)([\u4e00-\u9fa5·]{2,20})/g, "$1***");
 }
 
-type PiiKind = "NAME" | "ID" | "PHONE" | "BANK" | "EMAIL" | "MEDICAL" | "ADDRESS";
+type PiiKind = "NAME" | "ID" | "PHONE" | "BANK" | "EMAIL" | "MEDICAL" | "ADDRESS" | "REF";
 
 export class ExternalDataProtector {
   private readonly originalToToken = new Map<string, string>();
   private readonly tokenToOriginal = new Map<string, string>();
-  private readonly counters: Record<PiiKind, number> = { NAME: 0, ID: 0, PHONE: 0, BANK: 0, EMAIL: 0, MEDICAL: 0, ADDRESS: 0 };
+  private readonly counters: Record<PiiKind, number> = { NAME: 0, ID: 0, PHONE: 0, BANK: 0, EMAIL: 0, MEDICAL: 0, ADDRESS: 0, REF: 0 };
 
   private tokenFor(original: string, kind: PiiKind) {
     if (this.tokenToOriginal.has(original)) return original;
@@ -91,6 +92,7 @@ export class ExternalDataProtector {
 
   protect(content: string) {
     let protectedContent = content
+      .replace(/\b(?:CL|GI|EV)[A-Z0-9-]{6,}\b/gi, (value) => this.tokenFor(value, "REF"))
       .replace(/\b\d{17}[0-9Xx]\b/g, (value) => this.tokenFor(value, "ID"))
       .replace(/\b1[3-9]\d{9}\b/g, (value) => this.tokenFor(value, "PHONE"))
       .replace(/\b\d{16,19}\b/g, (value) => this.tokenFor(value, "BANK"))
@@ -118,7 +120,7 @@ export class ExternalDataProtector {
     );
 
     protectedContent = protectedContent.replace(
-      /((?:查询|查找|检索|查一下|查|找|被保人|申请人|领款人|患者|姓名)(?:为|是|叫|：|:|\s)*)([\u4e00-\u9fa5·]{2,4})(?=的(?:保单|案件|信息|台账)|，|。|\s|$)/g,
+      /((?:查询|查找|检索|查一下|查|找|处理|办理|打开|被保人|申请人|领款人|患者|姓名)(?:为|是|叫|：|:|\s)*)([\u4e00-\u9fa5·]{2,4})(?=的(?:保单|案件|信息|台账)|，|。|\s|$)/g,
       (_match, prefix: string, name: string) => `${prefix}${this.tokenFor(name, "NAME")}`,
     );
     protectedContent = protectedContent
@@ -128,7 +130,7 @@ export class ExternalDataProtector {
   }
 
   restore(content: string) {
-    return content.replace(/<PII_(?:NAME|ID|PHONE|BANK|EMAIL|MEDICAL|ADDRESS)_\d+>/g, (token) => this.tokenToOriginal.get(token) ?? token);
+    return content.replace(/<PII_(?:NAME|ID|PHONE|BANK|EMAIL|MEDICAL|ADDRESS|REF)_\d+>/g, (token) => this.tokenToOriginal.get(token) ?? token);
   }
 
   get replacementCount() {
