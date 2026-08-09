@@ -54,9 +54,16 @@ export async function inspectClaimCaseForAssistant(caseNo: string, roles: readon
   if ((ocrStatusCounts.failed ?? 0) > 0) warnings.push(`${ocrStatusCounts.failed} 个影像件 OCR 失败`);
   if ((ocrStatusCounts.queued ?? 0) + (ocrStatusCounts.processing ?? 0) > 0) warnings.push("仍有影像件正在等待或执行 OCR");
 
-  const workflowActions = CLAIM_TRANSITION_RULES
-    .filter((rule) => rule.from === claimCase.status && canUseWorkflowRule(roles, rule.roles))
-    .map((rule) => ({ action: rule.action, label: rule.description, toStatus: rule.to, toStatusLabel: CLAIM_STATUS_LABELS[rule.to] }));
+  const businessNextActions = CLAIM_TRANSITION_RULES
+    .filter((rule) => rule.from === claimCase.status)
+    .map((rule) => ({
+      action: rule.action,
+      label: rule.description,
+      toStatus: rule.to,
+      toStatusLabel: CLAIM_STATUS_LABELS[rule.to],
+      allowedForCurrentUser: canUseWorkflowRule(roles, rule.roles),
+    }));
+  const workflowActions = businessNextActions.filter((action) => action.allowedForCurrentUser);
   const insured = claimCase.parties.find((party) => party.role === "insured");
 
   return {
@@ -95,6 +102,7 @@ export async function inspectClaimCaseForAssistant(caseNo: string, roles: readon
       calculation: isClaimCaseEditable(claimCase.status, "calculation"),
     },
     warnings,
+    businessNextActions,
     workflowActions,
     recommendedPage: canAccessAssistantPage(recommendedPage(claimCase.status), roles)
       ? recommendedPage(claimCase.status)

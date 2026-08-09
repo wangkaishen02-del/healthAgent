@@ -16,6 +16,7 @@
     "test:assistant-graph": "AUTH_ENABLED=false LANGGRAPH_CHECKPOINTER=memory node --import tsx src/assistant/assistant-graph-smoke-test.ts",
     "test:assistant-privacy": "node --import tsx src/assistant/privacy-test.ts",
     "test:assistant-memory": "node --import tsx src/assistant/memory-test.ts",
+    "test:assistant-deepseek": "node --import tsx src/assistant/deepseek-multiturn-test.ts",
     "test:assistant-backend": "node --import tsx src/assistant/backend-tools-test.ts",
     "test:claim-state-machine": "node --import tsx src/claims/state-machine-test.ts",
     "test:claim-workflow": "tsx --tsconfig apps/api/tsconfig.json src/api/claim-workflow-smoke-test.ts",

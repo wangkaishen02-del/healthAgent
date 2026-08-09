@@ -40,10 +40,17 @@ assert.match(String(minimized.description), /已裁剪 100 字符/);
 
 const memoryProtector = new ExternalDataProtector();
 const protectedMemory = memoryProtector.protect(JSON.stringify({
-  recentTurns: [{ userText: "继续处理张晨的案件 CL202607260011", assistantReply: "已找到张晨的案件" }],
+  recentTurns: [{
+    userText: "继续处理张晨的案件 CL202607260011，保单 GI2026000001，事件 EV202607180001",
+    assistantReply: "已找到张晨的案件",
+  }],
 }));
 assert.equal(protectedMemory.includes("张晨"), false);
 assert.equal(protectedMemory.includes("CL202607260011"), false);
+assert.match(protectedMemory, /<CASE_NO_1>/);
+assert.match(protectedMemory, /<POLICY_NO_1>/);
+assert.match(protectedMemory, /<EVENT_NO_1>/);
+assert.match(memoryProtector.restore(protectedMemory), /CL202607260011.*GI2026000001.*EV202607180001/);
 
 const redacted = redactSensitiveText(original);
 assert.equal(redacted.includes("310101198901140066"), false);

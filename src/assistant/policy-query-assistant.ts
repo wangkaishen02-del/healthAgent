@@ -246,6 +246,8 @@ export function formatToolInvocation(tool: string, args: Record<string, unknown>
     get_page_registry: "查询页面信息",
     query_underwriting: "查询承保信息",
     query_claim_cases: "查询案件信息",
+    inspect_claim_case: "检查案件资料与流程",
+    summarize_claim_work_queue: "汇总案件与 OCR 队列",
     ask_user: "询问用户",
     finish_task: "完成任务",
     open_page: "打开页面",

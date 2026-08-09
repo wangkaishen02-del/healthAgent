@@ -19,6 +19,7 @@ assert.equal(inspection.caseNo, sourceCase.caseNo);
 assert.equal(inspection.status, "entering");
 assert.equal(inspection.editableAreas.calculation, true);
 assert(inspection.workflowActions.some((action) => action.action === "calculate"));
+assert(inspection.businessNextActions.some((action) => action.action === "calculate" && action.allowedForCurrentUser));
 assert.equal(typeof inspection.dataSummary.billCount, "number");
 assert(!("rawText" in inspection.dataSummary), "inspection must not expose OCR source text");
 
@@ -28,6 +29,7 @@ const viewerInspection = await executeAssistantBackendTool(
 );
 if (!("found" in viewerInspection) || viewerInspection.found !== true || !("workflowActions" in viewerInspection)) throw new Error("viewer inspection missing");
 assert.deepEqual(viewerInspection.workflowActions, [], "read-only roles must not receive workflow actions");
+assert(viewerInspection.businessNextActions.some((action) => action.action === "calculate" && !action.allowedForCurrentUser));
 assert.equal(viewerInspection.recommendedPage, "claim_query", "read-only roles should stay on an accessible page");
 
 const missingInspection = await executeAssistantBackendTool(

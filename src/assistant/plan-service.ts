@@ -151,7 +151,7 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
     rules.push("案件号与保单号必须严格区分：CL 是案件号，GI 是保单号。仅查询案件时使用只读案件查询页；只有明确修改、提交或撤件时才进入受理立案。用户已给案件号时不得再索要其他定位条件。");
   }
   if (/CL[A-Z0-9-]{6,}/i.test(scope) && /(情况|进度|状态|资料|缺少|完整|OCR|下一步|能做什么|为什么)/i.test(scope)) {
-    rules.push("用户询问指定案件的情况、资料、OCR、异常或下一步时，优先调用 inspect_claim_case；依据返回的 warnings、workflowActions 和 recommendedPage 回答，不猜测流程动作。仅在用户明确要求打开页面或办理时再执行页面动作。");
+    rules.push("用户询问指定案件的情况、资料、OCR、异常或下一步时，优先调用 inspect_claim_case；依据 warnings 判断资料问题，依据 businessNextActions 说明业务上可继续的方向，依据 workflowActions 判断当前账号能执行什么。businessNextActions 非空但 workflowActions 为空表示存在业务下一步但当前账号无权限，不能说成没有下一步。仅在用户明确要求打开页面或办理时再执行页面动作。");
   }
   if (/(多少|数量|待办|积压|工作量|队列|各环节|OCR).{0,12}(案件|影像|任务)|(?:案件|影像|任务).{0,12}(多少|数量|待办|积压|队列)/i.test(scope)) {
     rules.push("用户询问整体案件环节数量、待办量或 OCR 队列时，调用 summarize_claim_work_queue 获取实时汇总，不打开列表后自行估算。");
@@ -208,6 +208,7 @@ ${JSON.stringify(getAssistantControlToolCatalog())}
 15. 当任务缺少系统无法查询且用户未提供的必填信息时，使用 ask_user 明确询问并列出 requestedFields。ask_user 会暂停任务，用户回答后继续原任务；不要用普通 reply 或 finish_task 代替追问。
 16. 追问使用自然语言，不要求字段ID、枚举值或技术日期格式；内部自行转换。引用用户描述须保留原意，不把改写冒充原话。
 17. 历史记忆中的案件号、人员、筛选值不得在有歧义时直接用于数据变更。当前请求未明确指向哪个历史对象时先 ask_user 确认，不得静默沿用。
+18. 为保护数据，案件号、保单号和事件号可能显示为 <CASE_NO_n>、<POLICY_NO_n>、<EVENT_NO_n>。它们是已提供的有效编号别名，可原样用于工具参数；不得因为看到别名而再次索要编号。
 ${buildContextualRules(userText, context)}
 
 输出结构：
@@ -293,6 +294,13 @@ export async function executeAssistantBackendTool(call: AssistantBackendCall, ro
   return { type: "backend_tool_error", reason: "tool_not_supported" };
 }
 
+type AssistantBackendExecutor = (call: AssistantBackendCall, roles?: readonly string[]) => Promise<unknown>;
+let assistantBackendExecutor: AssistantBackendExecutor = executeAssistantBackendTool;
+
+export function setAssistantBackendExecutorForTesting(executor: AssistantBackendExecutor | null) {
+  assistantBackendExecutor = executor ?? executeAssistantBackendTool;
+}
+
 function formatDiscoveryStep(call: AssistantDiscoveryCall) {
   return formatToolInvocation(call.tool, call.args);
 }
@@ -339,6 +347,19 @@ function asksForRedundantClaimLocator(
     call.args.requestedFields.some((field) => ["caseNo", "policyNo", "insuredName", "insuredIdNo"].includes(field)),
   );
   if (!hasCaseNo || !asksForLocator) return false;
+  const claimWasNotFound = backendToolResults.some((result) => result && typeof result === "object"
+    && (result as { type?: unknown }).type === "claim_case_query_result"
+    && (result as { total?: unknown }).total === 0);
+  return !claimWasNotFound;
+}
+
+function repliesWithRedundantClaimLocator(
+  userText: string,
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  backendToolResults: unknown[],
+) {
+  if (!/CL[A-Z0-9-]{6,}/i.test(userText)) return false;
+  if (!/(请|需要|麻烦).{0,8}(提供|补充|告知).{0,8}(案件号|保单号|姓名|证件号)/.test(plan.reply.replace(/\s+/g, ""))) return false;
   const claimWasNotFound = backendToolResults.some((result) => result && typeof result === "object"
     && (result as { type?: unknown }).type === "claim_case_query_result"
     && (result as { total?: unknown }).total === 0);
@@ -652,7 +673,8 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       continue;
     }
 
-    if (asksForRedundantClaimLocator(userText, plan, backendToolResults)) {
+    if (asksForRedundantClaimLocator(userText, plan, backendToolResults)
+      || repliesWithRedundantClaimLocator(userText, plan, backendToolResults)) {
       messages.push({ role: "assistant", content: result.content });
       messages.push({
         role: "user",
@@ -728,7 +750,7 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
         },
       };
     }
-    const backendResults = await Promise.all(backendCalls.map((call) => executeAssistantBackendTool(call, context?.actorRoles)));
+    const backendResults = await Promise.all(backendCalls.map((call) => assistantBackendExecutor(call, context?.actorRoles)));
     backendToolResults.push(...backendResults);
     discoveredResources.push(...discoveryResults);
     discoveryCalls.forEach((call) => discoverySteps.push(formatDiscoveryStep(call)));
