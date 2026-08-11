@@ -27,6 +27,12 @@ assert.match(protectedContent, /<PII_NAME_1>/);
 assert.equal(protector.restore(protectedContent), original);
 assert.ok(protector.replacementCount >= 5);
 
+const locatorProtector = new ExternalDataProtector();
+const protectedLocator = locatorProtector.protect("先根据被保人姓名陈浩定位最近一笔尚未结案的案件");
+assert.equal(protectedLocator.includes("陈浩"), false, "names immediately followed by 定位 must be protected");
+assert.match(protectedLocator, /<PII_NAME_1>/);
+assert.equal(locatorProtector.restore(protectedLocator), "先根据被保人姓名陈浩定位最近一笔尚未结案的案件");
+
 const minimized = minimizeAssistantData({
   ocrText: "医疗票据正文".repeat(1_000),
   imageData: "data:image/png;base64,secret",

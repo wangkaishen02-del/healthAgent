@@ -134,7 +134,7 @@ export class ExternalDataProtector {
     );
 
     protectedContent = protectedContent.replace(
-      /((?:查询|查找|检索|查一下|查|找|处理|办理|打开|被保人|申请人|领款人|患者|姓名)(?:为|是|叫|：|:|\s)*)([\u4e00-\u9fa5·]{2,4})(?=的(?:保单|案件|信息|台账)|，|。|\s|$)/g,
+      /((?:查询|查找|检索|查一下|查|找|处理|办理|打开|被保人姓名|被保人|申请人姓名|申请人|领款人姓名|领款人|患者姓名|患者|姓名)(?:为|是|叫|：|:|\s)*)([\u4e00-\u9fa5·]{2,4})(?=的(?:保单|案件|信息|台账)|定位|，|。|\s|$)/g,
       (_match, prefix: string, name: string) => `${prefix}${this.tokenFor(name, "NAME")}`,
     );
     protectedContent = protectedContent

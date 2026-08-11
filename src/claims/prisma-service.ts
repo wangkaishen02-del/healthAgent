@@ -135,6 +135,8 @@ export async function queryClaimCasesDb(input: {
   reportDateTo?: string;
   page?: number;
   pageSize?: number;
+  sortBy?: "updatedAt" | "reportDate" | "createdAt";
+  sortOrder?: "asc" | "desc";
 }) {
   const keyword = input.keyword?.trim();
   const caseNo = input.caseNo?.trim().toUpperCase();
@@ -185,7 +187,12 @@ export async function queryClaimCasesDb(input: {
   };
   const [total, rows] = await Promise.all([
     prisma.claimCase.count({ where }),
-    prisma.claimCase.findMany({ where, orderBy: { updatedAt: "desc" }, skip: (page - 1) * pageSize, take: pageSize }),
+    prisma.claimCase.findMany({
+      where,
+      orderBy: { [input.sortBy ?? "updatedAt"]: input.sortOrder ?? "desc" },
+      skip: (page - 1) * pageSize,
+      take: pageSize,
+    }),
   ]);
   return { total, page, pageSize, items: await hydrateCases(rows) };
 }
