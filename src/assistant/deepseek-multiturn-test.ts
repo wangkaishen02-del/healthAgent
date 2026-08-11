@@ -10,7 +10,7 @@ const secondCase = { caseNo: "CL209901010002", status: "calculating" };
 const viewerRoles = ["claim_viewer"];
 const operatorRoles = ["claim_acceptor", "claim_calculator", "claim_reviewer"];
 
-setAssistantBackendExecutorForTesting(async (call) => {
+setAssistantBackendExecutorForTesting(async (call, roles) => {
   if (call.tool === "inspect_claim_case") {
     const status = call.args.caseNo === secondCase.caseNo ? secondCase.status : firstCase.status;
     return {
@@ -27,7 +27,9 @@ setAssistantBackendExecutorForTesting(async (call) => {
         toStatusLabel: "理算",
         allowedForCurrentUser: false,
       }],
-      workflowActions: [],
+      workflowActions: roles?.some((role) => ["claim_acceptor", "claim_calculator", "claim_reviewer"].includes(role))
+        ? [{ action: "cancel", label: "案件撤件" }]
+        : [],
       recommendedPage: "claim_query",
     };
   }
@@ -144,8 +146,18 @@ const suppliedLocator = await requestAgentPlan(
   "deepseek",
   { actorRoles: operatorRoles },
 );
-assert.equal(requestedFields(suppliedLocator).length, 0, "补充案件号后不得重复追问定位信息");
+assert.equal(requestedFields(suppliedLocator).includes("caseNo"), false, "补充案件号后不得重复追问定位信息");
 assert.match(planText(suppliedLocator), new RegExp(firstCase.caseNo));
+
+const withdrawalByName = await requestAgentPlan(
+  "帮我处理撤件：先根据被保人姓名测试人员定位最近一笔尚未结案的案件，核对当前状态是否允许撤件；如允许，说明撤件影响并向我确认后再执行。",
+  "deepseek",
+  { actorRoles: operatorRoles },
+);
+assert.equal(hasBackendType(withdrawalByName, "claim_case_query_result"), true, "撤件应先按被保人姓名定位案件");
+assert.equal(hasBackendType(withdrawalByName, "claim_case_inspection"), true, "撤件定位后必须核对案件状态和权限");
+assert.equal(requestedFields(withdrawalByName).length > 0, true, "用户要求确认后执行时应暂停并请求确认");
+assert.match(withdrawalByName.ok ? withdrawalByName.plan.reply : "", /已撤件|撤件后/);
 
 const pagedCount = await requestAgentPlan(
   "这次查询一共有多少条案件？不要打开详情",
@@ -198,7 +210,7 @@ assert.doesNotMatch(planText(identifierBoundary), new RegExp(`"fieldId":"policyN
 assert.match(planText(identifierBoundary), new RegExp(secondCase.caseNo));
 
 console.log(JSON.stringify({
-  passed: 10,
+  passed: 11,
   cases: [firstCase.caseNo, secondCase.caseNo],
   scenarios: [
     "案件诊断",
@@ -207,6 +219,7 @@ console.log(JSON.stringify({
     "当前输入覆盖历史",
     "缺少定位追问",
     "补充后继续",
+    "按姓名定位后撤件确认",
     "分页总数理解",
     "成功后禁止重复执行",
     "角色越权拦截",

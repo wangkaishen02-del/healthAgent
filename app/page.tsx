@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { formatToolCall, type AssistantPlan, type AssistantToolCall } from "../src/assistant/policy-query-assistant";
+import { isAssistantOperationError, summarizeAssistantToolResults, type AssistantToolExecutionRecord } from "../src/assistant/tool-execution-result";
+import { applyRuntimePageCapabilities, type RuntimePageCapabilities } from "../src/assistant/runtime-page-capabilities";
 import type { RegisteredPageController } from "../src/assistant/page-controller";
 import type { PageRegistration, RegisteredRegion } from "../src/assistant/page-registry";
 import { apiFetch } from "../src/api/client";
@@ -47,6 +49,9 @@ type AssistantMessage = {
   source?: string;
   systemNote?: string;
   steps?: string[];
+  variant?: "tool-results" | "reasoning";
+  thought?: string;
+  actionExplanation?: string;
 };
 type AssistantContinuationContext = {
   currentPagePath?: string[];
@@ -54,11 +59,32 @@ type AssistantContinuationContext = {
   history?: Array<{ toolCalls: AssistantToolCall[] }>;
   lastOperationResult?: unknown;
   backendToolResults?: unknown[];
+  currentPlanStep?: number;
+};
+type AssistantVisiblePlan = {
+  steps: string[];
+  currentStep: number;
+  completed: boolean;
+};
+type AssistantTaskIntent = {
+  mode: "read" | "write" | "mixed" | "navigate" | "explain" | "unknown";
+  summary: string;
+  objectives: string[];
+};
+const ASSISTANT_INTENT_LABELS: Record<AssistantTaskIntent["mode"], string> = {
+  read: "只读查询",
+  write: "数据变更",
+  mixed: "查询与变更",
+  navigate: "页面导航",
+  explain: "解释说明",
+  unknown: "待确认",
 };
 type AssistantTaskResponse = {
   taskId: string;
   status: "running" | "waiting_page" | "waiting_user" | "completed" | "cancelled";
   plan: AssistantPlan | null;
+  taskPlan: string[];
+  taskIntent: AssistantTaskIntent;
   context?: AssistantContinuationContext;
   question?: string;
   requestedFields?: string[];
@@ -206,6 +232,9 @@ export default function Page() {
   const [assistantStopping, setAssistantStopping] = useState(false);
   const [assistantProgress, setAssistantProgress] = useState<string | null>(null);
   const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([ASSISTANT_WELCOME_MESSAGE]);
+  const [assistantTaskPlan, setAssistantTaskPlan] = useState<AssistantVisiblePlan | null>(null);
+  const [assistantTaskIntent, setAssistantTaskIntent] = useState<AssistantTaskIntent | null>(null);
+  const [assistantPlanExpanded, setAssistantPlanExpanded] = useState(false);
   const [assistantMemoryLoading, setAssistantMemoryLoading] = useState(false);
   const [assistantMemoryClearing, setAssistantMemoryClearing] = useState(false);
   const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
@@ -229,6 +258,20 @@ export default function Page() {
   const claimReviewCompletionControllerRef = useRef<RegisteredPageController | null>(null);
   const assistantAbortControllerRef = useRef<AbortController | null>(null);
   const assistantTaskIdRef = useRef<string | null>(null);
+
+  function getRegisteredPageController(pageId: string) {
+    if (pageId === "calculation_config") return calculationConfigControllerRef.current;
+    if (pageId === "standard_formula_management") return standardFormulaControllerRef.current;
+    if (pageId === "claim_query") return claimQueryControllerRef.current;
+    if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
+    if (pageId === "claim_entry_calculation") return claimEntryCalculationControllerRef.current;
+    if (pageId === "claim_review_completion") return claimReviewCompletionControllerRef.current;
+    return null;
+  }
+
+  function runtimeCapabilitiesFor(pageId: string) {
+    return getRegisteredPageController(pageId)?.getRuntimeCapabilities?.();
+  }
 
   function updateInsuredPlanId(value: string) {
     insuredPlanIdRef.current = value;
@@ -444,18 +487,9 @@ export default function Page() {
     let currentPolicies = policiesRef.current;
     let executionTab = initialTab;
     let lastOperationResult: unknown = previousOperationResult;
+    const toolResults: AssistantToolExecutionRecord[] = [];
     let openedPageId: string | null = null;
     const steps: string[] = [];
-    const getRegisteredPageController = (pageId: string) => {
-      if (pageId === "calculation_config") return calculationConfigControllerRef.current;
-      if (pageId === "standard_formula_management") return standardFormulaControllerRef.current;
-      if (pageId === "claim_query") return claimQueryControllerRef.current;
-      if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
-      if (pageId === "claim_entry_calculation") return claimEntryCalculationControllerRef.current;
-      if (pageId === "claim_review_completion") return claimReviewCompletionControllerRef.current;
-      return null;
-    };
-
     const fieldExecutors: Record<string, (value: string) => Promise<unknown>> = {};
     (Object.keys(EMPTY_POLICY_FILTERS) as Array<keyof PolicyFilters>).forEach((fieldId) => {
       fieldExecutors[`policy_query.${fieldId}`] = async (value) => {
@@ -509,6 +543,9 @@ export default function Page() {
             policyNo: policy.policyNo,
             policyName: policy.policyName,
             applicantName: policy.applicantName,
+            policyStatus: policy.policyStatus,
+            effectiveDate: policy.effectiveDate,
+            expiryDate: policy.expiryDate,
             insuredCount: policy.insuredCount,
             matchedInsuredCount: matchedInsureds?.total ?? undefined,
             matchedInsureds: matchedInsureds?.items.map((item) => ({
@@ -540,6 +577,10 @@ export default function Page() {
           type: "detail_view",
           pageId: "policy_detail",
           actionId: "view_detail",
+          policyNo: detail.policy.policyNo,
+          policyStatus: detail.policy.policyStatus,
+          effectiveDate: detail.policy.effectiveDate,
+          expiryDate: detail.policy.expiryDate,
           coveragePlanCount: detail.coveragePlans.length,
           productCount: detail.products.length,
           insuredCount: detail.insuredCount,
@@ -577,6 +618,7 @@ export default function Page() {
       const actionOptions = operationNamespace
         ? { operationId: `${operationNamespace}:${toolIndex}` }
         : undefined;
+      try {
       // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
       const requiredTab = toolCall.tool === "open_page" ? null : pageIdToMainTab(toolCall.args.pageId);
       if (requiredTab && (executionTab !== requiredTab || !executionOpenTabs.has(requiredTab))) {
@@ -636,6 +678,8 @@ export default function Page() {
         executionOpenTabs.add(targetTab);
         openedPageId = toolCall.args.pageId;
         if (targetTab === "policy") await loadPolicies({ ...EMPTY_POLICY_FILTERS });
+        lastOperationResult = { type: "page_opened", pageId: toolCall.args.pageId, success: true };
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
         continue;
       }
 
@@ -644,26 +688,32 @@ export default function Page() {
       if (toolCall.tool === "set_field") {
         const executor = fieldExecutors[`${toolCall.args.pageId}.${toolCall.args.fieldId}`];
         const controller = getRegisteredPageController(toolCall.args.pageId);
-        lastOperationResult = executor
+        const operationResult = executor
           ? await executor(toolCall.args.value)
           : controller
             ? await controller.setField(toolCall.args.fieldId, toolCall.args.value)
             : { type: "operation_error", reason: "field_executor_not_bound", pageId: toolCall.args.pageId, fieldId: toolCall.args.fieldId };
+        lastOperationResult = operationResult;
+        toolResults.push({ tool: formatToolCall(toolCall), result: operationResult });
         await delay(180);
         throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(operationResult)) break;
         continue;
       }
 
       if (toolCall.tool === "click_button") {
         const executor = pageActionExecutors[`${toolCall.args.pageId}.${toolCall.args.actionId}`];
         const controller = getRegisteredPageController(toolCall.args.pageId);
-        lastOperationResult = executor
+        const operationResult = executor
           ? await executor()
           : controller
             ? await controller.executeAction(toolCall.args.actionId, actionOptions)
             : { type: "operation_error", reason: "action_executor_not_bound", pageId: toolCall.args.pageId, actionId: toolCall.args.actionId };
+        lastOperationResult = operationResult;
+        toolResults.push({ tool: formatToolCall(toolCall), result: operationResult });
         await delay(220);
         throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(operationResult)) break;
         continue;
       }
 
@@ -671,8 +721,10 @@ export default function Page() {
         const controller = getRegisteredPageController(toolCall.args.pageId);
         if (controller) {
           lastOperationResult = await controller.executeRowAction(toolCall.args.actionId, toolCall.args.row, actionOptions);
+          toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
           await delay(220);
           throwIfAssistantAborted(signal);
+          if (isAssistantOperationError(lastOperationResult)) break;
           continue;
         }
         const selectedPolicy = currentPolicies[toolCall.args.row - 1];
@@ -685,24 +737,33 @@ export default function Page() {
           const targetTab = drawerTabMap[toolCall.args.actionId as keyof typeof drawerTabMap];
           if (!targetTab) {
             lastOperationResult = { type: "operation_error", reason: "row_action_executor_not_bound", actionId: toolCall.args.actionId };
-            continue;
+          } else {
+            const { detail, insuredResult } = await openPolicyDrawer(selectedPolicy.id, targetTab);
+            openedPageId = "policy_detail";
+            lastOperationResult = {
+              type: "open_policy_drawer",
+              policyId: selectedPolicy.id,
+              tab: toolCall.args.actionId,
+              policyNo: detail.policy.policyNo,
+              policyName: detail.policy.policyName,
+              coveragePlanCount: detail.coveragePlans.length,
+              coveragePlans: detail.coveragePlans.map((plan) => ({ id: plan.id, code: plan.planCode, name: plan.planName })),
+              insuredCount: detail.insuredCount,
+              listResult: insuredResult ? buildInsuredListContext(insuredResult) : undefined,
+            };
           }
-          const { detail, insuredResult } = await openPolicyDrawer(selectedPolicy.id, targetTab);
-          openedPageId = "policy_detail";
+        } else {
           lastOperationResult = {
-            type: "open_policy_drawer",
-            policyId: selectedPolicy.id,
-            tab: toolCall.args.actionId,
-            policyNo: detail.policy.policyNo,
-            policyName: detail.policy.policyName,
-            coveragePlanCount: detail.coveragePlans.length,
-            coveragePlans: detail.coveragePlans.map((plan) => ({ id: plan.id, code: plan.planCode, name: plan.planName })),
-            insuredCount: detail.insuredCount,
-            listResult: insuredResult ? buildInsuredListContext(insuredResult) : undefined,
+            type: "operation_error",
+            reason: "row_not_found",
+            pageId: toolCall.args.pageId,
+            row: toolCall.args.row,
           };
-          await delay(220);
-          throwIfAssistantAborted(signal);
         }
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
+        await delay(220);
+        throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(lastOperationResult)) break;
       }
 
       if (toolCall.tool === "click_list_item_action") {
@@ -756,8 +817,20 @@ export default function Page() {
             itemId: toolCall.args.itemId,
           };
         }
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
         await delay(220);
         throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(lastOperationResult)) break;
+      }
+      } catch {
+        throwIfAssistantAborted(signal);
+        lastOperationResult = {
+          type: "operation_error",
+          reason: "tool_execution_failed",
+          tool: formatToolCall(toolCall),
+        };
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
+        break;
       }
     }
 
@@ -779,6 +852,19 @@ export default function Page() {
     Object.assign(runtimeFieldOptions, claimRegistrationControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimEntryCalculationControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimReviewCompletionControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    const runtimePageCapabilities = Object.fromEntries(
+      [
+        "calculation_config",
+        "standard_formula_management",
+        "claim_query",
+        "claim_registration",
+        "claim_entry_calculation",
+        "claim_review_completion",
+      ].flatMap((pageId) => {
+        const capabilities = runtimeCapabilitiesFor(pageId);
+        return capabilities ? [[pageId, capabilities] as const] : [];
+      }),
+    ) satisfies Record<string, RuntimePageCapabilities>;
 
     return {
       steps,
@@ -786,9 +872,11 @@ export default function Page() {
       openTabs: executionOpenTabs,
       openedPageId,
       runtimeFieldOptions,
-      executionResult: lastOperationResult ?? {
+      runtimePageCapabilities,
+      toolResults,
+      executionResult: summarizeAssistantToolResults(toolResults, lastOperationResult ?? {
         executedActions: toolCalls.map(formatToolCall),
-      },
+      }),
     };
   }
 
@@ -808,6 +896,11 @@ export default function Page() {
     });
     setAssistantInput("");
     setAssistantPendingTask(null);
+    if (!pendingTask) {
+      setAssistantTaskPlan(null);
+      setAssistantTaskIntent(null);
+      setAssistantPlanExpanded(false);
+    }
 
     setAssistantBusy(true);
     setAssistantStopping(false);
@@ -829,7 +922,7 @@ export default function Page() {
               : mainTab === "claim_review_completion"
                 ? ["理赔处理", "审核结案"]
                 : ["综合查询", "案件查询"];
-      let allSteps: string[] = [];
+      let displayedToolEventSequence = 0;
       let lastExecutedPlan: AssistantPlan | null = null;
       let lastExecutionResult: {
         currentPage: string;
@@ -861,6 +954,74 @@ export default function Page() {
         return response.json() as Promise<AssistantTaskResponse>;
       }
 
+      function appendToolResults(lines: string[]) {
+        if (!lines.length) return;
+        displayedToolEventSequence += 1;
+        setAssistantMessages((current) => {
+          const last = current.at(-1);
+          if (last?.variant === "tool-results") {
+            return [
+              ...current.slice(0, -1),
+              { ...last, content: `${last.content}\n${lines.join("\n")}` },
+            ];
+          }
+          return [...current, {
+            id: `assistant-tool-result-${Date.now()}-${displayedToolEventSequence}`,
+            role: "assistant" as const,
+            content: lines.join("\n"),
+            source: "工具结果",
+            variant: "tool-results" as const,
+          }];
+        });
+      }
+
+      function showTaskToolResults(response: AssistantTaskResponse) {
+        const plan = response.plan;
+        if (!plan) return;
+        appendToolResults((plan.discoverySteps ?? []).map((step) => `✓ ${step}`));
+      }
+
+      function showPageToolResults(records: AssistantToolExecutionRecord[]) {
+        appendToolResults(records.map((record) => {
+          const failed = isAssistantOperationError(record.result);
+          const reason = failed && record.result && typeof record.result === "object"
+            ? String((record.result as { reason?: unknown }).reason ?? "unknown_error")
+            : "";
+          return `${failed ? "×" : "✓"} ${record.tool}${reason ? ` · ${reason}` : ""}`;
+        }));
+      }
+
+      function showModelReasoning(plan: AssistantPlan, taskPlanLength: number) {
+        if (!plan.thought && !plan.actionExplanation) return;
+        displayedToolEventSequence += 1;
+        setAssistantMessages((current) => [...current, {
+          id: `assistant-reasoning-${Date.now()}-${displayedToolEventSequence}`,
+          role: "assistant" as const,
+          content: taskPlanLength && plan.planStep ? `计划进度 ${plan.planStep}/${taskPlanLength}` : "本轮决策",
+          source: "模型过程",
+          variant: "reasoning" as const,
+          thought: plan.thought,
+          actionExplanation: plan.actionExplanation,
+        }]);
+      }
+
+      function syncTaskPlan(response: AssistantTaskResponse) {
+        setAssistantTaskIntent(response.taskIntent ?? null);
+        if (!response.taskPlan.length) {
+          setAssistantTaskPlan(null);
+          return;
+        }
+        const currentStep = Math.min(
+          response.taskPlan.length,
+          Math.max(1, response.plan?.planStep ?? response.context?.currentPlanStep ?? 1),
+        );
+        setAssistantTaskPlan({
+          steps: response.taskPlan,
+          currentStep: response.status === "completed" ? response.taskPlan.length : currentStep,
+          completed: response.status === "completed",
+        });
+      }
+
       let task: AssistantTaskResponse;
       if (pendingTask) {
         assistantTaskIdRef.current = pendingTask.taskId;
@@ -873,7 +1034,11 @@ export default function Page() {
       } else {
         const taskId = crypto.randomUUID();
         assistantTaskIdRef.current = taskId;
-        const initialRegistry = await loadAssistantPageRegistry(initialPageId, abortController.signal);
+        const loadedInitialRegistry = await loadAssistantPageRegistry(initialPageId, abortController.signal);
+        const initialRegistry = applyRuntimePageCapabilities(
+          loadedInitialRegistry,
+          runtimeCapabilitiesFor(initialPageId),
+        );
         task = await parseTaskResponse(await apiFetch("/api/assistant/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -892,16 +1057,20 @@ export default function Page() {
         }));
       }
 
+      syncTaskPlan(task);
+      if (!pendingTask && task.taskPlan.length) setAssistantProgress(`计划第 ${task.plan?.planStep ?? 1}/${task.taskPlan.length} 步：${task.taskPlan[(task.plan?.planStep ?? 1) - 1]}`);
+      showTaskToolResults(task);
+
       for (let pageResumeCount = 0; task.status === "waiting_page" && pageResumeCount < 16; pageResumeCount += 1) {
         throwIfAssistantAborted(abortController.signal);
         const plan = task.plan;
         if (!plan) throw new Error("assistant_task_plan_missing");
         lastExecutedPlan = plan;
         setAssistantRecognized(plan.recognized ?? []);
-        const thought = plan.thought ?? plan.reply;
-        setAssistantProgress(`LLM 思路：${thought}`);
-        allSteps = [...allSteps, ...(plan.discoverySteps ?? [])];
-        setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
+        showModelReasoning(plan, task.taskPlan.length);
+        setAssistantProgress(task.taskPlan.length
+          ? `正在执行计划 ${plan.planStep ?? task.context?.currentPlanStep ?? 1}/${task.taskPlan.length}`
+          : "正在执行当前操作");
         const execution = await executeAssistantTools(
           plan.toolCalls,
           currentPage,
@@ -911,10 +1080,10 @@ export default function Page() {
           abortController.signal,
         );
         throwIfAssistantAborted(abortController.signal);
+        showPageToolResults(execution.toolResults);
         lastExecutionResult = execution;
         currentPage = execution.currentPage;
         currentOpenTabs = execution.openTabs;
-        allSteps = [...allSteps, ...execution.steps];
 
         const previousContext = task.context ?? {};
         let currentPageRegistry = previousContext.currentPageRegistry;
@@ -923,19 +1092,44 @@ export default function Page() {
             plan.discoveryResults[plan.discoveryResults.length - 1],
             execution.runtimeFieldOptions,
           );
+          const discoveredPageId = currentPageRegistry && typeof currentPageRegistry === "object"
+            ? String((currentPageRegistry as { pageId?: unknown }).pageId ?? "")
+            : "";
+          currentPageRegistry = applyRuntimePageCapabilities(
+            currentPageRegistry,
+            execution.runtimePageCapabilities[discoveredPageId],
+          );
         }
         if (execution.openedPageId) {
           const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId, abortController.signal);
           if (openedPageRegistry && typeof openedPageRegistry === "object") {
             currentPageRegistry = applyRuntimeFieldOptions(openedPageRegistry, execution.runtimeFieldOptions);
+            currentPageRegistry = applyRuntimePageCapabilities(
+              currentPageRegistry,
+              execution.runtimePageCapabilities[execution.openedPageId],
+            );
             const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
             if (Array.isArray(pagePath) && pagePath.every((item) => typeof item === "string")) {
               currentPagePath = pagePath;
             }
           }
         }
+        if (!execution.openedPageId && !(plan.discoveryResults && plan.discoveryResults.length > 0)) {
+          const currentRegistryPageId = currentPageRegistry && typeof currentPageRegistry === "object"
+            ? String((currentPageRegistry as { pageId?: unknown }).pageId ?? "")
+            : "";
+          if (currentRegistryPageId) {
+            const refreshedRegistry = await loadAssistantPageRegistry(currentRegistryPageId, abortController.signal);
+            currentPageRegistry = applyRuntimeFieldOptions(refreshedRegistry, execution.runtimeFieldOptions);
+          }
+        }
         if (currentPageRegistry && typeof currentPageRegistry === "object") {
           currentPageRegistry = applyRuntimeFieldOptions(currentPageRegistry, execution.runtimeFieldOptions);
+          const registryPageId = String((currentPageRegistry as { pageId?: unknown }).pageId ?? "");
+          currentPageRegistry = applyRuntimePageCapabilities(
+            currentPageRegistry,
+            execution.runtimePageCapabilities[registryPageId],
+          );
         }
 
         const nextContext: AssistantContinuationContext = {
@@ -948,6 +1142,7 @@ export default function Page() {
           lastOperationResult: execution.executionResult,
           backendToolResults: (plan.backendToolResults ?? previousContext.backendToolResults ?? [])
             .slice(-MAX_ASSISTANT_BACKEND_RESULTS),
+          currentPlanStep: plan.planStep ?? previousContext.currentPlanStep,
         };
 
         task = await parseTaskResponse(await apiFetch(`/api/assistant/tasks/${encodeURIComponent(task.taskId)}/resume`, {
@@ -956,6 +1151,8 @@ export default function Page() {
           body: JSON.stringify({ type: "page_result", context: nextContext }),
           signal: abortController.signal,
         }));
+        syncTaskPlan(task);
+        showTaskToolResults(task);
       }
 
       if (task.status === "waiting_page") {
@@ -976,8 +1173,9 @@ export default function Page() {
           role: "assistant",
           content: question,
           source: `${selectedProviderLabel} 回复`,
+          thought: finalPlan?.thought,
+          actionExplanation: finalPlan?.actionExplanation,
           systemNote: "任务已由 LangGraph 暂停，回复后将从当前检查点继续。",
-          steps: allSteps,
         });
         return;
       }
@@ -1008,8 +1206,9 @@ export default function Page() {
         role: "assistant",
         content: finalPlan.reply,
         source: `${selectedProviderLabel} 回复`,
+        thought: finalPlan.thought,
+        actionExplanation: finalPlan.actionExplanation,
         systemNote: resultSummary,
-        steps: allSteps,
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -1475,11 +1674,23 @@ export default function Page() {
 
         <div className="assistant-messages" ref={assistantMessagesRef}>
           {assistantMessages.map((message) => (
-            <article key={message.id} className={`assistant-message ${message.role}`}>
+            <article key={message.id} className={`assistant-message ${message.role}${message.variant ? ` ${message.variant}` : ""}`}>
               <div className="assistant-message-role">
                 {message.role === "assistant" ? (message.source ?? "助手") : "我"}
               </div>
               <div className="assistant-message-content">{message.content}</div>
+              {(message.thought || message.actionExplanation) && message.variant !== "tool-results" ? (
+                <details className="assistant-model-reasoning">
+                  <summary>
+                    <strong>思考与行动解释</strong>
+                    <span>{message.actionExplanation ?? message.thought}</span>
+                  </summary>
+                  <div className="assistant-model-reasoning-body">
+                    {message.thought ? <p><strong>思考</strong><span>{message.thought}</span></p> : null}
+                    {message.actionExplanation ? <p><strong>行动解释</strong><span>{message.actionExplanation}</span></p> : null}
+                  </div>
+                </details>
+              ) : null}
               {message.systemNote ? (
                 <div className="assistant-system-note">
                   <strong>系统结果</strong>
@@ -1515,6 +1726,47 @@ export default function Page() {
                 <li key={`recognized-${index}`}>{item}</li>
               ))}
             </ul>
+          </div>
+        ) : null}
+
+        {assistantTaskIntent || assistantTaskPlan ? (
+          <div className={`assistant-plan-dock ${assistantPlanExpanded ? "expanded" : ""}`}>
+            <button
+              type="button"
+              className="assistant-plan-toggle"
+              aria-expanded={assistantPlanExpanded}
+              onClick={() => setAssistantPlanExpanded((expanded) => !expanded)}
+            >
+              <span>任务理解与行动计划</span>
+              {assistantTaskPlan ? <span className="assistant-plan-count">
+                {assistantTaskPlan.completed ? assistantTaskPlan.steps.length : assistantTaskPlan.currentStep}/{assistantTaskPlan.steps.length}
+              </span> : null}
+              <span className="assistant-plan-arrow">{assistantPlanExpanded ? "⌄" : "⌃"}</span>
+            </button>
+            {assistantPlanExpanded ? (
+              <div className="assistant-plan-details">
+                {assistantTaskIntent ? <div className="assistant-task-intent">
+                  <p><strong>意图：</strong>{ASSISTANT_INTENT_LABELS[assistantTaskIntent.mode]}</p>
+                  <p><strong>目标：</strong>{assistantTaskIntent.summary}</p>
+                  {assistantTaskIntent.objectives.length ? <ul>
+                    {assistantTaskIntent.objectives.map((objective, index) => <li key={`assistant-objective-${index}`}>{objective}</li>)}
+                  </ul> : null}
+                </div> : null}
+                {assistantTaskPlan ? <ol className="assistant-plan-steps">
+                {assistantTaskPlan.steps.map((step, index) => {
+                  const stepNumber = index + 1;
+                  const completed = assistantTaskPlan.completed || stepNumber < assistantTaskPlan.currentStep;
+                  const current = !assistantTaskPlan.completed && stepNumber === assistantTaskPlan.currentStep;
+                  return (
+                    <li key={`assistant-plan-step-${index}`} className={completed ? "completed" : current ? "current" : "pending"}>
+                      <span>{completed ? "✓" : stepNumber}</span>
+                      <p>{step}</p>
+                    </li>
+                  );
+                })}
+              </ol> : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
 

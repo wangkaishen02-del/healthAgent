@@ -18,6 +18,7 @@
     "test:assistant-memory": "node --import tsx src/assistant/memory-test.ts",
     "test:assistant-deepseek": "node --import tsx src/assistant/deepseek-multiturn-test.ts",
     "test:assistant-backend": "node --import tsx src/assistant/backend-tools-test.ts",
+    "test:assistant-orchestration": "node --import tsx src/assistant/agent-orchestration-test.ts",
     "test:claim-state-machine": "node --import tsx src/claims/state-machine-test.ts",
     "test:claim-workflow": "tsx --tsconfig apps/api/tsconfig.json src/api/claim-workflow-smoke-test.ts",
     "test:assistant-graph:postgres": "node --import tsx src/assistant/assistant-graph-postgres-test.ts",

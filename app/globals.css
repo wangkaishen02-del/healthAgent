@@ -5465,6 +5465,27 @@ fieldset.claim-form-grid {
 .assistant-message-content {
   line-height: 1.6;
   font-size: 14px;
+  white-space: pre-wrap;
+}
+
+.assistant-message.tool-results {
+  width: 92%;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: #f7f9fc;
+  border-color: #dfe5ee;
+}
+
+.assistant-message.tool-results .assistant-message-role {
+  margin-bottom: 2px;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+.assistant-message.tool-results .assistant-message-content {
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .assistant-system-note {
@@ -5507,8 +5528,9 @@ fieldset.claim-form-grid {
 .assistant-progress {
   display: flex;
   gap: 8px;
-  align-items: flex-start;
-  padding: 10px 18px;
+  align-items: center;
+  min-height: 34px;
+  padding: 7px 18px;
   border-top: 1px solid #d9e4fb;
   background: #f4f7ff;
   color: #45618f;
@@ -5524,6 +5546,101 @@ fieldset.claim-form-grid {
 
 .assistant-progress p {
   margin: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.assistant-message.reasoning {
+  padding: 7px 9px;
+  border: 1px solid #dbe4ee;
+  background: #f8fafc;
+}
+
+.assistant-message.reasoning .assistant-message-role,
+.assistant-message.reasoning .assistant-message-content {
+  font-size: 11px;
+  color: #64748b;
+}
+
+.assistant-model-reasoning {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.assistant-model-reasoning summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 24px;
+  color: #64748b;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11px;
+}
+
+.assistant-model-reasoning summary::-webkit-details-marker {
+  display: none;
+}
+
+.assistant-model-reasoning summary::before {
+  content: "›";
+  grid-column: 1;
+  grid-row: 1;
+  color: #8090a6;
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 0.16s ease;
+}
+
+.assistant-model-reasoning[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.assistant-model-reasoning summary strong {
+  grid-column: 1;
+  grid-row: 1;
+  margin-left: 14px;
+  white-space: nowrap;
+}
+
+.assistant-model-reasoning summary span {
+  min-width: 0;
+  overflow: hidden;
+  color: #8793a5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.assistant-model-reasoning-body {
+  max-height: 180px;
+  overflow: auto;
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 8px 8px 4px;
+  border-radius: 7px;
+  background: #f3f6fa;
+}
+
+.assistant-model-reasoning-body p {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.assistant-model-reasoning-body strong {
+  color: #475569;
+}
+
+.assistant-model-reasoning-body span {
+  color: #64748b;
+  white-space: pre-wrap;
 }
 
 .assistant-recognized-title {
@@ -5547,8 +5664,132 @@ fieldset.claim-form-grid {
   margin-top: 6px;
 }
 
+.assistant-plan-dock {
+  flex: 0 0 auto;
+  margin: 0 18px;
+  border: 1px solid #d9e2ef;
+  border-radius: 10px 10px 0 0;
+  background: #fbfcff;
+  box-shadow: 0 -4px 14px rgba(35, 57, 91, 0.06);
+}
+
+.assistant-plan-toggle {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 10px 10px 0 0;
+  background: transparent;
+  color: #44546d;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.assistant-plan-toggle:hover {
+  background: #f2f6fc;
+}
+
+.assistant-plan-count {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eaf0f9;
+  color: #526b91;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.assistant-plan-arrow {
+  color: #7a899f;
+  font-size: 13px;
+}
+
+.assistant-plan-steps {
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 4px 10px 10px;
+  list-style: none;
+  border-top: 1px solid #edf1f6;
+}
+
+.assistant-plan-details {
+  max-height: 280px;
+  overflow: auto;
+  border-top: 1px solid #edf1f6;
+}
+
+.assistant-task-intent {
+  padding: 8px 10px 5px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.assistant-task-intent p {
+  margin: 0 0 3px;
+}
+
+.assistant-task-intent ul {
+  margin: 4px 0 0;
+  padding-left: 17px;
+}
+
+.assistant-task-intent + .assistant-plan-steps {
+  border-top: 1px solid #edf1f6;
+}
+
+.assistant-plan-steps li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 6px;
+  align-items: start;
+  padding: 5px 0;
+  color: #98a2b3;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.assistant-plan-steps li > span {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  background: #eef1f5;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.assistant-plan-steps p {
+  margin: 0;
+}
+
+.assistant-plan-steps li.completed {
+  color: #22845a;
+}
+
+.assistant-plan-steps li.completed > span {
+  background: #dff5e9;
+  color: #178052;
+}
+
+.assistant-plan-steps li.current {
+  color: #3e5f91;
+  font-weight: 600;
+}
+
+.assistant-plan-steps li.current > span {
+  background: #dfeaff;
+  color: #315fba;
+}
+
 .assistant-input-area {
-  padding: 14px 18px 18px;
+  padding: 10px 18px 18px;
   border-top: 1px solid var(--border);
   display: grid;
   gap: 10px;

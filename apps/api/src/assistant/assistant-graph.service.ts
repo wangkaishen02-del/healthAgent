@@ -12,6 +12,10 @@ import {
 import { randomUUID } from "node:crypto";
 import {
   requestAgentPlan,
+  requestTaskBlueprint,
+  requestTaskPlan,
+  type AssistantTaskBlueprint,
+  type AssistantTaskIntent,
   type AssistantContinuationContext,
   type LlmProvider,
 } from "../../../../src/assistant/plan-service.ts";
@@ -44,6 +48,8 @@ export type AssistantTaskResult = {
   taskId: string;
   status: AssistantTaskStatus;
   plan: AssistantPlan | null;
+  taskPlan: string[];
+  taskIntent: AssistantTaskIntent;
   context?: AssistantContinuationContext;
   question?: string;
   requestedFields?: string[];
@@ -66,6 +72,8 @@ const AssistantGraphState = Annotation.Root({
   actorUserId: Annotation<string | undefined>,
   actorUsername: Annotation<string | undefined>,
   plan: Annotation<AssistantPlan | null>,
+  taskPlan: Annotation<string[]>,
+  taskIntent: Annotation<AssistantTaskIntent>,
   status: Annotation<AssistantTaskStatus>,
 });
 
@@ -103,12 +111,21 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
   private readonly latestResults = new Map<string, CachedAssistantTask>();
   private readonly taskOwners = new Map<string, string>();
   private planner: typeof requestAgentPlan = requestAgentPlan;
+  private taskPlanner: typeof requestTaskBlueprint = requestTaskBlueprint;
   private memoryLoader: typeof loadAssistantMemory = loadAssistantMemory;
   private memoryWriter: typeof rememberAssistantTurn = rememberAssistantTurn;
 
   private readonly graph = new StateGraph(AssistantGraphState)
+    .addNode("draft_task_plan", async (state: GraphState) => {
+      const blueprint = await this.taskPlanner(state.taskText, state.provider, state.context);
+      return { taskPlan: blueprint.steps, taskIntent: blueprint.intent };
+    })
     .addNode("plan_agent", async (state: GraphState) => {
-      const result = await this.planner(state.taskText, state.provider, state.context);
+      const result = await this.planner(state.taskText, state.provider, {
+        ...state.context,
+        taskPlan: state.taskPlan,
+        taskIntent: state.taskIntent,
+      });
       if (!result.ok) throw new Error("llm_invalid_plan");
       return {
         plan: result.plan,
@@ -126,6 +143,7 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
           ...resumed.context,
           memory: state.context?.memory,
           actorRoles: resumed.context.actorRoles ?? state.context?.actorRoles,
+          currentPlanStep: state.plan?.planStep ?? resumed.context.currentPlanStep ?? state.context?.currentPlanStep,
         },
         status: "running" as const,
       };
@@ -140,13 +158,19 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
       if (!isUserInputResume(resumed)) throw new Error("user_input_resume_required");
       return {
         taskText: `${state.taskText}\n用户补充信息：${resumed.text.trim()}`,
+        context: {
+          ...state.context,
+          backendToolResults: state.plan?.backendToolResults ?? state.context?.backendToolResults,
+          currentPlanStep: state.plan?.planStep ?? state.context?.currentPlanStep,
+        },
         status: "running" as const,
       };
     })
     .addNode("complete", () => ({
       status: "completed" as const,
     }))
-    .addEdge(START, "plan_agent")
+    .addEdge(START, "draft_task_plan")
+    .addEdge("draft_task_plan", "plan_agent")
     .addConditionalEdges("plan_agent", (state: GraphState) => {
       if (state.plan?.userInputRequest) return "wait_for_user";
       if ((state.plan?.toolCalls.length ?? 0) > 0) return "wait_for_page";
@@ -159,6 +183,14 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
 
   setPlannerForTesting(planner: typeof requestAgentPlan) {
     this.planner = planner;
+  }
+
+  setTaskPlannerForTesting(planner: typeof requestTaskPlan) {
+    this.taskPlanner = async (...args): Promise<AssistantTaskBlueprint> => ({
+      intent: { mode: "unknown", summary: args[0], objectives: [] },
+      shouldPlan: true,
+      steps: await planner(...args),
+    });
   }
 
   setMemoryForTesting(input: {
@@ -229,12 +261,16 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
         ? "waiting_page"
         : payload?.type === "user_input"
           ? "waiting_user"
-          : "completed";
+          : result.status === "running"
+            ? "running"
+            : "completed";
     return {
       taskId,
       status,
       plan: payload?.plan ?? result.plan ?? null,
-      context: result.context ? { ...result.context, memory: undefined } : undefined,
+      taskPlan: result.taskPlan ?? [],
+      taskIntent: result.taskIntent ?? { mode: "unknown", summary: "", objectives: [] },
+      context: result.context ? { ...result.context, taskIntent: result.taskIntent, memory: undefined } : undefined,
       question: typeof payload?.question === "string" ? payload.question : undefined,
       requestedFields: Array.isArray(payload?.requestedFields)
         ? payload.requestedFields.filter((item): item is string => typeof item === "string")
@@ -288,6 +324,7 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
         recognized: response.plan.recognized,
         toolCalls: [
           ...(state.context?.history ?? []).flatMap((round) => round.toolCalls.map(formatToolCall)),
+          ...(response.plan.discoverySteps ?? []),
           ...response.plan.toolCalls.map(formatToolCall),
         ],
         pagePath: state.context?.currentPagePath,
@@ -312,6 +349,8 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
       taskId,
       status: "running",
       plan: null,
+      taskPlan: [],
+      taskIntent: { mode: "unknown", summary: "", objectives: [] },
       context: input.context,
     });
     const persisted = await this.loadPersistedTask(taskId);
@@ -332,6 +371,8 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
       actorUserId: input.actor?.userId,
       actorUsername: input.actor?.username,
       plan: null,
+      taskPlan: [],
+      taskIntent: { mode: "unknown", summary: input.text, objectives: [] },
       status: "running",
     }, this.config(taskId)) as GraphState & { __interrupt__?: Array<{ value?: Record<string, unknown> }> };
     const response = this.toTaskResult(taskId, result);

@@ -52,9 +52,29 @@ type DeepSeekResponse = { choices?: Array<{ message?: { content?: string | null 
 type LlmPayload = {
   reply?: string;
   thought?: string;
+  actionExplanation?: string;
+  planStep?: number;
   recognized?: string[];
   decision?: "continue" | "finish";
   toolCalls?: AssistantModelToolCall[];
+};
+
+type TaskPlanPayload = {
+  shouldPlan?: unknown;
+  steps?: unknown;
+  intent?: unknown;
+};
+
+export type AssistantTaskIntentMode = "read" | "write" | "mixed" | "navigate" | "explain" | "unknown";
+export type AssistantTaskIntent = {
+  mode: AssistantTaskIntentMode;
+  summary: string;
+  objectives: string[];
+};
+export type AssistantTaskBlueprint = {
+  intent: AssistantTaskIntent;
+  shouldPlan: boolean;
+  steps: string[];
 };
 
 export type AssistantContinuationContext = {
@@ -67,6 +87,9 @@ export type AssistantContinuationContext = {
   backendToolResults?: unknown[];
   actorRoles?: string[];
   memory?: AssistantMemorySnapshot;
+  taskPlan?: string[];
+  taskIntent?: AssistantTaskIntent;
+  currentPlanStep?: number;
 };
 
 type AssistantLogEntry =
@@ -143,10 +166,6 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
   if (/^(?:请)?(?:帮我)?(?:处理|办理|操作)(?:一下)?[。！!？?]*$/.test(userText.replace(/\s+/g, ""))) {
     rules.push("用户没有说明要处理的业务或对象。立即使用 ask_user 追问具体任务，requestedFields 使用 taskDescription；不要反复发现注册信息，也不要自行选择页面。");
   }
-  if (/(撤件|提交审核|审核结案|理算回退|审核回退)/.test(scope)
-    && !/(CL[A-Z0-9-]{6,}|GI[A-Z0-9-]{6,}|\d{15,18}[0-9Xx]?|[\u4e00-\u9fa5·]{2,4}(?:的案件|的保单))/i.test(scope)) {
-    rules.push("用户要求执行案件流转但没有提供定位条件。优先使用 ask_user 询问案件号，requestedFields 使用 caseNo；同时告知不知道案件号时也可以提供被保人姓名或证件号。不得用保单号代替案件号。");
-  }
   if (/(案件|CL[A-Z0-9-]{6,}|案件查询|受理立案)/i.test(scope)) {
     rules.push("案件号与保单号必须严格区分：CL 是案件号，GI 是保单号。仅查询案件时使用只读案件查询页；只有明确修改、提交或撤件时才进入受理立案。用户已给案件号时不得再索要其他定位条件。");
   }
@@ -162,6 +181,9 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
   if (/(全部|所有)/.test(scope)) {
     rules.push("用户明确说全部或所有即已确认查询范围，直接在目标页面执行重置和查询，不得调用缺少条件的后台查询工具，也不得重复确认。一次只能展示一个详情时只打开最符合目标的一个。");
   }
+  if (/(投保单位|公司|企业|集团).{0,20}(保单|投保)|(?:保单|投保).{0,20}(投保单位|公司|企业|集团)/.test(scope)) {
+    rules.push("公司或投保单位名称只能用于保单查询页的 applicantName 字段，不得作为 query_underwriting 的 insuredName；insuredName 只接受自然人被保人姓名。页面查询结果已经返回保单号、状态、保障期限和被保人数时，应直接据此比较并回答，不要再调用后台承保查询。");
+  }
   if (/(放弃|丢弃|取消).{0,12}(未保存|修改|编辑)|(?:重置|清空).{0,8}(页面|表单|受理立案)/.test(scope)) {
     rules.push("放弃未保存修改或重置指定页面不需要定位业务对象；直接打开页面并执行重置或新建，不得索要案件、保单或人员条件。");
   }
@@ -171,7 +193,7 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
 export function buildSystemPrompt(userText = "", context?: AssistantContinuationContext) {
   const currentDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
   return `
-你是健康险系统的页面操作 Agent。先依据注册信息理解能力，再选择页面动作。
+你是团体健康险理赔平台的执行 Agent。系统管理保单、保障计划、险种责任、被保人、理赔案件、影像 OCR、票据、理算、审核、结案与撤件；所有数据变更受角色权限和案件状态机约束。先依据注册信息理解能力，再选择页面动作。
 只能输出 JSON，不输出 markdown、解释或代码块。
 当前系统日期（Asia/Shanghai）：${currentDate}。
 
@@ -191,28 +213,31 @@ ${JSON.stringify(getAssistantBackendToolCatalog())}
 ${JSON.stringify(getAssistantControlToolCatalog())}
 
 工作规则：
-1. 已有可信注册信息时直接执行；缺少或不确定时先查询注册信息。
-2. 不猜测注册 ID；工具参数必须使用注册中心返回的菜单、页面、字段和动作 ID。
-3. 可分多轮发现和操作，每轮根据上一步结果决定继续或结束。
-4. 优先使用本任务上下文中的历史动作和上次结果。跨任务历史记忆只用于理解“继续、刚才、上一个”等连续表达，可能已经过期；当前用户明确输入始终优先。
-5. 原始用户请求中如果包含明确的筛选值，执行查询动作前必须使用注册字段生成对应的 set_field；不能只在 recognized 中描述而省略字段动作。
-6. 字段选择必须依据注册字段的标签、描述和所在区域，不要根据字段ID命名习惯猜测用途。
-7. select 字段必须使用当前页面注册信息声明的 options 值；运行时选项会随页面上下文提供，不要自行创造选项值。
-8. 可执行时返回页面操作，完成或无法继续时返回 finish_task。后台提供 itemId 时优先使用 click_list_item_action，不猜行号。
-9. 每轮最多操作一个结果行；需要处理其他结果时等待执行后继续。
-10. decision=continue 表示 Agent 还需要下一轮，decision=finish 表示结束本次任务。
-11. 每轮必须输出 thought，简短说明当前判断和下一步计划；不要输出冗长逐字推理。
-12. 数据变更中，打开、选中、填写都非完成；只有上次结果为 success=true 的 mutation_result 才可 finish_task，否则继续保存或确认。
-13. 姓名、名称等可查询条件先用后台工具；结果唯一时直接继续，结果为空或无法消歧时才 ask_user，不得先索要系统可查编号。
-14. 不得编造用户没有提供且系统结果中不存在的日期、地点、医院、诊断、账号等事实。页面已有默认值时保留默认值；可选字段缺失时保持为空。可以把用户原话整理为必填的简短事件描述，但不得添加原话没有表达的具体事实。
-15. 当任务缺少系统无法查询且用户未提供的必填信息时，使用 ask_user 明确询问并列出 requestedFields。ask_user 会暂停任务，用户回答后继续原任务；不要用普通 reply 或 finish_task 代替追问。
-16. 追问使用自然语言，不要求字段ID、枚举值或技术日期格式；内部自行转换。引用用户描述须保留原意，不把改写冒充原话。
-17. 历史记忆中的案件号、人员、筛选值不得在有歧义时直接用于数据变更。当前请求未明确指向哪个历史对象时先 ask_user 确认，不得静默沿用。
-18. 为保护数据，案件号、保单号和事件号可能显示为 <CASE_NO_n>、<POLICY_NO_n>、<EVENT_NO_n>。它们是已提供的有效编号别名，可原样用于工具参数；不得因为看到别名而再次索要编号。
+0. 首次规划器已经给出结构化任务意图。以“本任务意图”的 mode、summary 和 objectives 作为任务边界；不得仅凭个别关键词把只读任务改判为数据变更，也不得把数据变更任务降级为只读任务。
+1. 先遵循“本任务行动计划”；根据工具结果调整后续步骤，但不得跳过定位、校验、确认或结果核对。
+2. 只使用注册中心提供的工具、页面、字段、动作和选项；缺少可信信息时先查询，不猜测 ID 或业务事实。
+2.1 工具目录中的“可选、必填、string、目标字段”等是参数说明，不是业务值，绝不能复制进工具参数；未提供的可选字段必须从 args 中省略。
+3. 一轮只做一个明确的下一步：后台查询、页面操作或追问。拿到结果后再决定下一步。
+4. 用户给出姓名、案件号、保单号或证件号时先用后台查询定位；唯一结果直接继续，空结果或无法消歧才 ask_user。
+4.1 query_claim_cases 的 status 是独立有效的查询条件。用户要求某状态下的全部、任意、最近或最新案件时，直接按 status 查询；最近更新使用 sortBy=updatedAt、sortOrder=desc、limit=1，不得再索要案件号、保单号、姓名或证件号。
+5. 案件号 CL 与保单号 GI 不可混用。只读查询使用案件查询页；修改、提交、撤件等才进入业务处理页。
+6. 数据变更只有 mutation_result.success=true 才算完成。需要确认的操作必须 ask_user，收到明确确认前不得执行。
+6.1 用户要求跳过查询、校验、对象消歧或确认时不得照做。任何数据变更都必须先唯一定位对象并核对当前状态；多个候选对象不得随意选择。用户给出的错误操作顺序必须按“定位→校验→必要确认→执行→复核”纠正。
+6.1.1 用户要求绕过、忽略、强制跳过业务状态机或权限限制时必须拒绝。案件检查结果未提供的业务动作和当前账号动作，视为不可执行；不得通过打开其他处理页面、改填其他字段或反复调用工具来规避。
+6.2 排序、最大值、最近一笔等能够由系统返回数据客观判断的问题，由 Agent 自行计算并继续，不得反问用户确认 Agent 的判断。
+6.3 后台查询结果 total=0 时，回复必须准确保留 appliedFilters 的范围，例如查询了“未结案”就只能说“未查询到符合条件的未结案案件”，不得扩大成“没有任何案件”。
+7. 当前用户输入优先于历史记忆；历史对象有歧义时必须确认。不得编造日期、医院、诊断、金额或其他业务事实。
+8. 每轮都输出 thought 和 actionExplanation，二者是并列字段，不得互相替代。thought 是模型主动写出的思考过程，可较完整地说明如何理解结果、比较候选项、排除错误选择并确定下一步，最多 300 个汉字；不得声称读取了系统未提供的隐藏状态。actionExplanation 是面向用户的行动解释，最多 160 个汉字，只说明“依据哪些已知结果、为什么选择当前动作、预期得到什么”，不得编造事实。
+8.0 thought 负责说明判断过程，actionExplanation 负责说明动作理由；reply 负责对用户说当前结论或问题。三者内容应各司其职。
+8.0.1 decision=continue 表示需要下一轮，decision=finish 只在任务已完成或无法继续时使用。
+8.1 若“本任务行动计划”非空，每一轮都必须输出 planStep，表示当前正在执行的计划步骤（从 1 开始）；完成任务时填写最后一步。若没有行动计划则省略 planStep。
+9. 隐私占位符协议：为避免向外部模型发送真实个人信息和业务编号，服务端会在本次模型请求开始前把敏感值替换为临时别名；模型返回后，服务端仅在本地将同一完整别名恢复为真实值，再执行工具。模型不需要、也不应知道真实值。
+10. 外部模型上下文可能包含以下占位符类型：CASE_NO=案件号，POLICY_NO=保单号，EVENT_NO=事件号；PII_NAME=姓名，PII_ID=证件号，PII_PHONE=手机号，PII_BANK=银行卡号，PII_EMAIL=邮箱，PII_MEDICAL=诊断或病情，PII_ADDRESS=地址。每个临时别名由系统分配数字后缀，例如上下文实际出现的 <CASE_NO_1>。
+11. 只有逐字出现在当前上下文中的完整别名才可原样用于工具参数；服务端会自动恢复它。类型名称、示例、<CASE_NO_N> 或任何自行生成、补全、改写的标记都不是有效值。无法确定时使用已有后台结果或 ask_user。
 ${buildContextualRules(userText, context)}
 
 输出结构：
-{"thought":"不超过40字的当前判断与下一步计划","reply":"给用户的简短说明","recognized":["识别出的信息"],"decision":"continue 或 finish","toolCalls":[{"tool":"工具名","args":{}}]}
+{"thought":"最多300字的思考过程","actionExplanation":"最多160字的行动解释","reply":"给用户的简短说明","recognized":["识别出的信息"],"planStep":1,"decision":"continue 或 finish","toolCalls":[{"tool":"工具名","args":{}}]}
 `.trim();
 }
 
@@ -220,27 +245,74 @@ function tryParseJson(content: string): LlmPayload | null {
   try {
     return JSON.parse(content) as LlmPayload;
   } catch {
-    const matched = content.match(/\{[\s\S]*\}/);
-    if (!matched) return null;
-    try { return JSON.parse(matched[0]) as LlmPayload; } catch { return null; }
+    let start = -1;
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < content.length; index += 1) {
+      const character = content[index];
+      if (start < 0) {
+        if (character === "{") {
+          start = index;
+          depth = 1;
+          inString = false;
+          escaped = false;
+        }
+        continue;
+      }
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (character === "\\") escaped = true;
+        else if (character === '"') inString = false;
+        continue;
+      }
+      if (character === '"') inString = true;
+      else if (character === "{") depth += 1;
+      else if (character === "}") depth -= 1;
+      if (depth !== 0) continue;
+      try {
+        const parsed = JSON.parse(content.slice(start, index + 1)) as LlmPayload;
+        if (parsed && typeof parsed === "object") return parsed;
+      } catch {
+        // Keep scanning for the next complete JSON object in verbose model output.
+      }
+      start = -1;
+    }
+    return null;
   }
 }
 
-function normalizePayload(payload: LlmPayload) {
+function normalizePayload(payload: LlmPayload, context?: AssistantContinuationContext) {
   if (!payload || typeof payload.reply !== "string" || !Array.isArray(payload.toolCalls)) return null;
   const toolCalls = payload.toolCalls
     .map(normalizeAssistantModelToolCall)
     .filter((call): call is AssistantModelToolCall => call !== null);
   const recognized = Array.isArray(payload.recognized)
-    ? payload.recognized.filter((item): item is string => typeof item === "string")
+    ? payload.recognized
+      .filter((item): item is string => typeof item === "string")
+      .map(stripUnresolvedPrivacyTokens)
     : [];
   return {
-    reply: payload.reply,
-    thought: typeof payload.thought === "string" ? payload.thought.slice(0, 120) : undefined,
+    reply: stripUnresolvedPrivacyTokens(payload.reply),
+    thought: typeof payload.thought === "string" ? stripUnresolvedPrivacyTokens(payload.thought).slice(0, 600) : undefined,
+    actionExplanation: typeof payload.actionExplanation === "string"
+      ? stripUnresolvedPrivacyTokens(payload.actionExplanation).slice(0, 320)
+      : undefined,
+    planStep: context?.taskPlan?.length
+      ? Math.min(
+        context.taskPlan.length,
+        Math.max(1, Number.isInteger(payload.planStep) ? Number(payload.planStep) : (context.currentPlanStep ?? 1)),
+      )
+      : undefined,
     recognized,
     decision: payload.decision === "continue" ? "continue" as const : "finish" as const,
     toolCalls,
   };
+}
+
+function stripUnresolvedPrivacyTokens(text: string) {
+  return text.replace(/<PII_(?:NAME|ID|PHONE|BANK|EMAIL|MEDICAL|ADDRESS)_[A-Z0-9]+>/gi, "相关信息")
+    .replace(/<(?:CASE_NO|POLICY_NO|EVENT_NO)_[A-Z0-9]+>/gi, "已提供的编号");
 }
 
 function executeDiscovery(call: AssistantDiscoveryCall, roles: readonly string[] = []) {
@@ -257,17 +329,33 @@ function executeDiscovery(call: AssistantDiscoveryCall, roles: readonly string[]
 export async function executeAssistantBackendTool(call: AssistantBackendCall, roles: readonly string[] = []) {
   if (call.tool === "query_underwriting") {
     const result = await queryUnderwritingDb(call.args);
+    const policySummaries = [...new Map(result.matches.map((match) => [match.policy.policyNo, match.policy])).values()];
     return {
       type: "underwriting_query_result",
       ...result,
-      resolvedFields: result.total === 1 ? ["policyNo", "insuredName", "insuredIdNo"] : [],
+      relationshipCount: result.total,
+      distinctPolicyCount: policySummaries.length,
+      appliedFilters: { ...call.args },
+      policySummaries,
+      resolvedFields: policySummaries.length === 1 ? ["policyNo"] : [],
     };
   }
   if (call.tool === "query_claim_cases") {
-    const result = await queryClaimCasesDb(call.args);
+    const result = await queryClaimCasesDb({ ...call.args, pageSize: call.args.limit });
     return {
       type: "claim_case_query_result",
-      total: result.total,
+      total: call.args.limit === 1 && result.items.length === 1 ? 1 : result.total,
+      totalMatches: result.total,
+      appliedFilters: {
+        caseNo: call.args.caseNo,
+        policyNo: call.args.policyNo,
+        insuredName: call.args.insuredName,
+        insuredIdNo: call.args.insuredIdNo,
+        status: call.args.status,
+        sortBy: call.args.sortBy,
+        sortOrder: call.args.sortOrder,
+        limit: call.args.limit,
+      },
       items: result.items.map((item) => {
         const insured = item.parties.find((party) => party.role === "insured");
         return {
@@ -325,6 +413,18 @@ function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizeP
   return plan.toolCalls.filter((call) => call.tool === "click_list_row_action" || call.tool === "click_list_item_action").length > 1;
 }
 
+function navigatesAndActsInSamePlan(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
+  const pageActions = plan.toolCalls.filter((call) => !isAssistantDiscoveryCall(call)
+    && !isAssistantBackendCall(call)
+    && !isAssistantUserInputCall(call)
+    && !isAssistantFinishCall(call));
+  return pageActions.some((call) => call.tool === "open_page") && pageActions.length > 1;
+}
+
+function isEmptyContinuation(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
+  return plan.decision === "continue" && plan.toolCalls.length === 0;
+}
+
 function hasForbiddenPageAction(plan: NonNullable<ReturnType<typeof normalizePayload>>, roles: readonly string[] = []) {
   return plan.toolCalls.some((call) => "pageId" in call.args
     && typeof call.args.pageId === "string"
@@ -335,6 +435,117 @@ function misusesClaimCaseNoAsPolicyField(plan: NonNullable<ReturnType<typeof nor
   return plan.toolCalls.some((call) => call.tool === "set_field"
     && call.args.fieldId === "policyNo"
     && call.args.value.trim().toUpperCase().startsWith("CL"));
+}
+
+function hasUnresolvedPrivacyToken(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
+  return plan.toolCalls.some((call) => /<(?:PII_(?:NAME|ID|PHONE|BANK|EMAIL|MEDICAL|ADDRESS)|CASE_NO|POLICY_NO|EVENT_NO)_[A-Z0-9]+>/i.test(JSON.stringify(call.args)));
+}
+
+function runtimeRegistryCallViolation(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  context: AssistantContinuationContext | undefined,
+  discoveredResources: unknown[],
+) {
+  const registries = [...discoveredResources, context?.currentPageRegistry]
+    .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
+  for (const call of plan.toolCalls) {
+    if (isAssistantDiscoveryCall(call) || isAssistantBackendCall(call)
+      || isAssistantUserInputCall(call) || isAssistantFinishCall(call)
+      || call.tool === "open_page") continue;
+    if (!("pageId" in call.args) || typeof call.args.pageId !== "string") continue;
+    const registry = [...registries].reverse().find((item) => item.pageId === call.args.pageId);
+    if (!registry || !Array.isArray(registry.regions)) {
+      return { tool: call.tool, pageId: call.args.pageId, targetId: "页面注册信息未加载" };
+    }
+    const fields = new Set<string>();
+    const actions = new Set<string>();
+    const visit = (regions: unknown[]) => {
+      for (const rawRegion of regions) {
+        if (!rawRegion || typeof rawRegion !== "object") continue;
+        const region = rawRegion as { fields?: unknown; actions?: unknown; children?: unknown };
+        if (Array.isArray(region.fields)) {
+          for (const field of region.fields) {
+            if (field && typeof field === "object" && typeof (field as { fieldId?: unknown }).fieldId === "string") {
+              fields.add((field as { fieldId: string }).fieldId);
+            }
+          }
+        }
+        if (Array.isArray(region.actions)) {
+          for (const action of region.actions) {
+            if (action && typeof action === "object" && typeof (action as { actionId?: unknown }).actionId === "string") {
+              actions.add((action as { actionId: string }).actionId);
+            }
+          }
+        }
+        if (Array.isArray(region.children)) visit(region.children);
+      }
+    };
+    visit(registry.regions);
+    if (call.tool === "set_field") {
+      if (!fields.has(call.args.fieldId)) return { tool: call.tool, pageId: call.args.pageId, targetId: call.args.fieldId };
+      continue;
+    }
+    if ("actionId" in call.args && typeof call.args.actionId === "string" && !actions.has(call.args.actionId)) {
+      return { tool: call.tool, pageId: call.args.pageId, targetId: call.args.actionId };
+    }
+  }
+  return null;
+}
+
+function repeatsResolvedClaimLookup(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  backendToolResults: unknown[],
+) {
+  const hasResolvedCase = backendToolResults.some((result) => result && typeof result === "object"
+    && (((result as { type?: unknown; total?: unknown }).type === "claim_case_query_result"
+      && (result as { total?: unknown }).total === 1)
+      || ((result as { type?: unknown; found?: unknown }).type === "claim_case_inspection"
+        && (result as { found?: unknown }).found === true)));
+  return hasResolvedCase && plan.toolCalls.some((call) => call.tool === "query_claim_cases");
+}
+
+function repeatsSuccessfulUnderwritingLookup(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  backendToolResults: unknown[],
+) {
+  const successfulFilters = backendToolResults.flatMap((result) => {
+    if (!result || typeof result !== "object") return [];
+    const candidate = result as { type?: unknown; total?: unknown; appliedFilters?: unknown };
+    if (candidate.type !== "underwriting_query_result" || typeof candidate.total !== "number" || candidate.total <= 0
+      || !candidate.appliedFilters || typeof candidate.appliedFilters !== "object") return [];
+    return [candidate.appliedFilters as Record<string, unknown>];
+  });
+  return plan.toolCalls.some((call) => call.tool === "query_underwriting"
+    && successfulFilters.some((filters) => JSON.stringify(filters) === JSON.stringify(call.args)));
+}
+
+function usesApplicantNameAsInsuredName(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  context?: AssistantContinuationContext,
+) {
+  const applicantNames = new Set(context?.history?.flatMap((entry) => entry.toolCalls.flatMap((call) =>
+    call.tool === "set_field" && call.args.fieldId === "applicantName"
+      ? [call.args.value.trim().toLowerCase()]
+      : [])) ?? []);
+  return plan.toolCalls.some((call) => call.tool === "query_underwriting"
+    && typeof call.args.insuredName === "string"
+    && applicantNames.has(call.args.insuredName.trim().toLowerCase()));
+}
+
+function contradictsResolvedClaimLookup(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  backendToolResults: unknown[],
+) {
+  const hasResolvedCase = backendToolResults.some((result) => result && typeof result === "object"
+    && (((result as { type?: unknown; total?: unknown }).type === "claim_case_query_result"
+      && (result as { total?: unknown }).total === 1)
+      || ((result as { type?: unknown; found?: unknown }).type === "claim_case_inspection"
+        && (result as { found?: unknown }).found === true)));
+  if (!hasResolvedCase) return false;
+  const asksForLocator = plan.toolCalls.filter(isAssistantUserInputCall).some((call) =>
+    call.args.requestedFields.some((field) => ["caseNo", "policyNo", "insuredName", "insuredIdNo"].includes(field)),
+  );
+  return asksForLocator || /(未找|没有找到|未查询到|确认.{0,8}(案件号|姓名|证件号)|提供.{0,8}(案件号|姓名|证件号))/.test(plan.reply);
 }
 
 function asksForRedundantClaimLocator(
@@ -369,37 +580,234 @@ function repliesWithRedundantClaimLocator(
 function asksForResolvedFields(
   plan: NonNullable<ReturnType<typeof normalizePayload>>,
   backendToolResults: unknown[],
+  userText: string,
+  context?: AssistantContinuationContext,
 ) {
   const resolvedFields = new Set(
     backendToolResults.flatMap((result) => {
       if (!result || typeof result !== "object") return [];
       const fields = (result as { resolvedFields?: unknown }).resolvedFields;
-      return Array.isArray(fields) ? fields.filter((field): field is string => typeof field === "string") : [];
+      const appliedFilters = (result as { appliedFilters?: unknown }).appliedFilters;
+      const appliedFields = appliedFilters && typeof appliedFilters === "object"
+        ? Object.entries(appliedFilters)
+          .filter(([, value]) => value !== undefined && value !== "" && (!Array.isArray(value) || value.length > 0))
+          .map(([field]) => field)
+        : [];
+      return [
+        ...(Array.isArray(fields) ? fields.filter((field): field is string => typeof field === "string") : []),
+        ...appliedFields,
+      ];
     }),
   );
+  if (/(继续|刚才|上次|之前|那个|该)/.test(userText) && context?.memory?.recentTurns[0]) {
+    const recent = context.memory.recentTurns[0];
+    const memoryText = [recent.userText, recent.assistantReply, ...recent.recognized].join(" ");
+    if (/CL[A-Z0-9-]{6,}/i.test(memoryText)) resolvedFields.add("caseNo");
+    if (/GI[A-Z0-9-]{6,}/i.test(memoryText)) resolvedFields.add("policyNo");
+  }
   return plan.toolCalls
     .filter(isAssistantUserInputCall)
     .some((call) => call.args.requestedFields.some((field) => resolvedFields.has(field)));
 }
 
-export function isDataMutationRequest(userText: string) {
+function asksForLocatorDespiteSufficientStatus(
+  userText: string,
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+) {
+  const hasStatusScope = /(受理中|录入中|理算中|审核中|已结案|结案|已撤件|撤件|registered|entering|calculating|reviewing|completed|cancelled)/i.test(userText);
+  const asksForSet = /(最近|最新|全部|所有|任意|一笔|案件数量|most recent|latest|all|any)/i.test(userText);
+  if (!hasStatusScope || !asksForSet) return false;
+  return plan.toolCalls.filter(isAssistantUserInputCall).some((call) =>
+    call.args.requestedFields.some((field) => ["caseNo", "policyNo", "insuredName", "insuredIdNo"].includes(field)),
+  );
+}
+
+function hasOutstandingStatusScopedClaimLookup(
+  userText: string,
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  backendToolResults: unknown[],
+) {
   const normalized = userText.replace(/\s+/g, "");
-  const discardsUnsavedWork = /(放弃|丢弃|取消).{0,12}(未保存|修改|编辑)|(?:重置|清空).{0,8}(页面|表单|受理立案)/.test(normalized);
-  if (discardsUnsavedWork) return false;
-  const explicitlyReadOnly = /(不要|无需|不需要|禁止|不做)(新增|创建|配置|修改|更新|删除|撤件|提交|保存|关联|上传)|(?:只|仅)(?:查询|查看|打开)/.test(normalized);
-  if (explicitlyReadOnly) return false;
-  if (/(新增|创建|立案|修改|更新|删除|撤件|提交|保存|关联|上传|办理|登记)/.test(normalized)) return true;
-  return /(配置|设置|调整|维护).{0,12}(参数|免赔额|赔付比例|赔付限额|等待期|年度限额)/.test(normalized);
+  const hasStatusScope = /(受理中|录入中|理算中|审核中|已结案|结案|已撤件|撤件|registered|entering|calculating|reviewing|completed|cancelled)/i.test(normalized);
+  const asksToRetrieveCases = /(找到|查找|查询|列出|打开|查看|定位|find|query|list|open|show|locate)/i.test(normalized);
+  const asksForSet = /(最近|最新|全部|所有|任意|一笔|mostrecent|latest|all|any)/i.test(normalized);
+  if (!hasStatusScope || !asksToRetrieveCases || !asksForSet) return false;
+
+  const queriesNow = plan.toolCalls.some((call) => call.tool === "query_claim_cases");
+  if (queriesNow) return false;
+  // Allow another explicitly requested backend step (for example queue summary)
+  // to run first; the next model turn will still be checked for the pending lookup.
+  if (plan.toolCalls.some(isAssistantBackendCall)) return false;
+  const alreadyQueried = backendToolResults.some((result) => {
+    if (!result || typeof result !== "object") return false;
+    const record = result as { type?: unknown; appliedFilters?: unknown };
+    if (record.type !== "claim_case_query_result" || !record.appliedFilters || typeof record.appliedFilters !== "object") return false;
+    const status = (record.appliedFilters as { status?: unknown }).status;
+    return Array.isArray(status) && status.length > 0;
+  });
+  return !alreadyQueried;
+}
+
+function isMutationIntent(intent?: AssistantTaskIntent) {
+  return intent?.mode === "write" || intent?.mode === "mixed";
+}
+
+type InspectedWorkflowAction = {
+  action?: unknown;
+  label?: unknown;
+  toStatus?: unknown;
+  toStatusLabel?: unknown;
+  allowedForCurrentUser?: unknown;
+};
+
+const WORKFLOW_ACTION_LABELS: Record<string, string> = {
+  cancel: "撤件",
+  submit: "提交受理",
+  calculate: "理算",
+  submit_review: "提交审核",
+  complete: "审核结案",
+  rollback: "流程回退",
+};
+
+function workflowIntentAliases(action: string) {
+  const aliases: Record<string, string[]> = {
+    cancel: ["撤件", "撤销案件", "withdraw", "withdrawal", "cancel case"],
+    submit: ["提交", "submit"],
+    calculate: ["理算", "calculate", "calculation"],
+    submit_review: ["提交审核", "submit review"],
+    complete: ["结案", "complete", "close case"],
+    rollback: ["回退", "退回", "rollback", "return case"],
+  };
+  return [action, ...(aliases[action] ?? [])];
+}
+
+function requestedWorkflowIntents(userText: string) {
+  const normalized = userText.toLowerCase().replace(/\s+/g, " ");
+  const intents = new Set<string>();
+  if (/(撤件|撤销案件|withdrawal|withdraw|cancel case)/i.test(normalized)) intents.add("cancel");
+  if (/(提交审核|submit (?:the )?(?:case|claim)? ?for review|resubmit[^.!?。！？]{0,120}(?:for )?review)/i.test(normalized)) intents.add("submit_review");
+  if (/(审核结案|结案|complete review|close (?:the )?(?:case|claim|it))/i.test(normalized)) intents.add("complete");
+  if (/(开始理算|执行理算|run calculation|calculate case)/i.test(normalized)) intents.add("calculate");
+  if (/(回退|退回|rollback|return case)/i.test(normalized)) intents.add("rollback");
+  if (/(提交受理|提交案件|submit case)/i.test(normalized)) intents.add("submit");
+  return [...intents];
+}
+
+function buildUnavailableWorkflowGate(userText: string, backendToolResults: unknown[], planStep?: number, intent?: AssistantTaskIntent) {
+  if (!isMutationIntent(intent)) return null;
+  const requestedActions = requestedWorkflowIntents(userText);
+  if (!requestedActions.length) return null;
+  const inspection = [...backendToolResults].reverse().find((result) => result && typeof result === "object"
+    && (result as { type?: unknown }).type === "claim_case_inspection"
+    && (result as { found?: unknown }).found === true) as {
+      caseNo?: unknown;
+      statusLabel?: unknown;
+      businessNextActions?: unknown;
+      workflowActions?: unknown;
+      editableAreas?: unknown;
+    } | undefined;
+  if (!inspection) return null;
+
+  const businessActions = Array.isArray(inspection.businessNextActions)
+    ? inspection.businessNextActions.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const executableActions = Array.isArray(inspection.workflowActions)
+    ? inspection.workflowActions.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+    : [];
+  const knownActions = [...businessActions, ...executableActions];
+  const allowedActions = new Set(knownActions
+    .filter((item) => item.allowedForCurrentUser === true && typeof item.action === "string")
+    .map((item) => String(item.action)));
+  const businessActionNames = new Set(knownActions
+    .filter((item) => typeof item.action === "string")
+    .map((item) => String(item.action)));
+  const unsupported = requestedActions.filter((action) => !businessActionNames.has(action));
+  const unauthorized = requestedActions.filter((action) => businessActionNames.has(action) && !allowedActions.has(action));
+  if (!unsupported.length && !unauthorized.length) return null;
+
+  const caseNo = typeof inspection.caseNo === "string" ? inspection.caseNo : "当前案件";
+  const statusLabel = typeof inspection.statusLabel === "string" ? inspection.statusLabel : "当前状态";
+  const unsupportedLabels = unsupported.map((action) => WORKFLOW_ACTION_LABELS[action] ?? action);
+  const unauthorizedLabels = unauthorized.map((action) => WORKFLOW_ACTION_LABELS[action] ?? action);
+  const reasons = [
+    unsupportedLabels.length ? `当前业务状态不允许执行“${unsupportedLabels.join("、")}”` : "",
+    unauthorizedLabels.length ? `当前账号无权执行“${unauthorizedLabels.join("、")}”` : "",
+  ].filter(Boolean);
+  const reply = `案件 ${caseNo} 当前为“${statusLabel}”，${reasons.join("；")}。系统不会绕过状态机或权限限制，也不会打开其他处理页面规避校验；未执行任何数据变更。`;
+  return {
+    thought: "案件检查结果与请求动作不匹配，必须在执行前终止",
+    actionExplanation: "依据案件状态机和当前账号权限直接拒绝非法流转，避免通过页面切换绕过后端校验。",
+    reply,
+    planStep,
+    recognized: [`案件号：${caseNo}`, `当前状态：${statusLabel}`, ...reasons],
+    decision: "finish" as const,
+    toolCalls: [] as AssistantToolCall[],
+  };
+}
+
+function requestedWorkflowAction(userText: string, backendToolResults: unknown[]) {
+  const inspection = [...backendToolResults].reverse().find((result) => result && typeof result === "object"
+    && (result as { type?: unknown }).type === "claim_case_inspection"
+    && (result as { found?: unknown }).found === true) as {
+      caseNo?: unknown;
+      statusLabel?: unknown;
+      workflowActions?: unknown;
+    } | undefined;
+  if (!inspection || !Array.isArray(inspection.workflowActions)) return null;
+  const normalizedText = userText.toLowerCase().replace(/\s+/g, " ");
+  const matches = inspection.workflowActions.filter((rawAction) => {
+    if (!rawAction || typeof rawAction !== "object") return false;
+    const action = rawAction as InspectedWorkflowAction;
+    if (action.allowedForCurrentUser !== true || typeof action.action !== "string") return false;
+    const label = typeof action.label === "string" ? action.label : "";
+    const labelTokens = [label, label.replace(/案件|完成/g, "")].filter((item) => item.length >= 2);
+    return [...labelTokens, ...workflowIntentAliases(action.action)]
+      .some((alias) => normalizedText.includes(alias.toLowerCase()));
+  }) as InspectedWorkflowAction[];
+  return matches.length === 1 ? { inspection, action: matches[0]! } : null;
+}
+
+function explicitlyRequestsConfirmation(userText: string) {
+  return /(向我确认|等我确认|确认后|获得.{0,6}确认|wait for my confirmation|ask (?:me )?to confirm|confirm before)/i.test(userText);
+}
+
+function hasFollowupConfirmation(userText: string) {
+  const supplement = userText.match(/用户补充信息：([\s\S]*)$/)?.[1]?.trim() ?? "";
+  return /^(?:我)?(?:明确)?(?:确认|同意|继续执行)|^(?:yes|confirm|confirmed|proceed)\b/i.test(supplement);
+}
+
+function buildWorkflowConfirmationGate(userText: string, backendToolResults: unknown[], planStep?: number) {
+  if (!explicitlyRequestsConfirmation(userText) || hasFollowupConfirmation(userText)) return null;
+  const matched = requestedWorkflowAction(userText, backendToolResults);
+  if (!matched) return null;
+  const caseNo = typeof matched.inspection.caseNo === "string" ? matched.inspection.caseNo : "当前案件";
+  const statusLabel = typeof matched.inspection.statusLabel === "string" ? matched.inspection.statusLabel : "当前状态";
+  const actionLabel = typeof matched.action.label === "string" ? matched.action.label : "状态变更";
+  const toStatusLabel = typeof matched.action.toStatusLabel === "string" ? matched.action.toStatusLabel : "目标状态";
+  const question = `案件 ${caseNo} 当前为“${statusLabel}”，当前账号允许执行“${actionLabel}”。执行后状态将变为“${toStatusLabel}”，当前处理流程会按新状态继续或终止，系统会保留本次流转记录。请明确回复“确认${actionLabel}”后执行。`;
+  return {
+    thought: "状态与权限已核对，等待用户明确确认",
+    reply: question,
+    planStep,
+    recognized: [`案件号：${caseNo}`, `当前状态：${statusLabel}`, `可执行操作：${actionLabel}`],
+    decision: "continue" as const,
+    toolCalls: [] as AssistantToolCall[],
+    userInputRequest: { question, requestedFields: ["operationConfirmation"] },
+  };
 }
 
 function prematurelyStopsBeforeLookup(
   userText: string,
   plan: NonNullable<ReturnType<typeof normalizePayload>>,
   context?: AssistantContinuationContext,
+  backendToolResults: unknown[] = [],
 ) {
-  if (!isDataMutationRequest(userText)) return false;
+  if (!isMutationIntent(context?.taskIntent)) return false;
+  if (backendToolResults.some((result) => result && typeof result === "object"
+    && ["claim_case_query_result", "underwriting_query_result"].includes(String((result as { type?: unknown }).type))
+    && (result as { total?: unknown }).total === 0)) return false;
   if (plan.toolCalls.some(isAssistantUserInputCall)) return false;
-  const lastResult = context?.lastOperationResult as { type?: unknown; success?: unknown; operation?: unknown; reason?: unknown } | undefined;
+  const lastResult = getLatestOperationResult(context?.lastOperationResult) as { type?: unknown; success?: unknown; operation?: unknown; reason?: unknown } | undefined;
   if (lastResult?.type === "mutation_result" && lastResult.success === true && lastResult.operation !== "create_event") return false;
   if (lastResult?.type === "operation_error" && typeof lastResult.reason === "string" && /(ambiguous|not_found)/.test(lastResult.reason)) return false;
   const hasDiscovery = plan.toolCalls.some(isAssistantDiscoveryCall);
@@ -411,6 +819,76 @@ function prematurelyStopsBeforeLookup(
   });
   if (!hasExecutableAction && !hasDiscovery) return true;
   return plan.decision === "finish" && !hasDiscovery && !hasCompletionAction;
+}
+
+function getLatestOperationResult(result: unknown): unknown {
+  if (!result || typeof result !== "object") return result;
+  const candidate = result as { type?: unknown; results?: unknown };
+  if (candidate.type !== "operation_batch" || !Array.isArray(candidate.results) || candidate.results.length === 0) return result;
+  const latest = candidate.results[candidate.results.length - 1];
+  return latest && typeof latest === "object" && "result" in latest
+    ? (latest as { result?: unknown }).result
+    : latest;
+}
+
+function completedNavigationOnlyTask(userText: string, context?: AssistantContinuationContext) {
+  const latest = getLatestOperationResult(context?.lastOperationResult) as { type?: unknown; success?: unknown; pageId?: unknown } | undefined;
+  if (latest?.type !== "page_opened" || latest.success !== true || typeof latest.pageId !== "string") return null;
+  const normalized = userText.replace(/\s+/g, "");
+  if (!/^(?:请)?(?:帮我)?(?:打开|进入|跳转到?|切换到?).{1,30}(?:页面|页)[。！!？?]*$/.test(normalized)) return null;
+  return { pageId: latest.pageId, label: getCompactPageRegistration(latest.pageId)?.label ?? latest.pageId };
+}
+
+function repeatedFailedPageAction(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  context?: AssistantContinuationContext,
+) {
+  const lastResult = getLatestOperationResult(context?.lastOperationResult);
+  if (!lastResult || typeof lastResult !== "object") return null;
+  const failure = lastResult as { type?: unknown; reason?: unknown; pageId?: unknown; actionId?: unknown };
+  if (failure.type !== "operation_error" || typeof failure.actionId !== "string") return null;
+  const repeated = plan.toolCalls.some((call) => call.tool === "click_button"
+    && call.args.pageId === failure.pageId
+    && call.args.actionId === failure.actionId);
+  if (!repeated) return null;
+
+  let prerequisiteAction: string | undefined;
+  if (failure.reason === "confirmation_required" && failure.actionId.startsWith("confirm_")) {
+    const candidate = `request_${failure.actionId.slice("confirm_".length)}`;
+    const registryText = JSON.stringify(context?.currentPageRegistry ?? {});
+    if (registryText.includes(`\"actionId\":\"${candidate}\"`)) prerequisiteAction = candidate;
+  }
+  return {
+    reason: typeof failure.reason === "string" ? failure.reason : "operation_failed",
+    failedAction: failure.actionId,
+    prerequisiteAction,
+  };
+}
+
+function violatesOperationRecovery(
+  plan: NonNullable<ReturnType<typeof normalizePayload>>,
+  context?: AssistantContinuationContext,
+) {
+  const lastResult = getLatestOperationResult(context?.lastOperationResult);
+  if (!lastResult || typeof lastResult !== "object") return null;
+  const failure = lastResult as {
+    type?: unknown;
+    reason?: unknown;
+    recovery?: { tool?: unknown; pageId?: unknown; actionId?: unknown; itemIdSource?: unknown };
+  };
+  const recovery = failure.recovery;
+  if (failure.type !== "operation_error" || !recovery || typeof recovery.tool !== "string") return null;
+  const followsRecovery = plan.toolCalls.some((call) => {
+    if (call.tool !== recovery.tool) return false;
+    if (recovery.pageId && "pageId" in call.args && call.args.pageId !== recovery.pageId) return false;
+    if (recovery.actionId && "actionId" in call.args && call.args.actionId !== recovery.actionId) return false;
+    return true;
+  });
+  if (followsRecovery || plan.toolCalls.some(isAssistantUserInputCall)) return null;
+  return {
+    reason: typeof failure.reason === "string" ? failure.reason : "operation_failed",
+    recovery,
+  };
 }
 
 function formatLastOperationResult(result: unknown) {
@@ -446,8 +924,9 @@ function formatLastOperationResult(result: unknown) {
 }
 
 function getTerminalOperationError(result: unknown) {
-  if (!result || typeof result !== "object") return null;
-  const candidate = result as { type?: unknown; reason?: unknown };
+  const latestResult = getLatestOperationResult(result);
+  if (!latestResult || typeof latestResult !== "object") return null;
+  const candidate = latestResult as { type?: unknown; reason?: unknown };
   if (candidate.type !== "operation_error" || typeof candidate.reason !== "string") return null;
   if (candidate.reason === "calculation_data_locked") {
     return "案件已完成理算，当前理算数据已锁定。如需新增或修改，请先执行理算回退。";
@@ -533,6 +1012,93 @@ async function callLlm(provider: LlmProvider, messages: OllamaMessage[], protect
   return provider === "deepseek" ? callDeepSeek(messages, protector) : callOllama(messages);
 }
 
+const fallbackTaskPlan = [
+  "确认任务目标、已知信息和当前权限",
+  "在系统中定位相关业务对象",
+  "按业务规则执行操作并核对结果",
+];
+
+function containsUnsupportedPlanningDetails(steps: string[], userText: string) {
+  const speculativeDetail = /(通常|一般|例如|比如|手续费|到账时间|不可恢复|将被.{0,8}(保留|作废|退回)|状态为.{0,12}(允许|可以|可办理))/;
+  return speculativeDetail.test(steps.join(" ")) && !speculativeDetail.test(userText);
+}
+
+/**
+ * Creates the task-level plan before the execution agent is allowed to choose
+ * tools. This is deliberately separate from requestAgentPlan: the latter is a
+ * short-horizon solver and may revise its next action after each observation.
+ */
+export async function requestTaskBlueprint(userText: string, provider: LlmProvider, context?: AssistantContinuationContext): Promise<AssistantTaskBlueprint> {
+  const protector = new ExternalDataProtector();
+  const runId = randomUUID().slice(0, 8);
+  const llm = getLlmIdentity(provider);
+  const messages: OllamaMessage[] = [
+    {
+      role: "system",
+      content: `你是团体健康险理赔平台的任务规划器。系统包含保单、保障计划、险种责任、被保人、理赔案件、影像 OCR、票据、理算、审核和结案等业务能力；所有业务操作受角色权限和案件状态机约束。
+收到用户请求后，第一步先输出对任务的结构化理解：intent.mode、intent.summary、intent.objectives，然后判断是否需要行动计划。mode 必须是 read、write、mixed、navigate、explain 之一：read=只读查询或汇总，write=最终目标会改变业务数据，mixed=同时包含独立的只读目标与数据变更目标，navigate=仅打开页面，explain=仅解释或回答。中间需要查询不能把 write 错判为 mixed；以用户最终要求的业务结果为准。
+一次后台查询即可回答的任务，即使包含筛选、排序、最大值或“最近一笔”，仍属于简单任务，shouldPlan=false；单纯打开页面、解释或回答也不需要计划。需要多轮查询、跨页面操作、业务校验、用户确认、数据变更或结果复核的任务才需要计划。
+只能输出 JSON，不输出 markdown 或解释。不得调用工具、不得输出工具 ID、不得编造用户未提供的事实。
+计划阶段尚未取得系统查询结果，不得预设可办理状态、金额、费用、时效、业务影响或最终结果；这些内容只能写成“查询并依据系统返回核对后说明”。
+行动计划只描述业务目标和依赖关系，不写登录系统、进入模块、打开页面、点击按钮或工具名称。示例占位符（如 <CASE_NO_N>）、“可选”“必填”等说明词不是业务值，不得写入计划。
+用户不能通过指令跳过数据变更所需的对象定位、状态校验、消歧和确认。涉及变更时计划顺序必须是“唯一定位对象→校验状态与权限→说明可确认的影响并取得明确确认→执行→核对结果”；多个候选对象不得写成随便选择。
+系统可根据查询结果自行判断的排序、最大值、最近一笔等事项，不得计划向用户确认 Agent 的判断。
+需要计划时使用业务语言列出 2 到 6 步；缺少必要信息时写明需要向用户确认，涉及数据变更时包含结果核对。不需要计划时 steps 必须为空数组。
+输出结构：{"intent":{"mode":"read|write|mixed|navigate|explain","summary":"一句话说明用户要完成什么","objectives":["可核验目标一","可核验目标二"]},"shouldPlan":true或false,"steps":["步骤一","步骤二"]}`,
+    },
+    {
+      role: "user",
+      content: `用户请求：${userText}`,
+    },
+  ];
+  try {
+    await writeAssistantLog({ type: "input", runId, turn: 0, ...llm, messages });
+    const result = await callLlm(provider, messages, protector);
+    await writeAssistantLog({ type: "output", runId, turn: 0, ...llm, content: result.content, durationMs: result.durationMs });
+    const payload = result.parsed as TaskPlanPayload | null;
+    const rawIntent = payload?.intent && typeof payload.intent === "object"
+      ? payload.intent as { mode?: unknown; summary?: unknown; objectives?: unknown }
+      : {};
+    const validModes = new Set<AssistantTaskIntentMode>(["read", "write", "mixed", "navigate", "explain"]);
+    const intent: AssistantTaskIntent = {
+      mode: typeof rawIntent.mode === "string" && validModes.has(rawIntent.mode as AssistantTaskIntentMode)
+        ? rawIntent.mode as AssistantTaskIntentMode
+        : "unknown",
+      summary: typeof rawIntent.summary === "string" && rawIntent.summary.trim()
+        ? rawIntent.summary.replace(/\s+/g, " ").trim().slice(0, 160)
+        : userText.slice(0, 160),
+      objectives: Array.isArray(rawIntent.objectives)
+        ? rawIntent.objectives.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          .map((item) => item.replace(/\s+/g, " ").trim().slice(0, 160)).slice(0, 5)
+        : [],
+    };
+    if (payload?.shouldPlan === false) return { intent, shouldPlan: false, steps: [] };
+    const steps = Array.isArray(payload?.steps)
+      ? payload.steps
+        .filter((step): step is string => typeof step === "string")
+        .map((step) => step.replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .slice(0, 6)
+      : [];
+    const taskSteps = payload?.shouldPlan === true && steps.length >= 2 && !containsUnsupportedPlanningDetails(steps, userText)
+      ? steps
+      : fallbackTaskPlan;
+    return { intent, shouldPlan: true, steps: taskSteps };
+  } catch {
+    // Planning must not prevent a valid user request from being processed when
+    // the model returns malformed planning JSON; the solver still validates all actions.
+    return {
+      intent: { mode: "unknown", summary: userText.slice(0, 160), objectives: [] },
+      shouldPlan: true,
+      steps: fallbackTaskPlan,
+    };
+  }
+}
+
+export async function requestTaskPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
+  return (await requestTaskBlueprint(userText, provider, context)).steps;
+}
+
 export async function requestAgentPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
   const requestedPage = explicitRequestedPage(userText);
   if (requestedPage && !canAccessAssistantPage(requestedPage, context?.actorRoles)) {
@@ -568,6 +1134,59 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
       },
     };
   }
+  const existingUnavailableWorkflow = buildUnavailableWorkflowGate(
+    userText,
+    context?.backendToolResults ?? [],
+    context?.currentPlanStep,
+    context?.taskIntent,
+  );
+  if (existingUnavailableWorkflow) {
+    return {
+      ok: true as const,
+      rawReplies: [],
+      plan: {
+        ...existingUnavailableWorkflow,
+        discoverySteps: [],
+        discoveryResults: [],
+        backendToolResults: context?.backendToolResults ?? [],
+      },
+    };
+  }
+  const completedNavigation = completedNavigationOnlyTask(userText, context);
+  if (completedNavigation) {
+    return {
+      ok: true as const,
+      rawReplies: [],
+      plan: {
+        thought: "目标页面已打开，任务完成",
+        reply: `已打开${completedNavigation.label}。`,
+        planStep: context?.taskPlan?.length ? context.taskPlan.length : undefined,
+        recognized: [`目标页面：${completedNavigation.label}`],
+        decision: "finish" as const,
+        toolCalls: [] as AssistantToolCall[],
+        discoverySteps: [],
+        discoveryResults: [],
+        backendToolResults: context?.backendToolResults ?? [],
+      },
+    };
+  }
+  const existingConfirmationGate = buildWorkflowConfirmationGate(
+    userText,
+    context?.backendToolResults ?? [],
+    context?.currentPlanStep,
+  );
+  if (existingConfirmationGate) {
+    return {
+      ok: true as const,
+      rawReplies: [],
+      plan: {
+        ...existingConfirmationGate,
+        discoverySteps: [],
+        discoveryResults: [],
+        backendToolResults: context?.backendToolResults ?? [],
+      },
+    };
+  }
   const runId = randomUUID().slice(0, 8);
   const llm = getLlmIdentity(provider);
   const protector = new ExternalDataProtector();
@@ -579,6 +1198,9 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
     backendToolResults: context.backendToolResults,
     currentPagePath: context.currentPagePath,
     actorRoles: context.actorRoles,
+    taskPlan: context.taskPlan,
+    taskIntent: context.taskIntent,
+    currentPlanStep: context.currentPlanStep,
   }) as AssistantContinuationContext : undefined;
   const userMessage = context
     ? `${userText}
@@ -601,7 +1223,16 @@ ${formatLastOperationResult(minimizedContext?.lastOperationResult)}
 ${JSON.stringify(minimizedContext?.backendToolResults ?? [])}
 
 当前页面路径：
-${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
+${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}
+
+本任务行动计划：
+${JSON.stringify(minimizedContext?.taskPlan ?? [])}
+
+本任务意图：
+${JSON.stringify(minimizedContext?.taskIntent ?? null)}
+
+当前计划步骤：
+${minimizedContext?.currentPlanStep ?? "未开始"}`
     : userText;
   const messages: OllamaMessage[] = [
     { role: "system", content: buildSystemPrompt(userText, context) },
@@ -626,18 +1257,111 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       durationMs: result.durationMs,
     });
     if (!result.parsed) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
-    const plan = normalizePayload(result.parsed);
+    const plan = normalizePayload(result.parsed, context);
     if (!plan) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
     const rawToolCallCount = Array.isArray(result.parsed.toolCalls) ? result.parsed.toolCalls.length : 0;
     if (rawToolCallCount > plan.toolCalls.length) {
       messages.push({ role: "assistant", content: result.content });
       messages.push({
         role: "user",
-        content: "系统校验发现：计划中包含参数缺失、未注册或不可执行的工具调用。后台查询工具至少需要一个明确条件；查询全部数据时应使用目标页面的 reset 和 search。请根据工具定义修正，并只输出新的 JSON 计划。",
+        content: "系统校验发现：计划中包含参数缺失、未注册或不可执行的工具调用。‘可选、必填、string、目标字段’等目录说明词不是业务参数值；请使用用户输入或已有结果中的真实值，未提供的可选字段必须省略。后台查询工具至少需要一个明确条件；查询全部数据时应使用目标页面的 reset 和 search。请根据工具定义修正，并只输出新的 JSON 计划。",
       });
       continue;
     }
     lastPlan = plan;
+
+    if (hasOutstandingStatusScopedClaimLookup(userText, plan, backendToolResults)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：用户要求检索某一案件状态下的案件集合，但本任务尚未执行带 status 条件的 query_claim_cases。汇总数量只完成了统计步骤，不能代替案件检索，也不能提前 finish 或 ask_user。请继续执行状态查询；如果要求最近更新一笔，使用 sortBy=updatedAt、sortOrder=desc、limit=1。只输出新的 JSON 计划。",
+      });
+      continue;
+    }
+
+    if (isEmptyContinuation(plan)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：你声明还要继续，但没有返回任何工具调用或 ask_user。不得只回复“正在查询/处理中”。请立即返回一个明确的下一步工具调用；若缺少用户才能提供的信息，使用 ask_user。",
+      });
+      continue;
+    }
+
+    if (hasUnresolvedPrivacyToken(plan)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：工具参数包含未还原的隐私占位符。该占位符不能作为查询条件；请使用本任务已取得的案件结果继续，或在确实无法定位时 ask_user。",
+      });
+      continue;
+    }
+
+    const unavailableRuntimeCall = runtimeRegistryCallViolation(plan, context, discoveredResources);
+    if (unavailableRuntimeCall) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: `系统校验发现：工具 ${unavailableRuntimeCall.tool} 的目标 ${unavailableRuntimeCall.targetId} 不在页面 ${unavailableRuntimeCall.pageId} 当前运行状态允许的字段或动作中，禁止下发执行。只能从当前经过运行时裁剪的页面注册信息选择工具；若需要切换页面，本轮只调用 open_page，等待新页面能力返回。只输出新的 JSON 计划。`,
+      });
+      continue;
+    }
+
+    const repeatedFailure = repeatedFailedPageAction(plan, context);
+    if (repeatedFailure) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: `系统校验发现：上一轮页面动作 ${repeatedFailure.failedAction} 已返回 ${repeatedFailure.reason}，禁止使用相同参数重复调用失败动作。${repeatedFailure.prerequisiteAction ? `当前页面已注册前置动作 ${repeatedFailure.prerequisiteAction}，请先执行该动作，取得结果后再决定是否调用确认动作。` : "请依据错误结果和页面注册信息选择不同的恢复动作；缺少用户信息时使用 ask_user。"}只输出新的 JSON 计划。`,
+      });
+      continue;
+    }
+
+    const requiredRecovery = violatesOperationRecovery(plan, context);
+    if (requiredRecovery) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: `系统校验发现：上一轮页面操作返回 ${requiredRecovery.reason}，并提供了结构化恢复指令 ${JSON.stringify(requiredRecovery.recovery)}。在恢复成功前不得继续原业务动作。请使用后台结果中已经唯一确定的 itemId 补全恢复工具参数并执行；只有确实缺少该值时才 ask_user。只输出新的 JSON 计划。`,
+      });
+      continue;
+    }
+
+    if (repeatsResolvedClaimLookup(plan, backendToolResults)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：案件已唯一定位，禁止重复 query_claim_cases。若尚未检查状态，请调用 inspect_claim_case；已检查且需要用户决定时使用 ask_user，不得用新的姓名或占位符再次查询。",
+      });
+      continue;
+    }
+
+    if (repeatsSuccessfulUnderwritingLookup(plan, backendToolResults)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：相同参数的承保查询已经成功返回结果，禁止重复调用。请直接使用已有 policySummaries 或页面查询结果完成比较和回答；只有用户明确要求打开详情且尚未打开时才执行对应页面动作。",
+      });
+      continue;
+    }
+
+    if (usesApplicantNameAsInsuredName(plan, context)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：当前值来自保单查询页的投保单位字段，不能作为自然人被保人姓名传给 query_underwriting。请使用现有页面查询结果继续比较和回答，不要改变字段语义。",
+      });
+      continue;
+    }
+
+    if (contradictsResolvedClaimLookup(plan, backendToolResults)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：案件已经由后台唯一定位或检查成功，禁止回复“未找到”，也不得再次索要案件号、姓名或证件号。请依据已取得的案件状态、权限和流程结果继续：可执行且需确认时 ask_user；无权限或状态不允许时说明实际原因。",
+      });
+      continue;
+    }
 
     if (hasForbiddenPageAction(plan, context?.actorRoles)) {
       return {
@@ -655,11 +1379,20 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       };
     }
 
-    if (asksForResolvedFields(plan, backendToolResults)) {
+    if (asksForResolvedFields(plan, backendToolResults, userText, context)) {
       messages.push({ role: "assistant", content: result.content });
       messages.push({
         role: "user",
-        content: "系统校验发现：当前 ask_user 请求的字段已经由后台工具唯一确定。请直接使用后台结果填写页面，不要再次询问用户；仅追问后台结果和用户原始输入中都不存在、且完成任务必需的信息。",
+        content: "系统校验发现：当前 ask_user 请求的字段已经由用户提供并用于后台查询，禁止因为 total=0 再次询问相同姓名、案件号、保单号或证件号。请准确保留 appliedFilters 的查询范围，直接说明没有符合这些条件的结果并结束；仅追问后台结果、当前输入和最近明确指代中都不存在、且完成任务必需的信息。",
+      });
+      continue;
+    }
+
+    if (asksForLocatorDespiteSufficientStatus(userText, plan)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：用户已经给出明确案件状态，并要求该状态下的全部、任意、最近或最新案件。status 本身就是 query_claim_cases 的有效条件，不需要案件号、保单号、姓名或证件号。请直接按状态查询；最近更新一笔使用 sortBy=updatedAt、sortOrder=desc、limit=1。不得 ask_user。只输出新的 JSON 计划。",
       });
       continue;
     }
@@ -683,7 +1416,7 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       continue;
     }
 
-    if (prematurelyStopsBeforeLookup(userText, plan, context)) {
+    if (prematurelyStopsBeforeLookup(userText, plan, context, backendToolResults)) {
       messages.push({ role: "assistant", content: result.content });
       messages.push({
         role: "user",
@@ -706,6 +1439,16 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
       messages.push({
         role: "user",
         content: "系统校验发现：当前页面一次只能打开一个详情区域，但当前计划包含多个列表对象操作。请只选择一个最符合当前用户目标的列表操作，执行后等待结果再决定是否继续；后台结果提供 itemId 时优先使用 click_list_item_action，不要一次返回多个列表操作。",
+      });
+      continue;
+    }
+
+
+    if (navigatesAndActsInSamePlan(plan)) {
+      messages.push({ role: "assistant", content: result.content });
+      messages.push({
+        role: "user",
+        content: "系统校验发现：当前计划在打开页面的同一轮又执行了其他页面动作。页面切换会重置运行状态，且新页面的实时可用字段和动作尚未返回；本轮只能执行 open_page。打开完成后，系统会提供经过运行时裁剪的新页面注册信息，再选择下一步。只输出新的 JSON 计划。",
       });
       continue;
     }
@@ -750,11 +1493,50 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
         },
       };
     }
-    const backendResults = await Promise.all(backendCalls.map((call) => assistantBackendExecutor(call, context?.actorRoles)));
+    const backendResults = await Promise.all(backendCalls.map(async (call) => {
+      try {
+        return await assistantBackendExecutor(call, context?.actorRoles);
+      } catch {
+        return {
+          type: "backend_tool_error",
+          tool: call.tool,
+          reason: "execution_failed",
+        };
+      }
+    }));
     backendToolResults.push(...backendResults);
     discoveredResources.push(...discoveryResults);
     discoveryCalls.forEach((call) => discoverySteps.push(formatDiscoveryStep(call)));
     backendCalls.forEach((call) => discoverySteps.push(formatToolInvocation(call.tool, call.args)));
+
+    const unavailableWorkflow = buildUnavailableWorkflowGate(userText, backendToolResults, plan.planStep, context?.taskIntent);
+    if (unavailableWorkflow) {
+      return {
+        ok: true as const,
+        rawReplies,
+        plan: {
+          ...unavailableWorkflow,
+          discoverySteps,
+          discoveryResults: discoveredResources,
+          backendToolResults,
+        },
+      };
+    }
+
+    const confirmationGate = buildWorkflowConfirmationGate(userText, backendToolResults, plan.planStep);
+    if (confirmationGate) {
+      return {
+        ok: true as const,
+        rawReplies,
+        plan: {
+          ...confirmationGate,
+          discoverySteps,
+          discoveryResults: discoveredResources,
+          backendToolResults,
+        },
+      };
+    }
+
     messages.push({ role: "assistant", content: result.content });
     messages.push({
       role: "user",
@@ -766,10 +1548,14 @@ ${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}`
     ok: true as const,
     rawReplies,
     plan: {
-      reply: lastPlan?.reply ?? "已达到本次 Agent 的最大执行轮次。",
-      recognized: lastPlan?.recognized ?? [],
-      decision: "finish" as const,
+      reply: "当前任务尚未完成，系统没有取得可继续执行的下一步操作。任务已暂停，不能将中间状态视为完成。",
+      recognized: ["任务未完成，已安全暂停"],
+      decision: "continue" as const,
       toolCalls: [] as AssistantToolCall[],
+      userInputRequest: {
+        question: "当前任务尚未完成，系统没有取得可继续执行的下一步操作。请确认是否继续重试，或补充更明确的业务要求。",
+        requestedFields: ["taskContinuation"],
+      },
       discoverySteps,
       discoveryResults: discoveredResources,
       backendToolResults,

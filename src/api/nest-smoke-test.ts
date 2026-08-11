@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "../../apps/api/src/app.module.ts";
-import { buildSystemPrompt, getAssistantPromptMetrics, isDataMutationRequest, requestAgentPlan } from "../assistant/plan-service.ts";
+import { buildSystemPrompt, getAssistantPromptMetrics, requestAgentPlan } from "../assistant/plan-service.ts";
 import { getCompactPageRegistration, getPageRegistration } from "../assistant/page-registry.ts";
 import { normalizeAssistantModelToolCall } from "../assistant/policy-query-assistant.ts";
 import { canAccessAssistantPage, filterAssistantMenus } from "../assistant/access-control.ts";
@@ -19,13 +19,6 @@ assert.deepEqual(
   ]).map((item) => item.parameterCode),
   ["LIMIT", "DEDUCTIBLE", "PAYMENT_RATIO"],
 );
-
-assert.equal(isDataMutationRequest("打开保单理算配置并查询保单 GI2026000001，不要修改参数"), false);
-assert.equal(isDataMutationRequest("只查看保单理算配置"), false);
-assert.equal(isDataMutationRequest("为住院责任配置免赔额500元"), true);
-assert.equal(isDataMutationRequest("新增一个理算参数"), true);
-assert.equal(isDataMutationRequest("放弃刚才未保存的修改，重置受理立案页面"), false);
-assert.equal(isDataMutationRequest("清空受理立案页面"), false);
 
 const compactRegistration = JSON.stringify(getCompactPageRegistration("claim_registration"));
 const fullRegistration = JSON.stringify(getPageRegistration("claim_registration"));
