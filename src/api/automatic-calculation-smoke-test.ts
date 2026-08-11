@@ -22,7 +22,12 @@ assert.equal(await prisma.calculationParameterCatalog.count({ where: { category:
 assert.equal(await prisma.calculationLedgerParameterCatalog.count({ where: { policyId: null } }), 8, "ledger parameters should be stored in their dedicated catalog");
 assert(await prisma.calculationParameterDefinition.findUnique({ where: { parameterCode: "PAYMENT_RATIO" } }), "payment ratio configuration definition should exist");
 const configuredBenefits = scopedConfiguration.formulas.filter((formula) => formula.enabled && formula.steps.length);
+// This scenario creates outpatient bills. Select formulas that are explicitly
+// applicable to a positive medical total instead of relying on row order: the
+// same plan also has inpatient-only responsibilities.
+const calculableBenefits = configuredBenefits.filter((formula) => formula.matchExpression === "医疗总费用 > 0");
 assert(configuredBenefits.length >= 2, "at least two configured benefits are required in the insured person's coverage plan");
+assert(calculableBenefits.length >= 2, "at least two outpatient-applicable benefit formulas are required");
 const scopedBenefitIds = new Set(scopedConfiguration.benefits.map((benefit) => benefit.id));
 assert(scopedConfiguration.benefits.every((benefit) => benefit.planId === sourcePolicyInsured.coveragePlanId), "claim configuration should only expose responsibilities in the insured person's coverage plan");
 for (const benefit of scopedConfiguration.benefits) {
@@ -135,7 +140,7 @@ try {
     claimCaseId: temporaryCaseId,
     billData: { ...commonBill, invoiceNo: "AUTO-A", totalAmount: 1200, selfPaidAmount: 100 },
     customValues: { [variableName]: 25 },
-    selectedBenefitIds: [configuredBenefits[0].benefitId, configuredBenefits[1].benefitId],
+    selectedBenefitIds: [calculableBenefits[0].benefitId, calculableBenefits[1].benefitId],
   });
   assert(await prisma.claimBillCustomValue.findFirst({
     where: { billId: firstBill.id, parameterCatalogId: variable.id },
@@ -144,7 +149,7 @@ try {
     claimCaseId: temporaryCaseId,
     billData: { ...commonBill, invoiceNo: "AUTO-B", totalAmount: 800, selfPaidAmount: 50 },
     customValues: {},
-    selectedBenefitIds: [configuredBenefits[0].benefitId, configuredBenefits[1].benefitId],
+    selectedBenefitIds: [calculableBenefits[0].benefitId, calculableBenefits[1].benefitId],
   });
 
   const calculated = await runAutomaticCalculation(temporaryCaseId, { userId: "calculation-test-user", userName: "理算测试用户" }) as {
