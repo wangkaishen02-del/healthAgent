@@ -31,7 +31,16 @@ export type AssistantBackendCall =
     }
   | {
       tool: "query_claim_cases";
-      args: { caseNo?: string; policyNo?: string; insuredName?: string; insuredIdNo?: string };
+      args: {
+        caseNo?: string;
+        policyNo?: string;
+        insuredName?: string;
+        insuredIdNo?: string;
+        status?: Array<"registered" | "entering" | "calculating" | "reviewing" | "completed" | "cancelled">;
+        sortBy?: "updatedAt" | "reportDate" | "createdAt";
+        sortOrder?: "asc" | "desc";
+        limit?: number;
+      };
     }
   | {
       tool: "inspect_claim_case";
@@ -96,6 +105,8 @@ export type AssistantModelToolCall = AssistantToolCall | AssistantDiscoveryCall 
 export interface AssistantPlan {
   reply: string;
   thought?: string;
+  actionExplanation?: string;
+  planStep?: number;
   toolCalls: AssistantToolCall[];
   recognized: string[];
   source?: "rule" | "llm";
@@ -298,6 +309,10 @@ export function formatToolInvocation(tool: string, args: Record<string, unknown>
     policyNo: "保单号",
     insuredName: "被保人姓名",
     insuredIdNo: "被保人证件号",
+    status: "案件状态",
+    sortBy: "排序字段",
+    sortOrder: "排序方向",
+    limit: "返回数量",
     question: "问题",
     requestedFields: "需补充信息",
     reason: "原因",
@@ -382,13 +397,23 @@ export function isAssistantBackendCall(value: unknown): value is AssistantBacken
     return [candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
   }
   if (candidate.tool === "query_claim_cases") {
-    return [candidate.args?.caseNo, candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo].some((item) => typeof item === "string" && item.trim().length > 0);
+    const hasLocator = [candidate.args?.caseNo, candidate.args?.policyNo, candidate.args?.insuredName, candidate.args?.insuredIdNo]
+      .some((item) => typeof item === "string" && item.trim().length > 0);
+    const hasStatusFilter = Array.isArray(candidate.args?.status) && candidate.args.status.length > 0;
+    return hasLocator || hasStatusFilter;
   }
   if (candidate.tool === "inspect_claim_case") {
-    return typeof candidate.args?.caseNo === "string" && candidate.args.caseNo.trim().length > 0;
+    return typeof candidate.args?.caseNo === "string" && /^CL[A-Z0-9-]{6,}$/i.test(candidate.args.caseNo.trim());
   }
   if (candidate.tool === "summarize_claim_work_queue") return true;
   return false;
+}
+
+function normalizeBusinessLocator(value: unknown, upperCase = false) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  if (!normalized || /^(?:可选|必填|未知|null|undefined|string)$/i.test(normalized)) return undefined;
+  return upperCase ? normalized.toUpperCase() : normalized;
 }
 
 export function isAssistantUserInputCall(value: unknown): value is AssistantUserInputCall {
@@ -413,7 +438,7 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
   const candidate = value as { tool?: string; args?: Record<string, unknown> };
 
   if (candidate.tool === "query_underwriting") {
-    const policyNo = typeof candidate.args?.policyNo === "string" ? candidate.args.policyNo.trim().toUpperCase() : undefined;
+    const policyNo = normalizeBusinessLocator(candidate.args?.policyNo, true);
     if (policyNo?.startsWith("CL")) {
       return {
         tool: "query_claim_cases",
@@ -424,21 +449,39 @@ export function normalizeAssistantModelToolCall(value: unknown): AssistantModelT
       tool: "query_underwriting",
       args: {
         policyNo,
-        insuredName: typeof candidate.args?.insuredName === "string" ? candidate.args.insuredName : undefined,
-        insuredIdNo: typeof candidate.args?.insuredIdNo === "string" ? candidate.args.insuredIdNo : undefined,
+        insuredName: normalizeBusinessLocator(candidate.args?.insuredName),
+        insuredIdNo: normalizeBusinessLocator(candidate.args?.insuredIdNo, true),
       },
     };
     return isAssistantBackendCall(normalizedCall) ? normalizedCall : null;
   }
 
   if (candidate.tool === "query_claim_cases") {
+    const validStatuses = new Set(["registered", "entering", "calculating", "reviewing", "completed", "cancelled"]);
+    const statusCandidates = Array.isArray(candidate.args?.status)
+      ? candidate.args.status
+      : typeof candidate.args?.status === "string"
+        ? [candidate.args.status]
+        : [];
+    const status = statusCandidates.filter((item): item is "registered" | "entering" | "calculating" | "reviewing" | "completed" | "cancelled" => typeof item === "string" && validStatuses.has(item));
+    const sortBy = ["updatedAt", "reportDate", "createdAt"].includes(String(candidate.args?.sortBy))
+      ? candidate.args?.sortBy as "updatedAt" | "reportDate" | "createdAt"
+      : undefined;
+    const sortOrder = candidate.args?.sortOrder === "asc" || candidate.args?.sortOrder === "desc" ? candidate.args.sortOrder : undefined;
+    const limit = typeof candidate.args?.limit === "number" && Number.isFinite(candidate.args.limit)
+      ? Math.min(100, Math.max(1, Math.floor(candidate.args.limit)))
+      : undefined;
     const normalizedCall: AssistantBackendCall = {
       tool: "query_claim_cases",
       args: {
-        caseNo: typeof candidate.args?.caseNo === "string" ? candidate.args.caseNo : undefined,
-        policyNo: typeof candidate.args?.policyNo === "string" ? candidate.args.policyNo : undefined,
-        insuredName: typeof candidate.args?.insuredName === "string" ? candidate.args.insuredName : undefined,
-        insuredIdNo: typeof candidate.args?.insuredIdNo === "string" ? candidate.args.insuredIdNo : undefined,
+        caseNo: normalizeBusinessLocator(candidate.args?.caseNo, true),
+        policyNo: normalizeBusinessLocator(candidate.args?.policyNo, true),
+        insuredName: normalizeBusinessLocator(candidate.args?.insuredName),
+        insuredIdNo: normalizeBusinessLocator(candidate.args?.insuredIdNo, true),
+        status: status?.length ? status : undefined,
+        sortBy,
+        sortOrder,
+        limit,
       },
     };
     return isAssistantBackendCall(normalizedCall) ? normalizedCall : null;

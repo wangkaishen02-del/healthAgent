@@ -1059,7 +1059,18 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
           const result = await loadProcessingCases(1, assistantStateRef.current.caseKeyword);
           return { type: "list_result", pageId, total: result?.total ?? 0, items: result?.items.map((item) => ({ itemId: item.id, caseNo: item.caseNo, policyNo: item.policyNo, status: item.status })) ?? [] };
         }
-        if (!assistantStateRef.current.selectedCase) return { type: "operation_error", reason: "claim_case_required", pageId, actionId };
+        if (!assistantStateRef.current.selectedCase) return {
+          type: "operation_error",
+          reason: "claim_case_required",
+          pageId,
+          actionId,
+          recovery: {
+            tool: "click_list_item_action",
+            pageId,
+            actionId: "open_case",
+            itemIdSource: "backendToolResults",
+          },
+        };
         if (actionId === "show_acceptance") { setActiveTab("acceptance_basic"); return { type: "detail_view", pageId, region: "acceptance" }; }
         if (actionId === "show_bills") { setActiveTab("bill"); return { type: "detail_view", pageId, region: "bills", count: assistantStateRef.current.bills.length }; }
         if (actionId === "show_events") { setActiveTab("event"); return { type: "detail_view", pageId, region: "events", count: assistantStateRef.current.events.length }; }
@@ -1123,6 +1134,22 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
         return executeListItemAction(actionId, item);
       },
       getRuntimeFieldOptions() { return {}; },
+      getRuntimeCapabilities() {
+        const state = assistantStateRef.current;
+        if (!state.selectedCase) {
+          return {
+            availableActionIds: ["search", "refresh", "reset", "open_case"],
+            availableFieldIds: ["caseKeyword"],
+          };
+        }
+        return {
+          unavailableActionIds: [
+            state.rollbackPromptOpen ? "request_calculation_rollback" : "confirm_calculation_rollback",
+            state.caseRollbackPromptOpen ? "request_case_rollback" : "confirm_case_rollback",
+            state.withdrawPromptOpen ? "request_withdraw" : "confirm_withdraw",
+          ],
+        };
+      },
     };
   });
 

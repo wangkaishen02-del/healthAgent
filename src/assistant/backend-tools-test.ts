@@ -5,12 +5,29 @@ import { normalizeAssistantModelToolCall } from "./policy-query-assistant.ts";
 
 const sourceCase = await prisma.claimCase.findFirst({ where: { status: "entering" }, orderBy: { createdAt: "asc" } });
 assert(sourceCase, "seed data must contain an entering claim case");
+const sourceRelationship = await prisma.policyInsured.findFirst({ include: { policy: true }, orderBy: { createdAt: "asc" } });
+assert(sourceRelationship, "seed data must contain an underwriting relationship");
+
+const underwriting = await executeAssistantBackendTool({
+  tool: "query_underwriting",
+  args: { policyNo: sourceRelationship.policy.policyNo },
+});
+assert.equal(underwriting.type, "underwriting_query_result");
+if (!("matches" in underwriting) || !("policySummaries" in underwriting)) throw new Error("underwriting query shape missing");
+assert.equal(underwriting.relationshipCount, underwriting.total, "total must explicitly mean relationship count");
+assert.equal(underwriting.distinctPolicyCount, underwriting.policySummaries.length, "distinct policy count must use grouped summaries");
+assert.equal(underwriting.distinctPolicyCount, 1, "a policy-number query must group all relationships into one policy summary");
 
 const normalizedInspection = normalizeAssistantModelToolCall({
   tool: "inspect_claim_case",
   args: { caseNo: sourceCase.caseNo.toLowerCase() },
 });
 assert.deepEqual(normalizedInspection, { tool: "inspect_claim_case", args: { caseNo: sourceCase.caseNo } });
+assert.equal(
+  normalizeAssistantModelToolCall({ tool: "inspect_claim_case", args: { caseNo: "<CASE_NO_N>" } }),
+  null,
+  "an unresolved case-number placeholder must never reach the inspection tool",
+);
 
 const inspection = await executeAssistantBackendTool(normalizedInspection, ["claim_calculator"]);
 assert.equal(inspection.type, "claim_case_inspection");

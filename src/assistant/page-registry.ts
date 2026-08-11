@@ -420,7 +420,8 @@ const pages: PageRegistration[] = [
         description: "保存新案件或修改，或者将已保存案件提交、撤件。",
         actions: [
           { actionId: "save_case", label: "保存立案/保存修改", description: "新建状态显示“保存立案”并创建受理案件；打开受理案件后显示“保存修改”。新建立案成功后页面自动清空重置。", kind: "input", target: "page" },
-          { actionId: "cancel_case", label: "撤件", description: "将当前受理案件变更为已撤件。", kind: "input", target: "page" },
+          { actionId: "request_cancel_case", label: "撤件", description: "为当前受理案件打开撤件二次确认。", kind: "input", target: "page" },
+          { actionId: "confirm_cancel_case", label: "确认撤件", description: "仅在已经请求撤件后执行，将当前受理案件变更为已撤件。", kind: "input", target: "page" },
           { actionId: "submit_case", label: "提交", description: "将当前受理案件提交为录入状态，并转入录入与理算页面。", kind: "input", target: "page" },
         ],
       },
@@ -575,10 +576,12 @@ function compactRegion(region: RegisteredRegion): Record<string, unknown> {
   return {
     regionId: region.regionId,
     label: region.label,
+    description: region.description,
     ...(region.fields?.length ? {
       fields: region.fields.map((field) => ({
         fieldId: field.fieldId,
         label: field.label,
+        description: field.description,
         ...(field.type !== "text" ? { type: field.type } : {}),
         ...(field.optionSource ? { optionSource: field.optionSource } : {}),
         ...(field.options ? { options: field.options } : {}),
@@ -588,6 +591,8 @@ function compactRegion(region: RegisteredRegion): Record<string, unknown> {
       actions: region.actions.map((action) => ({
         actionId: action.actionId,
         label: action.label,
+        description: action.description,
+        kind: action.kind,
         target: action.target,
       })),
     } : {}),
@@ -601,6 +606,7 @@ export function getCompactPageRegistration(pageId: string) {
   return {
     pageId: page.pageId,
     label: page.label,
+    description: page.description,
     pagePath: page.pagePath,
     regions: page.regions.map(compactRegion),
   };
@@ -631,34 +637,53 @@ export function isNavigablePage(pageId: string) {
 }
 export function getAssistantDiscoveryToolCatalog() {
   return [
-    { tool: "get_menu_pages", args: { menuId: "目标菜单的menuId" }, description: "根据目标菜单的menuId查询该菜单下的页面。" },
-    { tool: "get_page_registry", args: { pageId: "目标页面的pageId" }, description: "根据目标页面的pageId查询页面的区域、字段和动作注册信息。" },
+    { tool: "get_menu_pages", args: { menuId: "目标菜单的menuId" }, returns: "该菜单下有权限访问的页面及用途", description: "只读发现工具。仅在系统导航信息不足以确定目标页面时，根据真实 menuId 查询页面；不打开页面、不读取业务数据。" },
+    { tool: "get_page_registry", args: { pageId: "目标页面的pageId" }, returns: "页面区域、字段、动作、参数语义及前置条件", description: "只读发现工具。获取指定页面当前可注册的能力；不打开页面。执行页面动作前必须遵守运行时裁剪后的注册结果。" },
   ];
 }
 
 export function getAssistantActionToolCatalog() {
   return [
-    { tool: "open_page", args: { pageId: "目标页面的pageId" }, description: "打开目标页面，参数填写目标页面的pageId。" },
-    { tool: "set_field", args: { pageId: "目标页面的pageId", fieldId: "目标字段的fieldId", value: "你想输入的值" }, description: "填写目标页面中已注册的字段，参数填写目标页面的pageId和目标字段的fieldId。" },
-    { tool: "click_button", args: { pageId: "目标页面的pageId", actionId: "目标动作的actionId" }, description: "点击目标页面中已注册的动作，参数填写目标页面的pageId和目标动作的actionId。" },
-    { tool: "click_list_row_action", args: { pageId: "目标页面的pageId", actionId: "目标列表操作的actionId", row: "例如：1" }, description: "点击目标页面列表第 row 行操作列中已注册的动作，row填写从1开始的数字，例如1表示第一行。" },
-    { tool: "click_list_item_action", args: { pageId: "目标页面的pageId", actionId: "目标列表操作的actionId", itemId: "后台查询结果返回的itemId" }, description: "使用后台查询结果返回的稳定对象标识，对页面列表中的指定对象执行已注册动作；不依赖当前排序和行号。" },
+    { tool: "open_page", args: { pageId: "目标页面的pageId" }, returns: "页面已打开及该页面运行时可用能力", description: "导航到一个有权限访问的页面。本轮若需要切换页面，只调用本工具；等待页面返回运行时能力后再填写或操作。" },
+    { tool: "set_field", args: { pageId: "当前已打开页面的pageId", fieldId: "当前运行时已注册字段的fieldId", value: "符合字段类型和选项的业务值" }, returns: "字段填写结果及刷新后的页面状态", description: "填写当前页面一个运行时可用字段。value 必须来自用户输入或可信工具结果，不能填写参数说明、占位示例或自行猜测的 ID。" },
+    { tool: "click_button", args: { pageId: "当前已打开页面的pageId", actionId: "当前运行时已注册页面动作的actionId" }, returns: "动作成功、业务结果或结构化失败原因", description: "执行当前页面 target=page 的运行时可用动作。确认类动作只有在页面已产生对应待确认状态时才会提供；对象类动作只有在目标对象已选中时才会提供。" },
+    { tool: "click_list_row_action", args: { pageId: "当前已打开页面的pageId", actionId: "当前运行时已注册行动作的actionId", row: "从1开始的当前可见行号" }, returns: "选中行对象及打开后的页面状态", description: "执行当前可见列表某一行的 target=row 动作。row 是当前排序和筛选后的可见行号；只有明确依据当前列表结果选定行时使用。" },
+    { tool: "click_list_item_action", args: { pageId: "当前已打开页面的pageId", actionId: "当前运行时已注册行动作的actionId", itemId: "后台结果原样返回的稳定itemId" }, returns: "指定对象及打开后的页面状态", description: "按后台结果中的稳定 itemId 执行 target=row 动作，不依赖行号。itemId 必须原样来自当前任务的可信结果，禁止使用案件号、保单号或占位示例代替。" },
   ];
 }
 
 export function getAssistantBackendToolCatalog() {
   return [
-    { tool: "query_underwriting", args: { policyNo: "可选", insuredName: "可选", insuredIdNo: "可选" }, description: "在后台查询承保关系，至少提供一个条件；返回保单、承保关系、被保人和保障计划信息，不操作前端查询页面。" },
-    { tool: "query_claim_cases", args: { caseNo: "可选", policyNo: "可选", insuredName: "可选", insuredIdNo: "可选" }, description: "在后台查询理赔案件，至少提供一个条件；案件号应使用 caseNo，返回可用于页面列表对象操作的 itemId、案件、人员及关联事件信息。" },
-    { tool: "inspect_claim_case", args: { caseNo: "必填案件号" }, description: "检查指定案件的环节、处理人、资料数量、OCR、理算结果、风险提示和当前角色可执行的后续流转；只读，不操作页面。" },
-    { tool: "summarize_claim_work_queue", args: {}, description: "汇总受理、录入、理算、审核、结案、撤件各环节案件量和 OCR 队列状态；只读且无需查询条件。" },
+    {
+      tool: "query_underwriting",
+      argsSchema: { anyOfRequired: ["policyNo", "insuredName", "insuredIdNo"], optionalStringFields: ["policyNo", "insuredName", "insuredIdNo"] },
+      returns: "total与relationshipCount均为承保关系条数；distinctPolicyCount为去重保单数；matches每项是一条保单-被保人-保障计划关系；policySummaries按policyNo去重且用于保单级比较",
+      description: "只读查询承保关系，至少提供一个真实条件。policyNo 查到22条通常表示同一保单下22条人员承保关系，不代表22张保单；比较保单数量、期限、状态或被保人数必须使用 policySummaries，禁止对 matches 中重复的 policy 逐条当成不同保单。未提供字段必须省略。",
+    },
+    {
+      tool: "query_claim_cases",
+      argsSchema: {
+        anyOfRequired: ["caseNo", "policyNo", "insuredName", "insuredIdNo", "status"],
+        optionalStringFields: ["caseNo", "policyNo", "insuredName", "insuredIdNo"],
+        optionalFields: {
+          status: ["registered", "entering", "calculating", "reviewing", "completed", "cancelled"],
+          sortBy: ["updatedAt", "reportDate", "createdAt"],
+          sortOrder: ["asc", "desc"],
+          limit: "1-100整数",
+        },
+      },
+      returns: "totalMatches为所有匹配案件数；total为本次返回对象口径；items每项是一宗案件且itemId为页面稳定选择标识；resolvedFields仅在唯一匹配时出现",
+      description: "只读查询理赔案件，一条 items 记录就是一宗案件。案件状态 status 是有效查询条件，可以单独使用，无需再提供案件号、保单号、姓名或证件号；单个状态既可传 status=calculating，也可传 status=[calculating]，服务端会统一为数组。例如理算中最近更新一笔使用 status=calculating、sortBy=updatedAt、sortOrder=desc、limit=1。完全没有定位字段和 status 时才禁止调用。尚未结案使用 status=[registered,entering,calculating,reviewing]。案件号只能传 caseNo，不能传 policyNo。",
+    },
+    { tool: "inspect_claim_case", argsSchema: { requiredStringFields: ["caseNo"] }, returns: "唯一案件的状态、资料/OCR/理算检查、风险提示、角色权限及当前可执行流转", description: "只读检查工具。caseNo 必须来自用户输入或唯一案件查询结果。它只核对业务状态，不会打开页面或执行流转；执行变更前应先使用其可执行流转结果。" },
+    { tool: "summarize_claim_work_queue", argsSchema: {}, returns: "按互斥案件状态统计的案件量及OCR队列统计；各状态数量不是保单数或承保关系数", description: "只读汇总整个理赔工作队列，无需条件。仅用于队列概览，不用于定位某一案件，也不执行页面操作。" },
   ];
 }
 
 export function getAssistantControlToolCatalog() {
   return [
-    { tool: "ask_user", args: { question: "需要向用户提出的问题", requestedFields: ["需要补充的字段ID"] }, description: "任务缺少系统无法查询且不能推断的必要信息时暂停执行并询问用户；用户回答后从原任务继续。" },
-    { tool: "finish_task", args: { reason: "string" }, description: "任务已完成或当前无法继续时结束循环。" },
+    { tool: "ask_user", args: { question: "一个明确问题", requestedFields: ["确实需要用户补充的业务字段名"] }, returns: "任务暂停；用户回答后从同一检查点继续", description: "仅当必要信息无法从用户原话、页面结果或后台结果获得且不能客观推断时使用。不得用它让用户确认 Agent 自己可计算的排序、最大值或唯一结果；数据变更的明确授权必须用它取得。" },
+    { tool: "finish_task", args: { reason: "完成依据或无法继续的明确原因" }, returns: "结束当前Agent循环，不执行任何业务动作", description: "仅在目标已经有可核验结果，或存在明确且无法恢复的阻塞时结束。不得在查询或页面动作仍在执行、仅回复‘请稍候’、或尚可继续调用工具时使用。" },
   ];
 }
 

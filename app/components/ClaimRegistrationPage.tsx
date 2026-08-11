@@ -259,7 +259,18 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
     const id = stateRef.current.editingCaseId;
     if (!id) {
       setMessage(action === "cancel" ? "请先双击选择需要撤件的案件。" : "请先保存立案，再提交案件。");
-      return { type: "operation_error", reason: "claim_case_required" };
+      return {
+        type: "operation_error",
+        reason: "claim_case_required",
+        pageId: "claim_registration",
+        actionId: action === "cancel" ? "request_cancel_case" : "submit_case",
+        recovery: {
+          tool: "click_list_item_action",
+          pageId: "claim_registration",
+          actionId: "edit_case",
+          itemIdSource: "backendToolResults",
+        },
+      };
     }
     if (action === "cancel") setCancelPromptOpen(false);
     setBusy(true);
@@ -330,10 +341,20 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
       }
       return { type: "field_updated", pageId: "claim_registration", fieldId, value };
     },
-    async executeAction(actionId, options) { if (actionId === "lock_insured") return lockPolicyInsured(); if (actionId === "reset_event_filters") { setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); stateRef.current = { ...stateRef.current, eventKeyword: "", eventTypeFilter: "all", eventDateFilter: "" }; return { type: "filter_reset", region: "claim_event_information" }; } if (actionId === "open_event_editor") return openEventEditor(); if (actionId === "close_event_editor") return closeEventEditor(); if (actionId === "create_event") return createEvent(true, options?.operationId); if (actionId === "save_case") return saveCase(true, options?.operationId); if (actionId === "cancel_case") { if (!stateRef.current.editingCaseId) return { type: "operation_error", reason: "claim_case_required" }; setCancelPromptOpen(true); return { type: "confirmation_required", operation: "cancel_case", caseId: stateRef.current.editingCaseId }; } if (actionId === "submit_case") return changeStatus("submit", options?.operationId); if (actionId === "reset" || actionId === "new_case") return resetForm(actionId); return { type: "operation_error", reason: "action_executor_not_bound", actionId }; },
+    async executeAction(actionId, options) { if (actionId === "lock_insured") return lockPolicyInsured(); if (actionId === "reset_event_filters") { setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); stateRef.current = { ...stateRef.current, eventKeyword: "", eventTypeFilter: "all", eventDateFilter: "" }; return { type: "filter_reset", region: "claim_event_information" }; } if (actionId === "open_event_editor") return openEventEditor(); if (actionId === "close_event_editor") return closeEventEditor(); if (actionId === "create_event") return createEvent(true, options?.operationId); if (actionId === "save_case") return saveCase(true, options?.operationId); if (actionId === "request_cancel_case") { if (!stateRef.current.editingCaseId) return changeStatus("cancel", options?.operationId); setCancelPromptOpen(true); stateRef.current = { ...stateRef.current }; return { type: "confirmation_required", operation: "cancel_case", caseId: stateRef.current.editingCaseId }; } if (actionId === "confirm_cancel_case") { if (!cancelPromptOpen) return { type: "operation_error", reason: "confirmation_required", pageId: "claim_registration", actionId }; return changeStatus("cancel", options?.operationId); } if (actionId === "submit_case") return changeStatus("submit", options?.operationId); if (actionId === "reset" || actionId === "new_case") return resetForm(actionId); return { type: "operation_error", reason: "action_executor_not_bound", actionId }; },
     async executeRowAction(actionId, row, options) { if (actionId === "edit_case") { const item = stateRef.current.cases[row - 1]; return item ? openCase(item) : { type: "operation_error", reason: "row_not_found", row }; } if (actionId === "select_event" || actionId === "edit_event") { const current = stateRef.current; const visible = current.personEvents.filter((item) => current.eventTypeFilter === "all" || item.eventType === current.eventTypeFilter).filter((item) => !current.eventDateFilter || item.occurredDate === current.eventDateFilter).filter((item) => { const key = current.eventKeyword.trim().toLowerCase(); return !key || [item.eventNo, item.administrativeArea, item.detailedAddress, item.hospitalName, item.diagnosis, item.description].some((value) => value?.toLowerCase().includes(key)); }); const item = visible[row - 1]; return item ? (actionId === "edit_event" ? openEventEditor(item) : selectEvent(item)) : { type: "operation_error", reason: "row_not_found", row }; } if (actionId === "remove_attachment") { const item = stateRef.current.attachments[row - 1]; return item ? removeAttachment(item.uploadId, options?.operationId) : { type: "operation_error", reason: "row_not_found", row }; } return { type: "operation_error", reason: "row_action_executor_not_bound", actionId, row }; },
     async executeItemAction(actionId, itemId, options) { if (actionId === "edit_case") { const item = stateRef.current.cases.find((candidate) => candidate.id === itemId) ?? (await loadCases()).find((candidate) => candidate.id === itemId); return item ? openCase(item) : { type: "operation_error", reason: "item_not_found", itemId }; } if (actionId === "select_event" || actionId === "edit_event") { const item = stateRef.current.personEvents.find((candidate) => candidate.id === itemId); return item ? (actionId === "edit_event" ? openEventEditor(item) : selectEvent(item)) : { type: "operation_error", reason: "item_not_found", itemId }; } if (actionId === "remove_attachment") { const item = stateRef.current.attachments.find((candidate) => candidate.uploadId === itemId); return item ? removeAttachment(item.uploadId, options?.operationId) : { type: "operation_error", reason: "item_not_found", itemId }; } return { type: "operation_error", reason: "item_action_executor_not_bound", actionId, itemId }; },
     getRuntimeFieldOptions() { return {}; },
+    getRuntimeCapabilities() {
+      if (!stateRef.current.editingCaseId) {
+        return {
+          unavailableActionIds: ["request_cancel_case", "confirm_cancel_case", "submit_case"],
+        };
+      }
+      return {
+        unavailableActionIds: [cancelPromptOpen ? "request_cancel_case" : "confirm_cancel_case"],
+      };
+    },
   }));
 
   const activeCase = editingCaseId ? cases.find((item) => item.id === editingCaseId) ?? (embeddedCase?.id === editingCaseId ? embeddedCase : null) : null;
