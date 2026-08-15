@@ -54,7 +54,6 @@ type AssistantMessage = {
   actionExplanation?: string;
 };
 type AssistantContinuationContext = {
-  currentPagePath?: string[];
   currentPageRegistry?: unknown;
   history?: Array<{ toolCalls: AssistantToolCall[] }>;
   lastOperationResult?: unknown;
@@ -104,6 +103,8 @@ const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
 const ASSISTANT_LIST_CONTEXT_LIMIT = 5;
 const MAX_ASSISTANT_HISTORY_ROUNDS = 8;
 const MAX_ASSISTANT_BACKEND_RESULTS = 4;
+const MAX_ASSISTANT_PAGE_RESUMES = 16;
+const MAX_IDENTICAL_TOOL_PLANS = 2;
 const LLM_PROVIDER_STORAGE_KEY = "health-agent-llm-provider";
 const ASSISTANT_WELCOME_MESSAGE: AssistantMessage = {
   id: "assistant-welcome",
@@ -258,6 +259,7 @@ export default function Page() {
   const claimReviewCompletionControllerRef = useRef<RegisteredPageController | null>(null);
   const assistantAbortControllerRef = useRef<AbortController | null>(null);
   const assistantTaskIdRef = useRef<string | null>(null);
+  const assistantPageRegistryCacheRef = useRef(new Map<string, unknown>());
 
   function getRegisteredPageController(pageId: string) {
     if (pageId === "calculation_config") return calculationConfigControllerRef.current;
@@ -270,6 +272,22 @@ export default function Page() {
   }
 
   function runtimeCapabilitiesFor(pageId: string) {
+    if (pageId === "policy_query") {
+      return {
+        availableActionIds: policiesRef.current.length
+          ? ["search", "reset", "view_detail", "view_benefits", "view_insureds"]
+          : ["search", "reset"],
+        availableFieldIds: Object.keys(EMPTY_POLICY_FILTERS),
+      } satisfies RuntimePageCapabilities;
+    }
+    if (pageId === "policy_detail") {
+      return drawerDataRef.current
+        ? {
+            availableActionIds: ["view_detail", "view_benefits", "view_insureds"],
+            availableFieldIds: ["coveragePlanId"],
+          } satisfies RuntimePageCapabilities
+        : { availableActionIds: [], availableFieldIds: [] } satisfies RuntimePageCapabilities;
+    }
     return getRegisteredPageController(pageId)?.getRuntimeCapabilities?.();
   }
 
@@ -465,8 +483,12 @@ export default function Page() {
   }
 
   async function loadAssistantPageRegistry(pageId: string, signal?: AbortSignal) {
+    if (assistantPageRegistryCacheRef.current.has(pageId)) {
+      return assistantPageRegistryCacheRef.current.get(pageId);
+    }
     const response = await apiFetch(`/api/assistant/registry?resource=page&view=compact&pageId=${encodeURIComponent(pageId)}`, { signal });
     const data = (await response.json()) as { page?: unknown };
+    assistantPageRegistryCacheRef.current.set(pageId, data.page);
     return data.page;
   }
 
@@ -854,6 +876,8 @@ export default function Page() {
     Object.assign(runtimeFieldOptions, claimReviewCompletionControllerRef.current?.getRuntimeFieldOptions() ?? {});
     const runtimePageCapabilities = Object.fromEntries(
       [
+        "policy_query",
+        "policy_detail",
         "calculation_config",
         "standard_formula_management",
         "claim_query",
@@ -909,20 +933,9 @@ export default function Page() {
     try {
       let currentPage: MainTab = mainTab;
       let currentOpenTabs = new Set(openTabs);
-      let currentPagePath = mainTab === "policy"
-        ? ["综合查询", "保单信息查询"]
-        : mainTab === "calculation_config"
-          ? ["理赔配置", "保单理算配置"]
-          : mainTab === "standard_formulas"
-            ? ["理赔配置", "标准公式管理"]
-          : mainTab === "claim_registration"
-            ? ["理赔处理", "受理立案"]
-            : mainTab === "claim_entry_calculation"
-              ? ["理赔处理", "录入与理算"]
-              : mainTab === "claim_review_completion"
-                ? ["理赔处理", "审核结案"]
-                : ["综合查询", "案件查询"];
       let displayedToolEventSequence = 0;
+      let previousToolPlanSignature = "";
+      let identicalToolPlanCount = 0;
       let lastExecutedPlan: AssistantPlan | null = null;
       let lastExecutionResult: {
         currentPage: string;
@@ -1047,7 +1060,6 @@ export default function Page() {
             text,
             provider: selectedProvider,
             context: {
-              currentPagePath,
               currentPageRegistry: initialRegistry,
               history: [],
               backendToolResults: [],
@@ -1061,10 +1073,19 @@ export default function Page() {
       if (!pendingTask && task.taskPlan.length) setAssistantProgress(`计划第 ${task.plan?.planStep ?? 1}/${task.taskPlan.length} 步：${task.taskPlan[(task.plan?.planStep ?? 1) - 1]}`);
       showTaskToolResults(task);
 
-      for (let pageResumeCount = 0; task.status === "waiting_page" && pageResumeCount < 16; pageResumeCount += 1) {
+      for (let pageResumeCount = 0; task.status === "waiting_page" && pageResumeCount < MAX_ASSISTANT_PAGE_RESUMES; pageResumeCount += 1) {
         throwIfAssistantAborted(abortController.signal);
         const plan = task.plan;
         if (!plan) throw new Error("assistant_task_plan_missing");
+        const toolPlanSignature = JSON.stringify(plan.toolCalls);
+        if (toolPlanSignature === previousToolPlanSignature) identicalToolPlanCount += 1;
+        else {
+          previousToolPlanSignature = toolPlanSignature;
+          identicalToolPlanCount = 1;
+        }
+        if (identicalToolPlanCount > MAX_IDENTICAL_TOOL_PLANS) {
+          throw new Error("assistant_repeated_tool_plan");
+        }
         lastExecutedPlan = plan;
         setAssistantRecognized(plan.recognized ?? []);
         showModelReasoning(plan, task.taskPlan.length);
@@ -1087,19 +1108,6 @@ export default function Page() {
 
         const previousContext = task.context ?? {};
         let currentPageRegistry = previousContext.currentPageRegistry;
-        if (plan.discoveryResults && plan.discoveryResults.length > 0) {
-          currentPageRegistry = applyRuntimeFieldOptions(
-            plan.discoveryResults[plan.discoveryResults.length - 1],
-            execution.runtimeFieldOptions,
-          );
-          const discoveredPageId = currentPageRegistry && typeof currentPageRegistry === "object"
-            ? String((currentPageRegistry as { pageId?: unknown }).pageId ?? "")
-            : "";
-          currentPageRegistry = applyRuntimePageCapabilities(
-            currentPageRegistry,
-            execution.runtimePageCapabilities[discoveredPageId],
-          );
-        }
         if (execution.openedPageId) {
           const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId, abortController.signal);
           if (openedPageRegistry && typeof openedPageRegistry === "object") {
@@ -1108,19 +1116,6 @@ export default function Page() {
               currentPageRegistry,
               execution.runtimePageCapabilities[execution.openedPageId],
             );
-            const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
-            if (Array.isArray(pagePath) && pagePath.every((item) => typeof item === "string")) {
-              currentPagePath = pagePath;
-            }
-          }
-        }
-        if (!execution.openedPageId && !(plan.discoveryResults && plan.discoveryResults.length > 0)) {
-          const currentRegistryPageId = currentPageRegistry && typeof currentPageRegistry === "object"
-            ? String((currentPageRegistry as { pageId?: unknown }).pageId ?? "")
-            : "";
-          if (currentRegistryPageId) {
-            const refreshedRegistry = await loadAssistantPageRegistry(currentRegistryPageId, abortController.signal);
-            currentPageRegistry = applyRuntimeFieldOptions(refreshedRegistry, execution.runtimeFieldOptions);
           }
         }
         if (currentPageRegistry && typeof currentPageRegistry === "object") {
@@ -1133,7 +1128,6 @@ export default function Page() {
         }
 
         const nextContext: AssistantContinuationContext = {
-          currentPagePath,
           currentPageRegistry,
           history: [
             ...(previousContext.history ?? []),

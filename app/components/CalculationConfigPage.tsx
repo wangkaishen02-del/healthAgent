@@ -1055,6 +1055,36 @@ const CalculationConfigPage = forwardRef<RegisteredPageController>(function Calc
     getRuntimeFieldOptions() {
       return { "calculation_config.definitionCode": getAvailableDefinitionOptions() };
     },
+    getRuntimeCapabilities() {
+      if (pendingDeleteIdRef.current) {
+        return {
+          availableActionIds: ["confirm_delete_parameter", "cancel_delete_parameter"],
+          availableFieldIds: [],
+        };
+      }
+      if (!selectedPolicyIdRef.current) {
+        return {
+          availableActionIds: ["search", "reset"],
+          availableFieldIds: ["policyNo"],
+        };
+      }
+      if (!configTargetRef.current) {
+        return {
+          availableActionIds: ["search", "reset", "configure"],
+          availableFieldIds: ["policyNo"],
+        };
+      }
+      if (editorOpenRef.current) {
+        return {
+          availableActionIds: ["save_parameter", "cancel_edit"],
+          availableFieldIds: ["definitionCode", "parameterValue", "description", "enabled"],
+        };
+      }
+      return {
+        availableActionIds: ["create_parameter", "back_to_objects", "edit_parameter", "request_delete_parameter"],
+        availableFieldIds: [],
+      };
+    },
   }));
 
   if (configTarget) {

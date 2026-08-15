@@ -366,7 +366,16 @@ const StandardFormulaManagementPage = forwardRef<RegisteredPageController>(funct
       return { type: "operation_error", reason: "row_action_not_supported", actionId };
     },
     getRuntimeFieldOptions() { return {}; },
-  }), [items, page, queryKeyword]);
+    getRuntimeCapabilities() {
+      if (mode) return { availableActionIds: [], availableFieldIds: [] };
+      return {
+        availableActionIds: items.length
+          ? ["refresh", "reset", "new_formula", "view", "edit"]
+          : ["refresh", "reset", "new_formula"],
+        availableFieldIds: ["keyword"],
+      };
+    },
+  }), [items, mode, page, queryKeyword]);
 
   const readOnly = mode === "view";
   return (

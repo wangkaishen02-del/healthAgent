@@ -2,24 +2,21 @@ import { createHash, randomUUID } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
-  isAssistantDiscoveryCall,
   isAssistantBackendCall,
   isAssistantFinishCall,
   isAssistantUserInputCall,
   formatToolInvocation,
   normalizeAssistantModelToolCall,
-  type AssistantDiscoveryCall,
   type AssistantBackendCall,
   type AssistantModelToolCall,
+  type AssistantPlan,
   type AssistantToolCall,
 } from "./policy-query-assistant.ts";
 import {
   getAssistantActionToolCatalog,
   getAssistantBackendToolCatalog,
   getAssistantControlToolCatalog,
-  getAssistantDiscoveryToolCatalog,
   getCompactPageRegistration,
-  getMenuPages,
   getNavigationRegistry,
 } from "./page-registry.ts";
 import { queryUnderwritingDb } from "../underwriting/prisma-service.ts";
@@ -78,7 +75,6 @@ export type AssistantTaskBlueprint = {
 };
 
 export type AssistantContinuationContext = {
-  currentPagePath?: string[];
   currentPageRegistry?: unknown;
   history?: Array<{
     toolCalls: AssistantToolCall[];
@@ -161,7 +157,7 @@ async function writeAssistantLog(entry: AssistantLogEntry) {
 }
 
 function buildContextualRules(userText: string, context?: AssistantContinuationContext) {
-  const scope = `${userText}\n${context?.currentPagePath?.join("/") ?? ""}`.replace(/\s+/g, "");
+  const scope = userText.replace(/\s+/g, "");
   const rules: string[] = [];
   if (/^(?:请)?(?:帮我)?(?:处理|办理|操作)(?:一下)?[。！!？?]*$/.test(userText.replace(/\s+/g, ""))) {
     rules.push("用户没有说明要处理的业务或对象。立即使用 ask_user 追问具体任务，requestedFields 使用 taskDescription；不要反复发现注册信息，也不要自行选择页面。");
@@ -192,48 +188,40 @@ function buildContextualRules(userText: string, context?: AssistantContinuationC
 
 export function buildSystemPrompt(userText = "", context?: AssistantContinuationContext) {
   const currentDate = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
+  const navigation = filterAssistantMenus(getNavigationRegistry().menus, context?.actorRoles).map((menu) => ({
+    menuId: menu.menuId,
+    label: menu.label,
+    pages: menu.pages.map((page) => ({ pageId: page.pageId, label: page.label })),
+  }));
+  const compactTools = <T extends { description: string }>(tools: T[]) => tools.map(({ description: _description, ...tool }) => tool);
   return `
 你是团体健康险理赔平台的执行 Agent。系统管理保单、保障计划、险种责任、被保人、理赔案件、影像 OCR、票据、理算、审核、结案与撤件；所有数据变更受角色权限和案件状态机约束。先依据注册信息理解能力，再选择页面动作。
 只能输出 JSON，不输出 markdown、解释或代码块。
 当前系统日期（Asia/Shanghai）：${currentDate}。
 
 系统导航信息（无需调用工具）：
-${JSON.stringify({ menus: filterAssistantMenus(getNavigationRegistry().menus, context?.actorRoles) })}
-
-注册信息发现工具：
-${JSON.stringify(getAssistantDiscoveryToolCatalog())}
+${JSON.stringify({ menus: navigation })}
 
 页面操作工具：
-${JSON.stringify(getAssistantActionToolCatalog())}
+${JSON.stringify(compactTools(getAssistantActionToolCatalog()))}
 
 后台数据工具：
-${JSON.stringify(getAssistantBackendToolCatalog())}
+${JSON.stringify(compactTools(getAssistantBackendToolCatalog()))}
 
 任务控制工具：
-${JSON.stringify(getAssistantControlToolCatalog())}
+${JSON.stringify(compactTools(getAssistantControlToolCatalog()))}
 
 工作规则：
-0. 首次规划器已经给出结构化任务意图。以“本任务意图”的 mode、summary 和 objectives 作为任务边界；不得仅凭个别关键词把只读任务改判为数据变更，也不得把数据变更任务降级为只读任务。
-1. 先遵循“本任务行动计划”；根据工具结果调整后续步骤，但不得跳过定位、校验、确认或结果核对。
-2. 只使用注册中心提供的工具、页面、字段、动作和选项；缺少可信信息时先查询，不猜测 ID 或业务事实。
-2.1 工具目录中的“可选、必填、string、目标字段”等是参数说明，不是业务值，绝不能复制进工具参数；未提供的可选字段必须从 args 中省略。
-3. 一轮只做一个明确的下一步：后台查询、页面操作或追问。拿到结果后再决定下一步。
-4. 用户给出姓名、案件号、保单号或证件号时先用后台查询定位；唯一结果直接继续，空结果或无法消歧才 ask_user。
-4.1 query_claim_cases 的 status 是独立有效的查询条件。用户要求某状态下的全部、任意、最近或最新案件时，直接按 status 查询；最近更新使用 sortBy=updatedAt、sortOrder=desc、limit=1，不得再索要案件号、保单号、姓名或证件号。
-5. 案件号 CL 与保单号 GI 不可混用。只读查询使用案件查询页；修改、提交、撤件等才进入业务处理页。
-6. 数据变更只有 mutation_result.success=true 才算完成。需要确认的操作必须 ask_user，收到明确确认前不得执行。
-6.1 用户要求跳过查询、校验、对象消歧或确认时不得照做。任何数据变更都必须先唯一定位对象并核对当前状态；多个候选对象不得随意选择。用户给出的错误操作顺序必须按“定位→校验→必要确认→执行→复核”纠正。
-6.1.1 用户要求绕过、忽略、强制跳过业务状态机或权限限制时必须拒绝。案件检查结果未提供的业务动作和当前账号动作，视为不可执行；不得通过打开其他处理页面、改填其他字段或反复调用工具来规避。
-6.2 排序、最大值、最近一笔等能够由系统返回数据客观判断的问题，由 Agent 自行计算并继续，不得反问用户确认 Agent 的判断。
-6.3 后台查询结果 total=0 时，回复必须准确保留 appliedFilters 的范围，例如查询了“未结案”就只能说“未查询到符合条件的未结案案件”，不得扩大成“没有任何案件”。
-7. 当前用户输入优先于历史记忆；历史对象有歧义时必须确认。不得编造日期、医院、诊断、金额或其他业务事实。
-8. 每轮都输出 thought 和 actionExplanation，二者是并列字段，不得互相替代。thought 是模型主动写出的思考过程，可较完整地说明如何理解结果、比较候选项、排除错误选择并确定下一步，最多 300 个汉字；不得声称读取了系统未提供的隐藏状态。actionExplanation 是面向用户的行动解释，最多 160 个汉字，只说明“依据哪些已知结果、为什么选择当前动作、预期得到什么”，不得编造事实。
-8.0 thought 负责说明判断过程，actionExplanation 负责说明动作理由；reply 负责对用户说当前结论或问题。三者内容应各司其职。
-8.0.1 decision=continue 表示需要下一轮，decision=finish 只在任务已完成或无法继续时使用。
-8.1 若“本任务行动计划”非空，每一轮都必须输出 planStep，表示当前正在执行的计划步骤（从 1 开始）；完成任务时填写最后一步。若没有行动计划则省略 planStep。
-9. 隐私占位符协议：为避免向外部模型发送真实个人信息和业务编号，服务端会在本次模型请求开始前把敏感值替换为临时别名；模型返回后，服务端仅在本地将同一完整别名恢复为真实值，再执行工具。模型不需要、也不应知道真实值。
-10. 外部模型上下文可能包含以下占位符类型：CASE_NO=案件号，POLICY_NO=保单号，EVENT_NO=事件号；PII_NAME=姓名，PII_ID=证件号，PII_PHONE=手机号，PII_BANK=银行卡号，PII_EMAIL=邮箱，PII_MEDICAL=诊断或病情，PII_ADDRESS=地址。每个临时别名由系统分配数字后缀，例如上下文实际出现的 <CASE_NO_1>。
-11. 只有逐字出现在当前上下文中的完整别名才可原样用于工具参数；服务端会自动恢复它。类型名称、示例、<CASE_NO_N> 或任何自行生成、补全、改写的标记都不是有效值。无法确定时使用已有后台结果或 ask_user。
+1. 以“本任务意图”的 mode、summary、objectives 为边界并遵循行动计划；可按结果调整，但不能改变读写性质或跳过必要步骤。
+2. 只用当前注册的工具、页面、字段、动作和选项。一轮执行一个有依赖的下一步；互不依赖的只读后台查询可并行。缺少事实先查询，不猜 ID、日期、金额等业务值。
+3. 参数说明词不是业务值；未提供的可选参数必须省略。CL 是案件号，GI 是保单号，不得混用。
+4. 已有姓名或编号时先后台定位；唯一结果继续，空结果或确实无法消歧才 ask_user。status 可单独查询案件；“最近更新”使用 sortBy=updatedAt、sortOrder=desc、limit=1。
+5. 排序、最大值和最近一笔由 Agent 根据结果判断，不询问用户。total=0 的回复必须保留 appliedFilters 范围，不得扩大结论。
+6. 数据变更必须“唯一定位→状态与权限校验→必要确认→执行→复核”，仅 mutation_result.success=true 算完成。拒绝绕过权限、状态机、消歧或确认；未明确提供的动作视为不可执行。
+7. 当前用户输入优先于历史记忆。只读案件使用案件查询页；修改、提交、撤件才进入处理页。
+8. 每轮输出 thought（判断过程，最多300汉字）、actionExplanation（动作依据与预期，最多160汉字）和 reply（对用户结论），三者不重复。继续任务用 decision=continue；仅完成或无法继续时 finish。有行动计划时输出从1开始的 planStep。
+9. 隐私值会被本地替换为临时别名，返回后再本地恢复。类型：CASE_NO=案件号，POLICY_NO=保单号，EVENT_NO=事件号，PII_NAME=姓名，PII_ID=证件号，PII_PHONE=手机号，PII_BANK=银行卡号，PII_EMAIL=邮箱，PII_MEDICAL=诊断病情，PII_ADDRESS=地址；形如 <CASE_NO_1>。
+10. 只能原样使用当前上下文已经出现的完整别名；<CASE_NO_N>、类型名或自行生成、改写的标记都不是有效值。无法确定时用已有结果或 ask_user。
 ${buildContextualRules(userText, context)}
 
 输出结构：
@@ -315,17 +303,6 @@ function stripUnresolvedPrivacyTokens(text: string) {
     .replace(/<(?:CASE_NO|POLICY_NO|EVENT_NO)_[A-Z0-9]+>/gi, "已提供的编号");
 }
 
-function executeDiscovery(call: AssistantDiscoveryCall, roles: readonly string[] = []) {
-  if (call.tool === "get_navigation_registry") return { menus: filterAssistantMenus(getNavigationRegistry().menus, roles) };
-  if (call.tool === "get_menu_pages") {
-    const menu = getMenuPages(call.args.menuId);
-    if (!menu) return { error: "menu_not_found" };
-    return filterAssistantMenus([menu], roles)[0] ?? { error: "menu_forbidden" };
-  }
-  if (!canAccessAssistantPage(call.args.pageId, roles)) return { error: "page_forbidden" };
-  return getCompactPageRegistration(call.args.pageId) ?? { error: "page_not_found" };
-}
-
 export async function executeAssistantBackendTool(call: AssistantBackendCall, roles: readonly string[] = []) {
   if (call.tool === "query_underwriting") {
     const result = await queryUnderwritingDb(call.args);
@@ -389,10 +366,6 @@ export function setAssistantBackendExecutorForTesting(executor: AssistantBackend
   assistantBackendExecutor = executor ?? executeAssistantBackendTool;
 }
 
-function formatDiscoveryStep(call: AssistantDiscoveryCall) {
-  return formatToolInvocation(call.tool, call.args);
-}
-
 function hasExplicitQueryCondition(userText: string) {
   const normalized = userText.replace(/\s+/g, "");
   if (/(全部保单|所有保单|刷新结果|重新查询|重置条件)/.test(normalized)) return false;
@@ -414,8 +387,7 @@ function hasMultipleResultActions(plan: NonNullable<ReturnType<typeof normalizeP
 }
 
 function navigatesAndActsInSamePlan(plan: NonNullable<ReturnType<typeof normalizePayload>>) {
-  const pageActions = plan.toolCalls.filter((call) => !isAssistantDiscoveryCall(call)
-    && !isAssistantBackendCall(call)
+  const pageActions = plan.toolCalls.filter((call) => !isAssistantBackendCall(call)
     && !isAssistantUserInputCall(call)
     && !isAssistantFinishCall(call));
   return pageActions.some((call) => call.tool === "open_page") && pageActions.length > 1;
@@ -444,12 +416,11 @@ function hasUnresolvedPrivacyToken(plan: NonNullable<ReturnType<typeof normalize
 function runtimeRegistryCallViolation(
   plan: NonNullable<ReturnType<typeof normalizePayload>>,
   context: AssistantContinuationContext | undefined,
-  discoveredResources: unknown[],
 ) {
-  const registries = [...discoveredResources, context?.currentPageRegistry]
+  const registries = [context?.currentPageRegistry]
     .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object");
   for (const call of plan.toolCalls) {
-    if (isAssistantDiscoveryCall(call) || isAssistantBackendCall(call)
+    if (isAssistantBackendCall(call)
       || isAssistantUserInputCall(call) || isAssistantFinishCall(call)
       || call.tool === "open_page") continue;
     if (!("pageId" in call.args) || typeof call.args.pageId !== "string") continue;
@@ -810,15 +781,14 @@ function prematurelyStopsBeforeLookup(
   const lastResult = getLatestOperationResult(context?.lastOperationResult) as { type?: unknown; success?: unknown; operation?: unknown; reason?: unknown } | undefined;
   if (lastResult?.type === "mutation_result" && lastResult.success === true && lastResult.operation !== "create_event") return false;
   if (lastResult?.type === "operation_error" && typeof lastResult.reason === "string" && /(ambiguous|not_found)/.test(lastResult.reason)) return false;
-  const hasDiscovery = plan.toolCalls.some(isAssistantDiscoveryCall);
-  const hasExecutableAction = plan.toolCalls.some((call) => !isAssistantDiscoveryCall(call) && !isAssistantFinishCall(call));
+  const hasExecutableAction = plan.toolCalls.some((call) => !isAssistantFinishCall(call));
   const hasCompletionAction = plan.toolCalls.some((call) => {
-    if (isAssistantDiscoveryCall(call) || isAssistantFinishCall(call)) return false;
+    if (isAssistantFinishCall(call)) return false;
     if (call.tool !== "click_button") return false;
     return /^(save_|submit_|cancel_|delete_|remove_)/.test(call.args.actionId) && call.args.actionId !== "create_event";
   });
-  if (!hasExecutableAction && !hasDiscovery) return true;
-  return plan.decision === "finish" && !hasDiscovery && !hasCompletionAction;
+  if (!hasExecutableAction) return true;
+  return plan.decision === "finish" && !hasCompletionAction;
 }
 
 function getLatestOperationResult(result: unknown): unknown {
@@ -1099,7 +1069,11 @@ export async function requestTaskPlan(userText: string, provider: LlmProvider, c
   return (await requestTaskBlueprint(userText, provider, context)).steps;
 }
 
-export async function requestAgentPlan(userText: string, provider: LlmProvider, context?: AssistantContinuationContext) {
+export async function requestAgentPlan(
+  userText: string,
+  provider: LlmProvider,
+  context?: AssistantContinuationContext,
+): Promise<{ ok: true; rawReplies: string[]; plan: AssistantPlan } | { ok: false; reason: "invalid_plan"; rawReplies: string[] }> {
   const requestedPage = explicitRequestedPage(userText);
   if (requestedPage && !canAccessAssistantPage(requestedPage, context?.actorRoles)) {
     return {
@@ -1196,7 +1170,6 @@ export async function requestAgentPlan(userText: string, provider: LlmProvider, 
     currentPageRegistry: context.currentPageRegistry,
     lastOperationResult: context.lastOperationResult,
     backendToolResults: context.backendToolResults,
-    currentPagePath: context.currentPagePath,
     actorRoles: context.actorRoles,
     taskPlan: context.taskPlan,
     taskIntent: context.taskIntent,
@@ -1222,9 +1195,6 @@ ${formatLastOperationResult(minimizedContext?.lastOperationResult)}
 本任务已取得的后台工具结果：
 ${JSON.stringify(minimizedContext?.backendToolResults ?? [])}
 
-当前页面路径：
-${minimizedContext?.currentPagePath?.join(" -> ") ?? "未知"}
-
 本任务行动计划：
 ${JSON.stringify(minimizedContext?.taskPlan ?? [])}
 
@@ -1239,10 +1209,10 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
     { role: "user", content: userMessage },
   ];
   const discoverySteps: string[] = [];
-  const discoveredResources: unknown[] = [];
   const backendToolResults: unknown[] = [...(context?.backendToolResults ?? [])];
   const rawReplies: string[] = [];
   let lastPlan: ReturnType<typeof normalizePayload> = null;
+  const planSignatureCounts = new Map<string, number>();
 
   for (let turn = 1; turn <= MAX_AGENT_TURNS; turn += 1) {
     await writeAssistantLog({ type: "input", runId, turn, ...llm, messages });
@@ -1259,6 +1229,10 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
     if (!result.parsed) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
     const plan = normalizePayload(result.parsed, context);
     if (!plan) return { ok: false as const, reason: "invalid_plan" as const, rawReplies };
+    const planSignature = JSON.stringify({ decision: plan.decision, toolCalls: plan.toolCalls });
+    const planSignatureCount = (planSignatureCounts.get(planSignature) ?? 0) + 1;
+    planSignatureCounts.set(planSignature, planSignatureCount);
+    if (planSignatureCount > 2) break;
     const rawToolCallCount = Array.isArray(result.parsed.toolCalls) ? result.parsed.toolCalls.length : 0;
     if (rawToolCallCount > plan.toolCalls.length) {
       messages.push({ role: "assistant", content: result.content });
@@ -1297,7 +1271,7 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
       continue;
     }
 
-    const unavailableRuntimeCall = runtimeRegistryCallViolation(plan, context, discoveredResources);
+    const unavailableRuntimeCall = runtimeRegistryCallViolation(plan, context);
     if (unavailableRuntimeCall) {
       messages.push({ role: "assistant", content: result.content });
       messages.push({
@@ -1373,7 +1347,6 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
           decision: "finish" as const,
           toolCalls: [] as AssistantToolCall[],
           discoverySteps,
-          discoveryResults: discoveredResources,
           backendToolResults,
         },
       };
@@ -1453,12 +1426,11 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
       continue;
     }
 
-    const discoveryCalls = plan.toolCalls.filter(isAssistantDiscoveryCall);
     const backendCalls = plan.toolCalls.filter(isAssistantBackendCall);
     const userInputCalls = plan.toolCalls.filter(isAssistantUserInputCall);
     const finishCalls = plan.toolCalls.filter(isAssistantFinishCall);
-    const actionCalls = plan.toolCalls.filter((call): call is AssistantToolCall => !isAssistantDiscoveryCall(call) && !isAssistantBackendCall(call) && !isAssistantUserInputCall(call) && !isAssistantFinishCall(call));
-    if (discoveryCalls.length === 0 && backendCalls.length === 0) {
+    const actionCalls = plan.toolCalls.filter((call): call is AssistantToolCall => !isAssistantBackendCall(call) && !isAssistantUserInputCall(call) && !isAssistantFinishCall(call));
+    if (backendCalls.length === 0) {
       const userInputRequest = userInputCalls[0]?.args;
       return {
         ok: true as const,
@@ -1469,30 +1441,11 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
           decision: finishCalls.length > 0 ? "finish" : plan.decision,
           userInputRequest,
           discoverySteps: userInputRequest ? [...discoverySteps, formatToolInvocation("ask_user", userInputRequest)] : discoverySteps,
-          discoveryResults: discoveredResources,
           backendToolResults,
         },
       };
     }
 
-    const discoveryResults = discoveryCalls.map((call) => executeDiscovery(call, context?.actorRoles));
-    const forbiddenDiscovery = discoveryResults.some((result) => result && typeof result === "object"
-      && ["page_forbidden", "menu_forbidden"].includes(String((result as { error?: unknown }).error)));
-    if (forbiddenDiscovery) {
-      return {
-        ok: true as const,
-        rawReplies,
-        plan: {
-          reply: "当前账号没有访问该页面或执行该业务环节的权限，请联系管理员调整角色。",
-          recognized: ["目标页面超出当前角色权限"],
-          decision: "finish" as const,
-          toolCalls: [] as AssistantToolCall[],
-          discoverySteps,
-          discoveryResults: [...discoveredResources, ...discoveryResults],
-          backendToolResults,
-        },
-      };
-    }
     const backendResults = await Promise.all(backendCalls.map(async (call) => {
       try {
         return await assistantBackendExecutor(call, context?.actorRoles);
@@ -1505,8 +1458,6 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
       }
     }));
     backendToolResults.push(...backendResults);
-    discoveredResources.push(...discoveryResults);
-    discoveryCalls.forEach((call) => discoverySteps.push(formatDiscoveryStep(call)));
     backendCalls.forEach((call) => discoverySteps.push(formatToolInvocation(call.tool, call.args)));
 
     const unavailableWorkflow = buildUnavailableWorkflowGate(userText, backendToolResults, plan.planStep, context?.taskIntent);
@@ -1517,7 +1468,6 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
         plan: {
           ...unavailableWorkflow,
           discoverySteps,
-          discoveryResults: discoveredResources,
           backendToolResults,
         },
       };
@@ -1531,7 +1481,6 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
         plan: {
           ...confirmationGate,
           discoverySteps,
-          discoveryResults: discoveredResources,
           backendToolResults,
         },
       };
@@ -1540,7 +1489,7 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
     messages.push({ role: "assistant", content: result.content });
     messages.push({
       role: "user",
-      content: `工具执行结果如下：${JSON.stringify(minimizeAssistantData([...discoveryResults, ...backendResults]))}。请根据这些结果继续下一步，只输出新的 JSON 计划。`,
+      content: `工具执行结果如下：${JSON.stringify(minimizeAssistantData(backendResults))}。请根据这些结果继续下一步，只输出新的 JSON 计划。`,
     });
   }
 
@@ -1557,7 +1506,6 @@ ${minimizedContext?.currentPlanStep ?? "未开始"}`
         requestedFields: ["taskContinuation"],
       },
       discoverySteps,
-      discoveryResults: discoveredResources,
       backendToolResults,
     },
   };

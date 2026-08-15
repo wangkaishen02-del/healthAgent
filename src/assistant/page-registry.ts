@@ -592,7 +592,6 @@ function compactRegion(region: RegisteredRegion): Record<string, unknown> {
         actionId: action.actionId,
         label: action.label,
         description: action.description,
-        kind: action.kind,
         target: action.target,
       })),
     } : {}),
@@ -607,7 +606,6 @@ export function getCompactPageRegistration(pageId: string) {
     pageId: page.pageId,
     label: page.label,
     description: page.description,
-    pagePath: page.pagePath,
     regions: page.regions.map(compactRegion),
   };
 }

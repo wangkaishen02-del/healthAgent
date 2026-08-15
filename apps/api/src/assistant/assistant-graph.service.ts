@@ -327,7 +327,7 @@ export class AssistantGraphService implements OnModuleInit, OnModuleDestroy {
           ...(response.plan.discoverySteps ?? []),
           ...response.plan.toolCalls.map(formatToolCall),
         ],
-        pagePath: state.context?.currentPagePath,
+        pagePath: [],
       });
     } catch {
       console.warn(`[assistant-memory] failed to persist task=${taskId}`);

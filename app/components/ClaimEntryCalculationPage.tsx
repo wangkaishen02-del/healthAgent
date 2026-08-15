@@ -5,6 +5,7 @@ import type { RegisteredPageController } from "../../src/assistant/page-controll
 import type { ClaimCase, ClaimPersonEvent, ClaimUpload } from "../../src/claims/types";
 import { apiFetch } from "../../src/api/client";
 import AppCombobox from "./AppCombobox";
+import ReferenceDataCombobox from "./ReferenceDataCombobox";
 import AppDatePicker from "./AppDatePicker";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
 import ClaimRegistrationPage from "./ClaimRegistrationPage";
@@ -19,7 +20,6 @@ import {
   detailStatusLabels,
   emptyBillForm,
   emptyCalculationEventForm,
-  eventAreaOptions,
   eventFilterOptions,
   eventTypeOptions,
   medicalInsuranceTypeOptions,
@@ -1142,12 +1142,27 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
             availableFieldIds: ["caseKeyword"],
           };
         }
+        const detailActions = ["reset", "back_to_list", "show_acceptance", "show_bills", "show_events", "show_diseases", "toggle_attachments", "open_personal_ledger", "open_calculation_process"];
+        if (reviewMode) {
+          return {
+            availableActionIds: [
+              ...detailActions,
+              state.caseRollbackPromptOpen ? "confirm_case_rollback" : "request_case_rollback",
+              "complete_review",
+            ],
+            availableFieldIds: [],
+          };
+        }
         return {
-          unavailableActionIds: [
-            state.rollbackPromptOpen ? "request_calculation_rollback" : "confirm_calculation_rollback",
-            state.caseRollbackPromptOpen ? "request_case_rollback" : "confirm_case_rollback",
-            state.withdrawPromptOpen ? "request_withdraw" : "confirm_withdraw",
+          availableActionIds: [
+            ...detailActions,
+            ...(state.calculationResult ? [state.rollbackPromptOpen ? "confirm_calculation_rollback" : "request_calculation_rollback"] : []),
+            ...(state.selectedCase.status === "entering" ? [state.caseRollbackPromptOpen ? "confirm_case_rollback" : "request_case_rollback"] : []),
+            state.withdrawPromptOpen ? "confirm_withdraw" : "request_withdraw",
+            ...(state.calculationResult ? ["submit_review"] : ["run_calculation"]),
+            ...(!state.calculationResult ? ["start_new_bill", "save_bill", "start_new_event", "save_event", "start_new_disease", "save_disease"] : []),
           ],
+          availableFieldIds: state.calculationResult ? [] : undefined,
         };
       },
     };
@@ -1550,7 +1565,7 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
                 <fieldset className="claim-form-grid" disabled={calculationDataLocked}>
                   <label><span>事件类型 <b>*</b></span><AppSelect ariaLabel="事件类型" disabled={calculationDataLocked} value={eventForm.eventType} options={activeEventTypeOptions} onChange={(eventType) => setEventForm((current) => ({ ...current, eventType }))} /></label>
                   <label><span>事件发生日期 <b>*</b></span><AppDatePicker ariaLabel="事件发生日期" disabled={calculationDataLocked} value={eventForm.occurredDate} onChange={(occurredDate) => setEventForm((current) => ({ ...current, occurredDate }))} /></label>
-                  <label className="claim-wide-field"><span>发生地点（省/市/区县）</span><AppCombobox ariaLabel="发生地点" disabled={calculationDataLocked} value={eventForm.administrativeArea} options={eventAreaOptions} onChange={(administrativeArea) => setEventForm((current) => ({ ...current, administrativeArea }))} placeholder="" /></label>
+                  <label className="claim-wide-field"><span>发生地点（省/市/区县）</span><ReferenceDataCombobox type="administrative_area" ariaLabel="发生地点" disabled={calculationDataLocked} value={eventForm.administrativeArea} onChange={(administrativeArea) => setEventForm((current) => ({ ...current, administrativeArea }))} placeholder="输入地区或六码编码查询" /></label>
                   <label className="claim-wide-field"><span>详细地点</span><input value={eventForm.detailedAddress} onChange={(event) => setEventForm((current) => ({ ...current, detailedAddress: event.target.value }))} /></label>
                   <label><span>就诊医院</span><input value={eventForm.hospitalName} onChange={(event) => setEventForm((current) => ({ ...current, hospitalName: event.target.value }))} /></label>
                   <label><span>诊断</span><input value={eventForm.diagnosis} onChange={(event) => setEventForm((current) => ({ ...current, diagnosis: event.target.value }))} /></label>
@@ -1571,7 +1586,7 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
               {!calculationDataLocked && diseaseFormOpen ? <section className="panel" ref={diseaseFormSectionRef}>
                 <div className="section-title">录入疾病</div>
                 <div className="entry-form-grid">
-                  <label><span>疾病名称 <b>*</b></span><input value={diseaseForm.diseaseName} onChange={(event) => setDiseaseForm({ ...diseaseForm, diseaseName: event.target.value })} placeholder="请输入疾病或诊断名称" /></label>
+                  <label><span>疾病名称 <b>*</b></span><ReferenceDataCombobox type="disease_icd10" ariaLabel="疾病名称" value={diseaseForm.diseaseName} onChange={(diseaseName) => setDiseaseForm({ ...diseaseForm, diseaseName })} onSelect={(item) => setDiseaseForm((current) => ({ ...current, diseaseName: item.itemName, icdCode: item.itemCode.split("+")[0] }))} placeholder="输入疾病名称或 ICD 编码查询" /></label>
                   <label><span>ICD 编码</span><input value={diseaseForm.icdCode} onChange={(event) => setDiseaseForm({ ...diseaseForm, icdCode: event.target.value.toUpperCase() })} placeholder="例如 J18.9" /></label>
                   <label><span>确诊日期 <b>*</b></span><AppDatePicker ariaLabel="确诊日期" value={diseaseForm.diagnosisDate} onChange={(diagnosisDate) => setDiseaseForm({ ...diseaseForm, diagnosisDate })} /></label>
                   <label><span>确诊医院 <b>*</b></span><input value={diseaseForm.hospital} onChange={(event) => setDiseaseForm({ ...diseaseForm, hospital: event.target.value })} placeholder="请输入确诊医院" /></label>

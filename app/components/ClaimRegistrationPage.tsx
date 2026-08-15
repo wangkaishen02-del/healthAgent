@@ -7,6 +7,7 @@ import { CLAIM_STATUS_LABELS, isClaimCaseEditable } from "../../src/claims/state
 import type { PageResult, PolicyInsuredView, PolicyListItem } from "../../src/underwriting/types";
 import { apiFetch } from "../../src/api/client";
 import AppCombobox, { type AppComboboxOption } from "./AppCombobox";
+import ReferenceDataCombobox from "./ReferenceDataCombobox";
 import AppDatePicker from "./AppDatePicker";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
 import ClaimImageWorkspace from "./ClaimImageWorkspace";
@@ -118,11 +119,11 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
   const [cancelPromptOpen, setCancelPromptOpen] = useState(false);
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState(""); const [successNotice, setSuccessNotice] = useState(""); const [errors, setErrors] = useState<ValidationErrors>({});
-  const stateRef = useRef({ cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, editingEventId, eventDraft, attachmentCategory, attachments });
+  const stateRef = useRef({ cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, eventEditorOpen, editingEventId, eventDraft, attachmentCategory, attachments });
   const openCaseRequestRef = useRef(0);
   const imageStageRef = useRef<HTMLDivElement | null>(null);
   const caseListPanelRef = useRef<HTMLElement | null>(null);
-  stateRef.current = { cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, editingEventId, eventDraft, attachmentCategory, attachments };
+  stateRef.current = { cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, eventEditorOpen, editingEventId, eventDraft, attachmentCategory, attachments };
   const formDisabled = readOnly || (editingStatus !== null && (!isClaimCaseEditable(editingStatus, "acceptance") || (!embeddedCase && editingStatus !== "registered")));
   const displayedSection = embeddedSection ?? activeSection;
   const filteredEvents = useMemo(() => personEvents.filter((item) => eventTypeFilter === "all" || item.eventType === eventTypeFilter).filter((item) => !eventDateFilter || item.occurredDate === eventDateFilter).filter((item) => { const key = eventKeyword.trim().toLowerCase(); return !key || [item.eventNo, item.administrativeArea, item.detailedAddress, item.hospitalName, item.diagnosis, item.description].some((value) => value?.toLowerCase().includes(key)); }), [personEvents, eventKeyword, eventTypeFilter, eventDateFilter]);
@@ -288,9 +289,9 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
     return { type: "mutation_result", operation: action, success: true, caseNo: result.caseNo, status: result.status };
   }
 
-  function validateEventDraft(draft: ClaimEventInput) { const next = { ...errors }; delete next.eventOccurredDate; delete next.eventAdministrativeArea; delete next.eventDescription; if (!draft.occurredDate) next.eventOccurredDate = "请选择事件发生日期"; if (draft.administrativeArea?.trim() && !areaOptions.some((item) => item.label === draft.administrativeArea)) next.eventAdministrativeArea = "请从下拉结果中选择省 / 市 / 区县"; if (!draft.description.trim()) next.eventDescription = "请填写事件经过"; setErrors(next); return !next.eventOccurredDate && !next.eventAdministrativeArea && !next.eventDescription; }
-  function openEventEditor(item?: ClaimPersonEvent) { const nextDraft = item ? eventDraftFrom(item) : emptyEvent(); const nextEditingId = item?.id ?? ""; setActiveSection("event"); setEditingEventId(nextEditingId); setEventDraft(nextDraft); setEventEditorOpen(true); setErrors((current) => { const next = { ...current }; delete next.eventOccurredDate; delete next.eventAdministrativeArea; delete next.eventDescription; return next; }); stateRef.current = { ...stateRef.current, editingEventId: nextEditingId, eventDraft: nextDraft }; if (item) setMessage(`正在编辑事件 ${item.eventNo}。`); return { type: "editor_opened", editor: "claim_event", mode: item ? "edit" : "create", eventId: item?.id, eventNo: item?.eventNo }; }
-  function closeEventEditor() { setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); stateRef.current = { ...stateRef.current, editingEventId: "", eventDraft: emptyEvent() }; return { type: "editor_closed", editor: "claim_event" }; }
+  function validateEventDraft(draft: ClaimEventInput) { const next = { ...errors }; delete next.eventOccurredDate; delete next.eventDescription; if (!draft.occurredDate) next.eventOccurredDate = "请选择事件发生日期"; if (!draft.description.trim()) next.eventDescription = "请填写事件经过"; setErrors(next); return !next.eventOccurredDate && !next.eventDescription; }
+  function openEventEditor(item?: ClaimPersonEvent) { const nextDraft = item ? eventDraftFrom(item) : emptyEvent(); const nextEditingId = item?.id ?? ""; setActiveSection("event"); setEditingEventId(nextEditingId); setEventDraft(nextDraft); setEventEditorOpen(true); setErrors((current) => { const next = { ...current }; delete next.eventOccurredDate; delete next.eventAdministrativeArea; delete next.eventDescription; return next; }); stateRef.current = { ...stateRef.current, eventEditorOpen: true, editingEventId: nextEditingId, eventDraft: nextDraft }; if (item) setMessage(`正在编辑事件 ${item.eventNo}。`); return { type: "editor_opened", editor: "claim_event", mode: item ? "edit" : "create", eventId: item?.id, eventNo: item?.eventNo }; }
+  function closeEventEditor() { setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); stateRef.current = { ...stateRef.current, eventEditorOpen: false, editingEventId: "", eventDraft: emptyEvent() }; return { type: "editor_closed", editor: "claim_event" }; }
   async function createEvent(useRef = false, operationId?: string) { const current = useRef ? stateRef.current : { ...stateRef.current, insuredPersonId, editingEventId, eventDraft }; if (!current.insuredPersonId) { setMessage("请先锁定被保人，再新增事件。"); return { type: "operation_error", reason: "insured_required" }; } if (!validateEventDraft(current.eventDraft)) { setMessage("请补充事件信息中的必填项。"); return { type: "operation_error", reason: "event_required_fields_incomplete" }; } const isEditing = Boolean(current.editingEventId); setBusy(true); const response = await apiFetch("/api/claim-events", { method: isEditing ? "PUT" : "POST", headers: mutationHeaders(operationId), body: JSON.stringify({ ...(isEditing ? { id: current.editingEventId } : {}), insuredPersonId: current.insuredPersonId, ...current.eventDraft }) }); const result = await response.json() as ClaimPersonEvent & { message?: string }; setBusy(false); if (!response.ok) { setMessage(`${isEditing ? "修改" : "新增"}事件失败，请检查填写内容。`); return { type: "operation_error", reason: result.message ?? (isEditing ? "claim_event_update_failed" : "claim_event_create_failed") }; } const nextEvents = isEditing ? stateRef.current.personEvents.map((item) => item.id === result.id ? result : item) : [result, ...stateRef.current.personEvents]; const nextSelectedEventId = isEditing ? stateRef.current.selectedEventId : result.id; setPersonEvents(nextEvents); if (!isEditing) setSelectedEventId(result.id); setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); setErrors((currentErrors) => { const next = { ...currentErrors }; delete next.selectedEventId; return next; }); stateRef.current = { ...stateRef.current, personEvents: nextEvents, selectedEventId: nextSelectedEventId, editingEventId: "", eventDraft: emptyEvent() }; setMessage(isEditing ? `事件 ${result.eventNo} 修改已保存。` : `事件 ${result.eventNo} 已新增并自动关联。`); return { type: "mutation_result", operation: isEditing ? "update_event" : "create_event", success: true, eventId: result.id, eventNo: result.eventNo, associated: !isEditing }; }
   function selectEvent(item: ClaimPersonEvent) { setSelectedEventId(item.id); setErrors((current) => { const next = { ...current }; delete next.selectedEventId; return next; }); stateRef.current = { ...stateRef.current, selectedEventId: item.id }; setMessage(`已关联事件 ${item.eventNo}。`); return { type: "selection_result", eventId: item.id, eventNo: item.eventNo }; }
 
@@ -346,13 +347,35 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
     async executeItemAction(actionId, itemId, options) { if (actionId === "edit_case") { const item = stateRef.current.cases.find((candidate) => candidate.id === itemId) ?? (await loadCases()).find((candidate) => candidate.id === itemId); return item ? openCase(item) : { type: "operation_error", reason: "item_not_found", itemId }; } if (actionId === "select_event" || actionId === "edit_event") { const item = stateRef.current.personEvents.find((candidate) => candidate.id === itemId); return item ? (actionId === "edit_event" ? openEventEditor(item) : selectEvent(item)) : { type: "operation_error", reason: "item_not_found", itemId }; } if (actionId === "remove_attachment") { const item = stateRef.current.attachments.find((candidate) => candidate.uploadId === itemId); return item ? removeAttachment(item.uploadId, options?.operationId) : { type: "operation_error", reason: "item_not_found", itemId }; } return { type: "operation_error", reason: "item_action_executor_not_bound", actionId, itemId }; },
     getRuntimeFieldOptions() { return {}; },
     getRuntimeCapabilities() {
+      const current = stateRef.current;
+      const editable = !readOnly && (current.editingStatus === null || (isClaimCaseEditable(current.editingStatus, "acceptance") && (Boolean(embeddedCase) || current.editingStatus === "registered")));
+      if (!editable) {
+        return {
+          availableActionIds: embeddedCase ? [] : ["reset", "new_case", "edit_case"],
+          availableFieldIds: [],
+        };
+      }
       if (!stateRef.current.editingCaseId) {
         return {
-          unavailableActionIds: ["request_cancel_case", "confirm_cancel_case", "submit_case"],
+          availableActionIds: [
+            "lock_insured", "reset", "new_case", "reset_event_filters", "save_case",
+            ...(current.cases.length ? ["edit_case"] : []),
+            ...(current.insuredPersonId ? ["open_event_editor"] : []),
+            ...(current.personEvents.length ? ["select_event", "edit_event"] : []),
+            ...(current.eventEditorOpen ? ["close_event_editor", "create_event"] : []),
+            ...(current.attachments.length ? ["remove_attachment"] : []),
+          ],
         };
       }
       return {
-        unavailableActionIds: [cancelPromptOpen ? "request_cancel_case" : "confirm_cancel_case"],
+        availableActionIds: [
+          "lock_insured", "reset", "new_case", "reset_event_filters", "save_case", "edit_case", "submit_case",
+          cancelPromptOpen ? "confirm_cancel_case" : "request_cancel_case",
+          ...(current.insuredPersonId ? ["open_event_editor"] : []),
+          ...(current.personEvents.length ? ["select_event", "edit_event"] : []),
+          ...(current.eventEditorOpen ? ["close_event_editor", "create_event"] : []),
+          ...(current.attachments.length ? ["remove_attachment"] : []),
+        ],
       };
     },
   }));
@@ -472,7 +495,7 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
           {eventEditorOpen ? <div className="claim-event-editor"><div className="panel-title-row"><div className="section-title">{editingEventId ? "编辑事件" : "新增事件"}</div><button type="button" className="secondary-button" onClick={() => closeEventEditor()}>取消{editingEventId ? "编辑" : "新增"}</button></div><div className="claim-form-grid">
             <label><span>事件类型 <Required /></span><AppSelect ariaLabel="新增事件类型" disabled={formDisabled} value={eventDraft.eventType} options={eventTypeOptions} onChange={(value) => setEventDraft((current) => ({ ...current, eventType: value }))} /></label>
             <label><span>事件发生日期 <Required /></span><AppDatePicker ariaLabel="事件发生日期" disabled={formDisabled} invalid={Boolean(errors.eventOccurredDate)} value={eventDraft.occurredDate} onChange={(next) => setEventDraft((current) => ({ ...current, occurredDate: next }))} /><FieldError message={errors.eventOccurredDate} /></label>
-            <label className="claim-wide-field"><span>发生地点（省/市/区县）</span><AppCombobox ariaLabel="发生地点" disabled={formDisabled} invalid={Boolean(errors.eventAdministrativeArea)} value={eventDraft.administrativeArea ?? ""} options={areaOptions} onChange={(value) => setEventDraft((current) => ({ ...current, administrativeArea: value }))} placeholder="" /><FieldError message={errors.eventAdministrativeArea} /></label>
+            <label className="claim-wide-field"><span>发生地点（省/市/区县）</span><ReferenceDataCombobox type="administrative_area" ariaLabel="发生地点" disabled={formDisabled} invalid={Boolean(errors.eventAdministrativeArea)} value={eventDraft.administrativeArea ?? ""} onChange={(value) => setEventDraft((current) => ({ ...current, administrativeArea: value }))} placeholder="输入地区或六码编码查询" /><FieldError message={errors.eventAdministrativeArea} /></label>
             <label className="claim-wide-field"><span>详细地点</span><input disabled={formDisabled} value={eventDraft.detailedAddress ?? ""} onChange={(event) => setEventDraft((current) => ({ ...current, detailedAddress: event.target.value }))} /></label>
             <label><span>就诊医院</span><input disabled={formDisabled} value={eventDraft.hospitalName ?? ""} onChange={(event) => setEventDraft((current) => ({ ...current, hospitalName: event.target.value }))} /></label>
             <label><span>诊断</span><input disabled={formDisabled} value={eventDraft.diagnosis ?? ""} onChange={(event) => setEventDraft((current) => ({ ...current, diagnosis: event.target.value }))} /></label>

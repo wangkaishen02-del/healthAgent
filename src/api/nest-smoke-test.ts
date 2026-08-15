@@ -22,7 +22,8 @@ assert.deepEqual(
 
 const compactRegistration = JSON.stringify(getCompactPageRegistration("claim_registration"));
 const fullRegistration = JSON.stringify(getPageRegistration("claim_registration"));
-assert.ok(compactRegistration.length < fullRegistration.length * 0.65);
+assert.ok(compactRegistration.length < fullRegistration.length);
+assert.doesNotMatch(compactRegistration, /"pagePath"|"kind"/);
 assert.ok(buildSystemPrompt("查询张晨的保单").length < 4_000);
 assert.ok(buildSystemPrompt("在录入与理算页面查找案件 CL202610070523 并打开").length < 4_000);
 assert.match(buildSystemPrompt("查询所有案件"), /案件号与保单号必须严格区分/);

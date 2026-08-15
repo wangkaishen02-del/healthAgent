@@ -138,6 +138,13 @@ const ClaimQueryPage = forwardRef<RegisteredPageController>(function ClaimQueryP
       return item ? openDetail(item) : { type: "operation_error", reason: "claim_case_not_found", itemId };
     },
     getRuntimeFieldOptions: () => ({ "claim_query.status": statusOptions.map((option) => ({ value: option.value, label: option.label })) }),
+    getRuntimeCapabilities() {
+      return {
+        availableActionIds: stateRef.current.items.length > 0
+          ? ["search", "reset", "view_case"]
+          : ["search", "reset"],
+      };
+    },
   }));
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));

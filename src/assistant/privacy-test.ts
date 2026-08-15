@@ -3,8 +3,8 @@ import { ExternalDataProtector, minimizeAssistantData, redactSensitiveText } fro
 
 assert.equal(minimizeAssistantData(undefined), undefined);
 assert.deepEqual(
-  minimizeAssistantData({ currentPagePath: undefined, actorRoles: ["claim_viewer"] }),
-  { currentPagePath: undefined, actorRoles: ["claim_viewer"] },
+  minimizeAssistantData({ actorRoles: ["claim_viewer"] }),
+  { actorRoles: ["claim_viewer"] },
 );
 
 const protector = new ExternalDataProtector();

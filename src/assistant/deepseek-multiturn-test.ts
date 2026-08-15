@@ -164,7 +164,6 @@ const pagedCount = await requestAgentPlan(
   "deepseek",
   {
     actorRoles: viewerRoles,
-    currentPagePath: ["综合查询", "案件查询"],
     lastOperationResult: {
       type: "list_result",
       total: 27,
