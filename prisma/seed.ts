@@ -10,6 +10,8 @@ import {
   policyProducts,
 } from "../src/underwriting/mock-data.ts";
 import { seedScenarioData } from "./scenario-data.ts";
+import icd10Rows from "../data/reference/icd-10-national-clinical-v2.json" with { type: "json" };
+import areaNames from "../data/reference/china-admin-divisions-gbt2260.json" with { type: "json" };
 
 const prisma = new PrismaClient();
 
@@ -45,6 +47,23 @@ const dictionarySeed = [
   ["benefit_status", "责任状态", [["1", "有效"], ["0", "无效"]]],
 ] as const;
 
+function areaLabel(code: string) {
+  const names = areaNames as Record<string, string>;
+  const province = names[`${code.slice(0, 2)}0000`] ?? "";
+  const city = names[`${code.slice(0, 4)}00`] ?? province;
+  return [province, city, names[code]].filter(Boolean).join(" / ");
+}
+
+async function seedReferenceDictionaries() {
+  const referenceRows = [
+    ...icd10Rows.map(([code, extraCode, name], index) => ({ dictionaryType: "disease_icd10", typeName: "ICD-10 疾病", itemCode: extraCode ? `${code}+${extraCode}` : code, itemName: name, sequenceNo: index, description: extraCode || null })),
+    ...Object.entries(areaNames).map(([code, name], index) => ({ dictionaryType: "administrative_area", typeName: "行政区划（省市县）", itemCode: code, itemName: areaLabel(code), sequenceNo: index, description: name })),
+  ];
+  for (let offset = 0; offset < referenceRows.length; offset += 500) {
+    await prisma.systemDictionary.createMany({ data: referenceRows.slice(offset, offset + 500), skipDuplicates: true });
+  }
+}
+
 const calculationParameterCatalogSeed = [
   { category: "bill", parameterName: "医疗总费用", valueType: "amount", unit: "元" },
   { category: "bill", parameterName: "自费金额", valueType: "amount", unit: "元" },
@@ -67,6 +86,7 @@ const calculationLedgerParameterCatalogSeed = (["benefit", "product", "plan", "e
 ]);
 
 async function seed() {
+  await seedReferenceDictionaries();
   for (const [dictionaryType, typeName, items] of dictionarySeed) {
     for (const [itemCode, itemName] of items) {
       await prisma.systemDictionary.upsert({
