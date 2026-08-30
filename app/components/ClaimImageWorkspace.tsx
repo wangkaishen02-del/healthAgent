@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { ClaimOcrResult, ClaimUpload } from "../../src/claims/types";
-import { apiFetch, apiUrl } from "../../src/api/client";
+import { apiFetch } from "../../src/api/client";
 
 type ClaimImageWorkspaceProps = {
   open: boolean;
@@ -30,6 +30,35 @@ const ocrStatusLabels: Record<ClaimOcrResult["status"], string> = {
   succeeded: "OCR 已完成",
   failed: "OCR 失败",
 };
+
+function useAttachmentObjectUrl(uploadId?: string) {
+  const [objectUrl, setObjectUrl] = useState("");
+  useEffect(() => {
+    if (!uploadId) { setObjectUrl(""); return; }
+    setObjectUrl("");
+    let active = true;
+    let nextUrl = "";
+    void apiFetch(`/api/claim-attachments?uploadId=${encodeURIComponent(uploadId)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error("attachment_preview_failed");
+        nextUrl = URL.createObjectURL(await response.blob());
+        if (active) setObjectUrl(nextUrl);
+        else URL.revokeObjectURL(nextUrl);
+      })
+      .catch(() => { if (active) setObjectUrl(""); });
+    return () => {
+      active = false;
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+    };
+  }, [uploadId]);
+  return objectUrl;
+}
+
+function AttachmentThumbnail({ item }: { item: ClaimUpload }) {
+  const objectUrl = useAttachmentObjectUrl(item.mimeType === "application/pdf" ? undefined : item.uploadId);
+  if (item.mimeType === "application/pdf") return <b>PDF</b>;
+  return objectUrl ? <img src={objectUrl} alt="" /> : <b>加载中</b>;
+}
 
 export default function ClaimImageWorkspace({
   open,
@@ -71,6 +100,7 @@ export default function ClaimImageWorkspace({
     [attachments, controlledSelectedId, selectedId],
   );
   const selectedOcr = selected ? ocrResults[selected.uploadId] ?? selected.ocr : undefined;
+  const previewUrl = useAttachmentObjectUrl(selected?.uploadId);
 
   useEffect(() => {
     const next = Object.fromEntries(
@@ -137,7 +167,6 @@ export default function ClaimImageWorkspace({
     if (!open) setFullscreen(false);
   }, [open]);
 
-  const previewUrl = selected ? apiUrl(`/api/claim-attachments?uploadId=${encodeURIComponent(selected.uploadId)}`) : "";
   const isPdf = selected?.mimeType === "application/pdf";
   const selectPrevious = () => {
     if (!attachments.length) return;
@@ -250,7 +279,6 @@ export default function ClaimImageWorkspace({
           }}
         >
           {attachments.length ? attachments.map((item) => {
-            const itemUrl = apiUrl(`/api/claim-attachments?uploadId=${encodeURIComponent(item.uploadId)}`);
             return (
               <button
                 type="button"
@@ -263,9 +291,7 @@ export default function ClaimImageWorkspace({
                 }}
               >
                 <span className="claim-image-thumb">
-                  {item.mimeType === "application/pdf"
-                    ? <b>PDF</b>
-                    : <img src={itemUrl} alt="" onError={(event) => { event.currentTarget.style.display = "none"; }} />}
+                  <AttachmentThumbnail item={item} />
                 </span>
                 <span className="claim-image-thumb-info">
                   <strong>{item.fileName}</strong>
@@ -310,7 +336,7 @@ export default function ClaimImageWorkspace({
                 onPointerUp={stopDragging}
                 onPointerCancel={stopDragging}
               >
-                {previewFailed ? (
+                {previewFailed || !previewUrl ? (
                   <div className="claim-image-preview-empty"><span>暂无可预览原件</span><small>历史测试数据仅保留了文件信息，可重新上传影像件。</small></div>
                 ) : isPdf ? (
                   <div className="claim-image-transform-stage" style={{ width: `calc(${scale * 100}% - ${16 * scale}px)`, height: `calc(${scale * 100}% - ${16 * scale}px)`, transform: `translate(-50%, -50%) translate(${offset.x}px, ${offset.y}px) rotate(${rotation}deg)` }}><iframe title={selected.fileName} src={previewUrl} onError={() => setPreviewFailed(true)} /></div>
