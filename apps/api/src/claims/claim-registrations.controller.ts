@@ -1,8 +1,19 @@
-import { BadRequestException, Body, ConflictException, Controller, Get, Headers, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
+import { BadRequestException, Body, ConflictException, Controller, ForbiddenException, Get, Headers, Inject, NotFoundException, Patch, Post, Put, Query } from "@nestjs/common";
+import { CLAIM_CASE_STATUSES, requireClaimTransition, type ClaimDirectWorkflowAction } from "../../../../src/claims/state-machine.ts";
 import type { ClaimCaseStatus, CreateClaimCaseInput } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
 import { isClaimCaseInput } from "./claim-validation.ts";
+import { CurrentUser, Roles } from "../auth/auth.decorators.ts";
+import type { AuthenticatedUser } from "../auth/auth.types.ts";
+
+const apiActionMap: Record<string, ClaimDirectWorkflowAction> = {
+  submit: "submit",
+  review: "submit_review",
+  complete: "complete",
+  cancel: "cancel",
+  rollback: "rollback",
+};
 
 function positiveNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
@@ -25,19 +36,22 @@ export class ClaimRegistrationsController {
   ) {}
 
   @Get()
+  @Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
   async list(@Query() query: Record<string, string | undefined>) {
-    const filterKeys = ["id", "caseNo", "policyNo", "insuredName", "insuredIdNo", "status", "reportDateFrom", "reportDateTo", "page", "pageSize"];
+    const filterKeys = ["id", "keyword", "caseNo", "policyNo", "insuredName", "insuredIdNo", "status", "reportDateFrom", "reportDateTo", "page", "pageSize"];
     if (!filterKeys.some((key) => query[key] !== undefined)) return { items: await this.claims.listCases() };
-    if (query.status && !["registered", "processing", "completed", "cancelled"].includes(query.status)) {
+    const statuses = query.status?.split(",").filter(Boolean) ?? [];
+    if (statuses.some((status) => !CLAIM_CASE_STATUSES.includes(status as ClaimCaseStatus))) {
       throw new BadRequestException("invalid_claim_status");
     }
     return this.claims.queryCases({
       id: query.id,
+      keyword: query.keyword,
       caseNo: query.caseNo,
       policyNo: query.policyNo,
       insuredName: query.insuredName,
       insuredIdNo: query.insuredIdNo,
-      status: query.status as ClaimCaseStatus | undefined,
+      status: statuses.length > 1 ? statuses as ClaimCaseStatus[] : statuses[0] as ClaimCaseStatus | undefined,
       reportDateFrom: query.reportDateFrom,
       reportDateTo: query.reportDateTo,
       page: positiveNumber(query.page, 1),
@@ -46,14 +60,16 @@ export class ClaimRegistrationsController {
   }
 
   @Post()
-  async create(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
+  @Roles("claim_acceptor")
+  async create(@Body() body: unknown, @CurrentUser() user: AuthenticatedUser, @Headers("idempotency-key") operationKey?: string) {
     if (!isClaimCaseInput(body)) throw new BadRequestException("invalid_claim_case");
     try {
-      return await this.idempotency.execute("claim_case:create", operationKey, body, () => this.claims.createCase(body));
+      return await this.idempotency.execute("claim_case:create", operationKey, body, () => this.claims.createCase(body, { userId: user.id, userName: user.displayName }));
     } catch (error) { throwClaimError(error); }
   }
 
   @Put()
+  @Roles("claim_acceptor")
   async update(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { id?: unknown }).id !== "string" || !isClaimCaseInput(body)) {
       throw new BadRequestException("invalid_claim_case");
@@ -75,27 +91,37 @@ export class ClaimRegistrationsController {
   }
 
   @Patch()
+  @Roles("claim_acceptor", "claim_calculator", "claim_reviewer")
   async changeStatus(
     @Body() body: { id?: unknown; action?: unknown },
+    @CurrentUser() user: AuthenticatedUser,
     @Headers("idempotency-key") operationKey?: string,
   ) {
-    if (!body || typeof body.id !== "string" || !["submit", "complete", "cancel"].includes(String(body.action))) {
+    const action = apiActionMap[String(body?.action ?? "")];
+    if (!body || typeof body.id !== "string" || !action) {
       throw new BadRequestException("invalid_claim_action");
     }
     try {
       const result = await this.idempotency.execute(
-        `claim_case:${body.action}`,
+        `claim_case:${body.action}:${user.id}`,
         operationKey,
         body,
-        () => this.claims.changeCaseStatus(
-          body.id as string,
-          body.action === "submit" ? "processing" : body.action === "complete" ? "completed" : "cancelled",
-        ),
+        async () => {
+          const currentStatus = await this.claims.getCaseStatus(body.id as string);
+          if (!currentStatus) throw new NotFoundException("claim_case_not_found");
+          const transition = requireClaimTransition(currentStatus, action);
+          if (!user.roles.includes("claim_admin") && !transition.roles.some((role) => user.roles.includes(role))) {
+            throw new ForbiddenException("claim_action_role_mismatch");
+          }
+          return action === "cancel"
+            ? this.claims.cancelCase(body.id as string, { userId: user.id, userName: user.displayName })
+            : this.claims.transitionCase(body.id as string, action, { userId: user.id, userName: user.displayName });
+        },
       );
       if (!result) throw new NotFoundException("claim_case_not_found");
       return result;
     } catch (error) {
-      if (error instanceof NotFoundException) throw error;
+      if (error instanceof NotFoundException || error instanceof ForbiddenException) throw error;
       throwClaimError(error, true);
     }
   }

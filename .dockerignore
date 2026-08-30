@@ -1,0 +1,15 @@
+.git
+.next
+.next-e2e
+dist
+node_modules
+coverage
+logs
+data
+backups
+.env
+.env.local
+.env.production
+*.log
+__pycache__
+*.pyc

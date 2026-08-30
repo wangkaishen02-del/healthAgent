@@ -1,0 +1,35 @@
+{$HEALTHAGENT_HOST:localhost} {
+	encode zstd gzip
+
+	request_body {
+		max_size 20MB
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		X-Frame-Options SAMEORIGIN
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+	}
+
+	handle /api/* {
+		reverse_proxy api:3001
+	}
+
+	handle /realms/* {
+		reverse_proxy keycloak:8080
+	}
+
+	handle /resources/* {
+		reverse_proxy keycloak:8080
+	}
+
+	handle /admin/* {
+		reverse_proxy keycloak:8080
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

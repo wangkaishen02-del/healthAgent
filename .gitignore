@@ -2,6 +2,7 @@
 node_modules/
 dist/
 .next/
+.next-e2e/
 coverage/
 .env
 .env.local
@@ -9,3 +10,8 @@ coverage/
 __pycache__/
 *.pyc
 data/*.db
+data/claim-attachments/
+playwright-report/
+test-results/
+blob-report/
+*.tsbuildinfo

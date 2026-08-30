@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, NotFoundException, Param, Query } from "@nestjs/common";
 import { UnderwritingService } from "./underwriting.service.ts";
+import { Roles } from "../auth/auth.decorators.ts";
 
 function positiveNumber(value: string | undefined, fallback: number) {
   const parsed = Number(value ?? fallback);
@@ -7,6 +8,7 @@ function positiveNumber(value: string | undefined, fallback: number) {
 }
 
 @Controller("policies")
+@Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
 export class PoliciesController {
   constructor(@Inject(UnderwritingService) private readonly underwriting: UnderwritingService) {}
 

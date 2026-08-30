@@ -14,8 +14,9 @@ async function bootstrap() {
   app.enableShutdownHooks();
 
   const port = Number(process.env.NEST_API_PORT ?? 3001);
-  await app.listen(port, "127.0.0.1");
-  console.log(`healthAgent Nest API listening on http://127.0.0.1:${port}/api`);
+  const host = process.env.API_HOST ?? "127.0.0.1";
+  await app.listen(port, host);
+  console.log(`healthAgent Nest API listening on http://${host}:${port}/api`);
 }
 
 void bootstrap();

@@ -2,10 +2,12 @@
 
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
-import type { ClaimAttachmentCategory, ClaimCase, ClaimCaseStatus, ClaimEventInput, ClaimEventType, ClaimPartyRole, ClaimPartySnapshot, ClaimPaymentMethod, ClaimPersonEvent, ClaimReportChannel, ClaimUpload } from "../../src/claims/types";
+import type { ClaimAttachmentCategory, ClaimCase, ClaimCaseRemark, ClaimCaseStatus, ClaimEventInput, ClaimEventType, ClaimPartyRole, ClaimPartySnapshot, ClaimPaymentMethod, ClaimPersonEvent, ClaimRemarkStage, ClaimReportChannel, ClaimUpload } from "../../src/claims/types";
+import { CLAIM_STATUS_LABELS, isClaimCaseEditable } from "../../src/claims/state-machine";
 import type { PageResult, PolicyInsuredView, PolicyListItem } from "../../src/underwriting/types";
 import { apiFetch } from "../../src/api/client";
 import AppCombobox, { type AppComboboxOption } from "./AppCombobox";
+import ReferenceDataCombobox from "./ReferenceDataCombobox";
 import AppDatePicker from "./AppDatePicker";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
 import ClaimImageWorkspace from "./ClaimImageWorkspace";
@@ -13,21 +15,25 @@ import ClaimImageWorkspace from "./ClaimImageWorkspace";
 type PartyForm = ClaimPartySnapshot;
 type PayeeSource = "insured" | "applicant" | "other";
 type ClaimAction = "submit" | "cancel";
-type RegistrationSection = "basic" | "insured" | "applicant" | "payee" | "event" | "attachments";
+export type RegistrationSection = "basic" | "insured" | "applicant" | "payee" | "event" | "remark" | "attachments";
 type ValidationErrors = Record<string, string>;
 type ClaimRegistrationPageProps = {
   embeddedCase?: ClaimCase;
+  readOnly?: boolean;
+  embeddedSection?: RegistrationSection;
+  compactEmbedded?: boolean;
+  remarkStage?: ClaimRemarkStage;
+  allowRemarkAdd?: boolean;
   onCaseUpdated?: (item: ClaimCase) => void;
 };
 
 const reportChannelOptions: AppSelectOption<ClaimReportChannel>[] = [{ value: "online", label: "线上报案" }, { value: "phone", label: "电话报案" }, { value: "counter", label: "柜面报案" }, { value: "other", label: "其他" }];
 const genderOptions: AppSelectOption<PartyForm["gender"]>[] = [{ value: "unknown", label: "未知" }, { value: "male", label: "男" }, { value: "female", label: "女" }];
 const idTypeOptions: AppSelectOption<PartyForm["idType"]>[] = [{ value: "id_card", label: "身份证" }, { value: "passport", label: "护照" }, { value: "other", label: "其他" }];
-const eventTypeOptions: AppSelectOption<ClaimEventType>[] = [{ value: "disease", label: "疾病" }, { value: "accident", label: "意外" }, { value: "other", label: "其他" }];
+const eventTypeOptions: AppSelectOption<ClaimEventType>[] = [{ value: "1", label: "疾病" }, { value: "2", label: "意外" }, { value: "9", label: "其他" }];
 const eventFilterOptions: AppSelectOption<"all" | ClaimEventType>[] = [{ value: "all", label: "全部类型" }, ...eventTypeOptions];
 const payeeSourceOptions: AppSelectOption<PayeeSource>[] = [{ value: "insured", label: "同被保人" }, { value: "applicant", label: "同申请人" }, { value: "other", label: "另行填写" }];
 const paymentMethodOptions: AppSelectOption<ClaimPaymentMethod>[] = [{ value: "pending", label: "待确定" }, { value: "bank_transfer", label: "银行转账" }, { value: "cash", label: "现金领取" }, { value: "other", label: "其他方式" }];
-const attachmentCategories: AppSelectOption<ClaimAttachmentCategory>[] = [{ value: "application", label: "理赔申请书" }, { value: "identity", label: "身份证明" }, { value: "medical", label: "病历资料" }, { value: "invoice", label: "发票费用清单" }, { value: "bank", label: "银行卡资料" }, { value: "other", label: "其他资料" }];
 const areaOptions: AppComboboxOption[] = [
   { value: "310115", label: "上海市 / 上海市 / 浦东新区", keywords: "上海 浦东 pudong" },
   { value: "310101", label: "上海市 / 上海市 / 黄浦区", keywords: "上海 黄浦 huangpu" },
@@ -40,12 +46,14 @@ const areaOptions: AppComboboxOption[] = [
   { value: "320102", label: "江苏省 / 南京市 / 玄武区", keywords: "江苏 南京 玄武 nanjing" },
   { value: "510107", label: "四川省 / 成都市 / 武侯区", keywords: "四川 成都 武侯 chengdu" },
 ];
-const claimStatusLabels: Record<ClaimCaseStatus, string> = { registered: "受理中", processing: "处理中", completed: "已结案", cancelled: "已撤件" };
+const claimStatusLabels: Record<ClaimCaseStatus, string> = CLAIM_STATUS_LABELS;
+const claimRemarkStageLabels: Record<ClaimRemarkStage, string> = { acceptance: "受理", calculation: "理算", review: "审核" };
+const claimTransitionActionLabels = { create: "创建案件", submit: "受理提交", calculate: "完成理算", rollback: "流程回退", rollback_calculation: "理算回退", submit_review: "提交审核", complete: "审核结案", cancel: "案件撤件", legacy_import: "历史状态导入" } as const;
 function mutationHeaders(operationId?: string) { return { "Content-Type": "application/json", "Idempotency-Key": operationId ?? crypto.randomUUID() }; }
 
 function Required() { return <span className="required-mark" aria-label="必填">*</span>; }
 function FieldError({ message }: { message?: string }) { return message ? <small className="field-error">{message}</small> : null; }
-function emptyEvent(): ClaimEventInput { return { eventType: "disease", occurredDate: "", administrativeArea: "", detailedAddress: "", hospitalName: "", diagnosis: "", description: "" }; }
+function emptyEvent(): ClaimEventInput { return { eventType: "1", occurredDate: "", administrativeArea: "", detailedAddress: "", hospitalName: "", diagnosis: "", description: "" }; }
 function eventDraftFrom(item: ClaimPersonEvent): ClaimEventInput { return { eventType: item.eventType, occurredDate: item.occurredDate, administrativeArea: item.administrativeArea ?? "", detailedAddress: item.detailedAddress ?? "", hospitalName: item.hospitalName ?? "", diagnosis: item.diagnosis ?? "", description: item.description }; }
 function emptyParty(role: ClaimPartyRole): PartyForm { return { role, name: "", gender: "unknown", birthDate: "", idType: "id_card", idNo: "", idValidFrom: "", idValidTo: "", idLongTerm: false, address: "", phone: "", relationToInsured: role === "insured" ? "本人" : "", bankName: "", bankAccountName: "", bankAccountNo: "", paymentMethod: role === "payee" ? "pending" : undefined }; }
 function partyFromInsured(item: PolicyInsuredView): PartyForm { const person = item.insuredPerson; return { ...emptyParty("insured"), name: person.name, gender: person.gender ?? "unknown", birthDate: person.birthDate ?? "", idType: person.idType ?? "id_card", idNo: person.idNo ?? "", phone: person.phone ?? "" }; }
@@ -95,7 +103,7 @@ function PartySection({ title, prefix, value, onChange, errors, identityDisabled
   </section>;
 }
 
-const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistrationPageProps>(function ClaimRegistrationPage({ embeddedCase, onCaseUpdated }, assistantRef) {
+const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistrationPageProps>(function ClaimRegistrationPage({ embeddedCase, readOnly = false, embeddedSection, compactEmbedded = false, remarkStage = "acceptance", allowRemarkAdd = !readOnly, onCaseUpdated }, assistantRef) {
   const [cases, setCases] = useState<ClaimCase[]>([]);
   const [caseListExpanded, setCaseListExpanded] = useState(true);
   const [activeSection, setActiveSection] = useState<RegistrationSection>("basic");
@@ -103,16 +111,21 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
   const [editingCaseId, setEditingCaseId] = useState(""); const [editingStatus, setEditingStatus] = useState<ClaimCaseStatus | null>(null);
   const [policyNo, setPolicyNo] = useState(""); const [insuredIdNo, setInsuredIdNo] = useState(""); const [policy, setPolicy] = useState<PolicyListItem | null>(null); const [selectedPolicyInsuredId, setSelectedPolicyInsuredId] = useState(""); const [insuredPersonId, setInsuredPersonId] = useState("");
   const [reportDate, setReportDate] = useState(() => new Date().toISOString().slice(0, 10)); const [reportChannel, setReportChannel] = useState<ClaimReportChannel>("online"); const [remark, setRemark] = useState("");
+  const [caseRemarks, setCaseRemarks] = useState<ClaimCaseRemark[]>([]); const [newRemark, setNewRemark] = useState(""); const [remarkBusy, setRemarkBusy] = useState(false);
   const [insured, setInsured] = useState<PartyForm>(() => emptyParty("insured")); const [applicant, setApplicant] = useState<PartyForm>(() => emptyParty("applicant")); const [payee, setPayee] = useState<PartyForm>(() => emptyParty("payee"));
   const [applicantSameAsInsured, setApplicantSameAsInsured] = useState(true); const [payeeSource, setPayeeSource] = useState<PayeeSource>("insured");
   const [personEvents, setPersonEvents] = useState<ClaimPersonEvent[]>([]); const [selectedEventId, setSelectedEventId] = useState(""); const [eventKeyword, setEventKeyword] = useState(""); const [eventTypeFilter, setEventTypeFilter] = useState<"all" | ClaimEventType>("all"); const [eventDateFilter, setEventDateFilter] = useState(""); const [eventEditorOpen, setEventEditorOpen] = useState(false); const [editingEventId, setEditingEventId] = useState(""); const [eventDraft, setEventDraft] = useState<ClaimEventInput>(() => emptyEvent());
   const [attachmentCategory, setAttachmentCategory] = useState<ClaimAttachmentCategory>("other"); const [attachments, setAttachments] = useState<ClaimUpload[]>([]);
   const [attachmentsOpen, setAttachmentsOpen] = useState(false);
+  const [cancelPromptOpen, setCancelPromptOpen] = useState(false);
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState(""); const [successNotice, setSuccessNotice] = useState(""); const [errors, setErrors] = useState<ValidationErrors>({});
-  const stateRef = useRef({ cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, editingEventId, eventDraft, attachmentCategory, attachments });
+  const stateRef = useRef({ cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, eventEditorOpen, editingEventId, eventDraft, attachmentCategory, attachments });
   const openCaseRequestRef = useRef(0);
-  stateRef.current = { cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, editingEventId, eventDraft, attachmentCategory, attachments };
-  const formDisabled = editingStatus !== null && editingStatus !== "registered" && !(embeddedCase && editingStatus === "processing");
+  const imageStageRef = useRef<HTMLDivElement | null>(null);
+  const caseListPanelRef = useRef<HTMLElement | null>(null);
+  stateRef.current = { cases, editingCaseId, editingStatus, policyNo, insuredIdNo, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, applicantSameAsInsured, payeeSource, personEvents, selectedEventId, eventKeyword, eventTypeFilter, eventDateFilter, eventEditorOpen, editingEventId, eventDraft, attachmentCategory, attachments };
+  const formDisabled = readOnly || (editingStatus !== null && (!isClaimCaseEditable(editingStatus, "acceptance") || (!embeddedCase && editingStatus !== "registered")));
+  const displayedSection = embeddedSection ?? activeSection;
   const filteredEvents = useMemo(() => personEvents.filter((item) => eventTypeFilter === "all" || item.eventType === eventTypeFilter).filter((item) => !eventDateFilter || item.occurredDate === eventDateFilter).filter((item) => { const key = eventKeyword.trim().toLowerCase(); return !key || [item.eventNo, item.administrativeArea, item.detailedAddress, item.hospitalName, item.diagnosis, item.description].some((value) => value?.toLowerCase().includes(key)); }), [personEvents, eventKeyword, eventTypeFilter, eventDateFilter]);
 
   async function loadCases() { const response = await apiFetch("/api/claim-registrations?status=registered&page=1&pageSize=100", { cache: "no-store" }); const data = await response.json() as { items: ClaimCase[] }; setCases(data.items); stateRef.current = { ...stateRef.current, cases: data.items }; return data.items; }
@@ -120,8 +133,18 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
   useEffect(() => { if (!embeddedCase) void loadCases(); }, [embeddedCase?.id]);
   useEffect(() => { if (embeddedCase) void openCase(embeddedCase); }, [embeddedCase?.id]);
   useEffect(() => { if (!successNotice) return; const timer = window.setTimeout(() => setSuccessNotice(""), 5000); return () => window.clearTimeout(timer); }, [successNotice]);
+  useEffect(() => {
+    const stage = imageStageRef.current;
+    const panel = caseListPanelRef.current;
+    if (!stage || !panel || compactEmbedded) return;
+    const updateDrawerTop = () => stage.style.setProperty("--claim-image-registration-top", `${panel.offsetHeight + 14}px`);
+    updateDrawerTop();
+    const observer = new ResizeObserver(updateDrawerTop);
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [caseListExpanded, compactEmbedded]);
 
-  function resetForm(actionId: "reset" | "new_case" = "reset") { openCaseRequestRef.current += 1; const today = new Date().toISOString().slice(0, 10); const insuredEmpty = emptyParty("insured"), applicantEmpty = emptyParty("applicant"), payeeEmpty = emptyParty("payee"); setEditingCaseId(""); setEditingStatus(null); setPolicyNo(""); setInsuredIdNo(""); setPolicy(null); setPolicyCandidates([]); setSelectedPolicyInsuredId(""); setInsuredPersonId(""); setReportDate(today); setReportChannel("online"); setRemark(""); setInsured(insuredEmpty); setApplicant(applicantEmpty); setPayee(payeeEmpty); setApplicantSameAsInsured(true); setPayeeSource("insured"); setPersonEvents([]); setSelectedEventId(""); setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); setAttachmentCategory("other"); setAttachments([]); setMessage(""); setSuccessNotice(""); setErrors({}); setBusy(false); setActiveSection("basic"); stateRef.current = { ...stateRef.current, editingCaseId: "", editingStatus: null, policyNo: "", insuredIdNo: "", policy: null, selectedPolicyInsuredId: "", insuredPersonId: "", reportDate: today, reportChannel: "online", remark: "", insured: insuredEmpty, applicant: applicantEmpty, payee: payeeEmpty, applicantSameAsInsured: true, payeeSource: "insured", personEvents: [], selectedEventId: "", eventKeyword: "", eventTypeFilter: "all", eventDateFilter: "", editingEventId: "", eventDraft: emptyEvent(), attachmentCategory: "other", attachments: [] }; return { type: "page_action", pageId: "claim_registration", actionId }; }
+  function resetForm(actionId: "reset" | "new_case" = "reset") { openCaseRequestRef.current += 1; const today = new Date().toISOString().slice(0, 10); const insuredEmpty = emptyParty("insured"), applicantEmpty = emptyParty("applicant"), payeeEmpty = emptyParty("payee"); setEditingCaseId(""); setEditingStatus(null); setPolicyNo(""); setInsuredIdNo(""); setPolicy(null); setPolicyCandidates([]); setSelectedPolicyInsuredId(""); setInsuredPersonId(""); setReportDate(today); setReportChannel("online"); setRemark(""); setCaseRemarks([]); setNewRemark(""); setInsured(insuredEmpty); setApplicant(applicantEmpty); setPayee(payeeEmpty); setApplicantSameAsInsured(true); setPayeeSource("insured"); setPersonEvents([]); setSelectedEventId(""); setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); setAttachmentCategory("other"); setAttachments([]); setCancelPromptOpen(false); setMessage(""); setSuccessNotice(""); setErrors({}); setBusy(false); setActiveSection("basic"); stateRef.current = { ...stateRef.current, editingCaseId: "", editingStatus: null, policyNo: "", insuredIdNo: "", policy: null, selectedPolicyInsuredId: "", insuredPersonId: "", reportDate: today, reportChannel: "online", remark: "", insured: insuredEmpty, applicant: applicantEmpty, payee: payeeEmpty, applicantSameAsInsured: true, payeeSource: "insured", personEvents: [], selectedEventId: "", eventKeyword: "", eventTypeFilter: "all", eventDateFilter: "", editingEventId: "", eventDraft: emptyEvent(), attachmentCategory: "other", attachments: [] }; return { type: "page_action", pageId: "claim_registration", actionId }; }
 
   async function selectPolicyInsured(matchedPolicy: PolicyListItem) {
     const normalizedIdNo = stateRef.current.insuredIdNo.trim().toUpperCase();
@@ -195,7 +218,7 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
     const initialEvents = [item.event];
 
     // 先同步切换到已选案件状态，避免等待详情请求期间按钮仍显示“保存立案”。
-    setEditingCaseId(item.id); setEditingStatus(item.status); setPolicyNo(item.policyNo); setInsuredIdNo(insuredParty.idNo); setPolicy(null); setSelectedPolicyInsuredId(item.policyInsuredId); setInsuredPersonId(item.insuredPersonId); setReportDate(item.reportDate); setReportChannel(item.reportChannel); setRemark(item.remark ?? ""); setInsured(insuredParty); setApplicant(applicantParty); setPayee(payeeParty); setApplicantSameAsInsured(false); setPayeeSource("other"); setPersonEvents(initialEvents); setSelectedEventId(item.eventId); setAttachments(item.attachments); setErrors({}); setSuccessNotice(""); setMessage(`正在加载案件 ${item.caseNo}…`); setBusy(true);
+    setEditingCaseId(item.id); setEditingStatus(item.status); setPolicyNo(item.policyNo); setInsuredIdNo(insuredParty.idNo); setPolicy(null); setSelectedPolicyInsuredId(item.policyInsuredId); setInsuredPersonId(item.insuredPersonId); setReportDate(item.reportDate); setReportChannel(item.reportChannel); setRemark(item.remark ?? ""); setCaseRemarks(item.remarks ?? []); setNewRemark(""); setInsured(insuredParty); setApplicant(applicantParty); setPayee(payeeParty); setApplicantSameAsInsured(false); setPayeeSource("other"); setPersonEvents(initialEvents); setSelectedEventId(item.eventId); setAttachments(item.attachments); setErrors({}); setSuccessNotice(""); setMessage(`正在加载案件 ${item.caseNo}…`); setBusy(true);
     stateRef.current = { ...stateRef.current, editingCaseId: item.id, editingStatus: item.status, policyNo: item.policyNo, insuredIdNo: insuredParty.idNo, policy: null, selectedPolicyInsuredId: item.policyInsuredId, insuredPersonId: item.insuredPersonId, reportDate: item.reportDate, reportChannel: item.reportChannel, remark: item.remark ?? "", insured: insuredParty, applicant: applicantParty, payee: payeeParty, applicantSameAsInsured: false, payeeSource: "other", personEvents: initialEvents, selectedEventId: item.eventId, attachments: item.attachments };
 
     try {
@@ -219,13 +242,38 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
 
   function validateCase(current: typeof stateRef.current) { const next: ValidationErrors = {}; if (!current.policy) next.policyNo = "请先锁定有效保单"; if (!current.insuredIdNo.trim()) next.insuredIdNo = "请输入被保人证件号"; if (!current.reportDate) next.reportDate = "请选择报案日期"; for (const [prefix, party] of [["insuredParty", current.insured], ["applicant", current.applicant], ["payee", current.payee]] as const) { if (!party.name.trim()) next[`${prefix}Name`] = "请填写姓名"; if (!party.idNo.trim()) next[`${prefix}IdNo`] = "请填写证件号码"; if (!party.phone.trim()) next[`${prefix}Phone`] = "请填写联系电话"; } if (!current.payee.paymentMethod) next.payeePaymentMethod = "请选择领款方式"; if (current.payee.paymentMethod === "bank_transfer") { if (!current.payee.bankName?.trim()) next.payeeBankName = "请填写开户银行"; if (!current.payee.bankAccountName?.trim()) next.payeeBankAccountName = "请填写账户名称"; if (!current.payee.bankAccountNo?.trim()) next.payeeBankAccountNo = "请填写银行账号"; } if (!current.selectedEventId) next.selectedEventId = "请选择已有事件，或新增事件后自动关联"; setErrors(next); if (Object.keys(next).length) { if (next.policyNo || next.insuredIdNo || next.reportDate) setActiveSection("basic"); else if (Object.keys(next).some((key) => key.startsWith("insuredParty"))) setActiveSection("insured"); else if (Object.keys(next).some((key) => key.startsWith("applicant"))) setActiveSection("applicant"); else if (Object.keys(next).some((key) => key.startsWith("payee"))) setActiveSection("payee"); else if (next.selectedEventId) setActiveSection("event"); setMessage("保存失败，请补充页面中提示的必填项。"); return false; } return true; }
   function buildPayload(current = stateRef.current) { return { policyId: current.policy?.id, policyInsuredId: current.selectedPolicyInsuredId, reportDate: current.reportDate, reportChannel: current.reportChannel, remark: current.remark, parties: [current.insured, current.applicant, current.payee], eventId: current.selectedEventId, attachments: current.attachments }; }
-  async function saveCase(useRef = false, operationId?: string) { const current = useRef ? stateRef.current : { ...stateRef.current, editingCaseId, editingStatus, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, personEvents, selectedEventId, eventDraft, attachments }; if (current.editingStatus && current.editingStatus !== "registered" && !(embeddedCase && current.editingStatus === "processing")) return { type: "operation_error", reason: "claim_case_not_editable" }; if (!validateCase(current)) return { type: "operation_error", reason: "required_fields_incomplete", fields: Object.keys(errors) }; const isEditing = Boolean(current.editingCaseId); setBusy(true); const response = await apiFetch("/api/claim-registrations", { method: isEditing ? "PUT" : "POST", headers: mutationHeaders(operationId), body: JSON.stringify({ ...(isEditing ? { id: current.editingCaseId } : {}), ...buildPayload(current) }) }); const result = await response.json() as ClaimCase & { message?: string }; setBusy(false); if (!response.ok) { setMessage("保存失败，请检查填写内容。"); return { type: "operation_error", reason: result.message ?? "claim_save_failed" }; } if (!embeddedCase) await loadCases(); if (isEditing) { setEditingCaseId(result.id); setEditingStatus(result.status); stateRef.current = { ...stateRef.current, editingCaseId: result.id, editingStatus: result.status }; setMessage(`案件 ${result.caseNo} 的修改已保存。`); setSuccessNotice(`案件 ${result.caseNo} 修改保存成功`); onCaseUpdated?.(result); } else { resetForm(); setSuccessNotice(`立案成功，案件号：${result.caseNo}`); } return { type: "mutation_result", operation: isEditing ? "update" : "create", success: true, caseId: result.id, caseNo: result.caseNo, formReset: !isEditing }; }
+  async function addCaseRemark() {
+    const content = newRemark.trim();
+    if (!editingCaseId || !content || !allowRemarkAdd) return;
+    setRemarkBusy(true);
+    const response = await apiFetch("/api/claim-remarks", { method: "POST", headers: mutationHeaders(), body: JSON.stringify({ claimCaseId: editingCaseId, stage: remarkStage, content }) });
+    const result = await response.json() as ClaimCaseRemark & { message?: string };
+    setRemarkBusy(false);
+    if (!response.ok) { setMessage("备注新增失败，请稍后重试。"); return; }
+    const nextRemarks = [result, ...caseRemarks];
+    setCaseRemarks(nextRemarks); setNewRemark(""); setMessage(`已新增一条${claimRemarkStageLabels[remarkStage]}备注。`);
+    setCases((items) => items.map((item) => item.id === editingCaseId ? { ...item, remarks: nextRemarks } : item));
+    if (embeddedCase?.id === editingCaseId) onCaseUpdated?.({ ...embeddedCase, remarks: nextRemarks });
+  }
+  async function saveCase(useRef = false, operationId?: string) { const current = useRef ? stateRef.current : { ...stateRef.current, editingCaseId, editingStatus, policy, selectedPolicyInsuredId, insuredPersonId, reportDate, reportChannel, remark, insured, applicant, payee, personEvents, selectedEventId, eventDraft, attachments }; if (current.editingStatus && (!isClaimCaseEditable(current.editingStatus, "acceptance") || (!embeddedCase && current.editingStatus !== "registered"))) return { type: "operation_error", reason: "claim_case_not_editable" }; if (!validateCase(current)) return { type: "operation_error", reason: "required_fields_incomplete", fields: Object.keys(errors) }; const isEditing = Boolean(current.editingCaseId); setBusy(true); const response = await apiFetch("/api/claim-registrations", { method: isEditing ? "PUT" : "POST", headers: mutationHeaders(operationId), body: JSON.stringify({ ...(isEditing ? { id: current.editingCaseId } : {}), ...buildPayload(current) }) }); const result = await response.json() as ClaimCase & { message?: string }; setBusy(false); if (!response.ok) { setMessage("保存失败，请检查填写内容。"); return { type: "operation_error", reason: result.message ?? "claim_save_failed" }; } if (!embeddedCase) await loadCases(); if (isEditing) { setEditingCaseId(result.id); setEditingStatus(result.status); stateRef.current = { ...stateRef.current, editingCaseId: result.id, editingStatus: result.status }; setMessage(`案件 ${result.caseNo} 的修改已保存。`); setSuccessNotice(`案件 ${result.caseNo} 修改保存成功`); onCaseUpdated?.(result); } else { resetForm(); setSuccessNotice(`立案成功，案件号：${result.caseNo}`); } return { type: "mutation_result", operation: isEditing ? "update" : "create", success: true, caseId: result.id, caseNo: result.caseNo, formReset: !isEditing }; }
   async function changeStatus(action: ClaimAction, operationId?: string) {
     const id = stateRef.current.editingCaseId;
     if (!id) {
       setMessage(action === "cancel" ? "请先双击选择需要撤件的案件。" : "请先保存立案，再提交案件。");
-      return { type: "operation_error", reason: "claim_case_required" };
+      return {
+        type: "operation_error",
+        reason: "claim_case_required",
+        pageId: "claim_registration",
+        actionId: action === "cancel" ? "request_cancel_case" : "submit_case",
+        recovery: {
+          tool: "click_list_item_action",
+          pageId: "claim_registration",
+          actionId: "edit_case",
+          itemIdSource: "backendToolResults",
+        },
+      };
     }
+    if (action === "cancel") setCancelPromptOpen(false);
     setBusy(true);
     const response = await apiFetch("/api/claim-registrations", { method: "PATCH", headers: mutationHeaders(operationId), body: JSON.stringify({ id, action }) });
     const result = await response.json() as ClaimCase & { message?: string };
@@ -237,13 +285,13 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
     await loadCases();
     window.dispatchEvent(new CustomEvent("claim-case-status-changed"));
     resetForm();
-    setSuccessNotice(action === "cancel" ? `案件 ${result.caseNo} 已撤件` : `案件 ${result.caseNo} 已转入处理中`);
+    setSuccessNotice(action === "cancel" ? `案件 ${result.caseNo} 已撤件` : `案件 ${result.caseNo} 已转入录入`);
     return { type: "mutation_result", operation: action, success: true, caseNo: result.caseNo, status: result.status };
   }
 
-  function validateEventDraft(draft: ClaimEventInput) { const next = { ...errors }; delete next.eventOccurredDate; delete next.eventAdministrativeArea; delete next.eventDescription; if (!draft.occurredDate) next.eventOccurredDate = "请选择事件发生日期"; if (draft.administrativeArea?.trim() && !areaOptions.some((item) => item.label === draft.administrativeArea)) next.eventAdministrativeArea = "请从下拉结果中选择省 / 市 / 区县"; if (!draft.description.trim()) next.eventDescription = "请填写事件经过"; setErrors(next); return !next.eventOccurredDate && !next.eventAdministrativeArea && !next.eventDescription; }
-  function openEventEditor(item?: ClaimPersonEvent) { const nextDraft = item ? eventDraftFrom(item) : emptyEvent(); const nextEditingId = item?.id ?? ""; setActiveSection("event"); setEditingEventId(nextEditingId); setEventDraft(nextDraft); setEventEditorOpen(true); setErrors((current) => { const next = { ...current }; delete next.eventOccurredDate; delete next.eventAdministrativeArea; delete next.eventDescription; return next; }); stateRef.current = { ...stateRef.current, editingEventId: nextEditingId, eventDraft: nextDraft }; if (item) setMessage(`正在编辑事件 ${item.eventNo}。`); return { type: "editor_opened", editor: "claim_event", mode: item ? "edit" : "create", eventId: item?.id, eventNo: item?.eventNo }; }
-  function closeEventEditor() { setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); stateRef.current = { ...stateRef.current, editingEventId: "", eventDraft: emptyEvent() }; return { type: "editor_closed", editor: "claim_event" }; }
+  function validateEventDraft(draft: ClaimEventInput) { const next = { ...errors }; delete next.eventOccurredDate; delete next.eventDescription; if (!draft.occurredDate) next.eventOccurredDate = "请选择事件发生日期"; if (!draft.description.trim()) next.eventDescription = "请填写事件经过"; setErrors(next); return !next.eventOccurredDate && !next.eventDescription; }
+  function openEventEditor(item?: ClaimPersonEvent) { const nextDraft = item ? eventDraftFrom(item) : emptyEvent(); const nextEditingId = item?.id ?? ""; setActiveSection("event"); setEditingEventId(nextEditingId); setEventDraft(nextDraft); setEventEditorOpen(true); setErrors((current) => { const next = { ...current }; delete next.eventOccurredDate; delete next.eventAdministrativeArea; delete next.eventDescription; return next; }); stateRef.current = { ...stateRef.current, eventEditorOpen: true, editingEventId: nextEditingId, eventDraft: nextDraft }; if (item) setMessage(`正在编辑事件 ${item.eventNo}。`); return { type: "editor_opened", editor: "claim_event", mode: item ? "edit" : "create", eventId: item?.id, eventNo: item?.eventNo }; }
+  function closeEventEditor() { setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); stateRef.current = { ...stateRef.current, eventEditorOpen: false, editingEventId: "", eventDraft: emptyEvent() }; return { type: "editor_closed", editor: "claim_event" }; }
   async function createEvent(useRef = false, operationId?: string) { const current = useRef ? stateRef.current : { ...stateRef.current, insuredPersonId, editingEventId, eventDraft }; if (!current.insuredPersonId) { setMessage("请先锁定被保人，再新增事件。"); return { type: "operation_error", reason: "insured_required" }; } if (!validateEventDraft(current.eventDraft)) { setMessage("请补充事件信息中的必填项。"); return { type: "operation_error", reason: "event_required_fields_incomplete" }; } const isEditing = Boolean(current.editingEventId); setBusy(true); const response = await apiFetch("/api/claim-events", { method: isEditing ? "PUT" : "POST", headers: mutationHeaders(operationId), body: JSON.stringify({ ...(isEditing ? { id: current.editingEventId } : {}), insuredPersonId: current.insuredPersonId, ...current.eventDraft }) }); const result = await response.json() as ClaimPersonEvent & { message?: string }; setBusy(false); if (!response.ok) { setMessage(`${isEditing ? "修改" : "新增"}事件失败，请检查填写内容。`); return { type: "operation_error", reason: result.message ?? (isEditing ? "claim_event_update_failed" : "claim_event_create_failed") }; } const nextEvents = isEditing ? stateRef.current.personEvents.map((item) => item.id === result.id ? result : item) : [result, ...stateRef.current.personEvents]; const nextSelectedEventId = isEditing ? stateRef.current.selectedEventId : result.id; setPersonEvents(nextEvents); if (!isEditing) setSelectedEventId(result.id); setEventEditorOpen(false); setEditingEventId(""); setEventDraft(emptyEvent()); setErrors((currentErrors) => { const next = { ...currentErrors }; delete next.selectedEventId; return next; }); stateRef.current = { ...stateRef.current, personEvents: nextEvents, selectedEventId: nextSelectedEventId, editingEventId: "", eventDraft: emptyEvent() }; setMessage(isEditing ? `事件 ${result.eventNo} 修改已保存。` : `事件 ${result.eventNo} 已新增并自动关联。`); return { type: "mutation_result", operation: isEditing ? "update_event" : "create_event", success: true, eventId: result.id, eventNo: result.eventNo, associated: !isEditing }; }
   function selectEvent(item: ClaimPersonEvent) { setSelectedEventId(item.id); setErrors((current) => { const next = { ...current }; delete next.selectedEventId; return next; }); stateRef.current = { ...stateRef.current, selectedEventId: item.id }; setMessage(`已关联事件 ${item.eventNo}。`); return { type: "selection_result", eventId: item.id, eventNo: item.eventNo }; }
 
@@ -294,33 +342,79 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
       }
       return { type: "field_updated", pageId: "claim_registration", fieldId, value };
     },
-    async executeAction(actionId, options) { if (actionId === "lock_insured") return lockPolicyInsured(); if (actionId === "reset_event_filters") { setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); stateRef.current = { ...stateRef.current, eventKeyword: "", eventTypeFilter: "all", eventDateFilter: "" }; return { type: "filter_reset", region: "claim_event_information" }; } if (actionId === "open_event_editor") return openEventEditor(); if (actionId === "close_event_editor") return closeEventEditor(); if (actionId === "create_event") return createEvent(true, options?.operationId); if (actionId === "save_case") return saveCase(true, options?.operationId); if (actionId === "cancel_case") return changeStatus("cancel", options?.operationId); if (actionId === "submit_case") return changeStatus("submit", options?.operationId); if (actionId === "reset" || actionId === "new_case") return resetForm(actionId); return { type: "operation_error", reason: "action_executor_not_bound", actionId }; },
+    async executeAction(actionId, options) { if (actionId === "lock_insured") return lockPolicyInsured(); if (actionId === "reset_event_filters") { setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); stateRef.current = { ...stateRef.current, eventKeyword: "", eventTypeFilter: "all", eventDateFilter: "" }; return { type: "filter_reset", region: "claim_event_information" }; } if (actionId === "open_event_editor") return openEventEditor(); if (actionId === "close_event_editor") return closeEventEditor(); if (actionId === "create_event") return createEvent(true, options?.operationId); if (actionId === "save_case") return saveCase(true, options?.operationId); if (actionId === "request_cancel_case") { if (!stateRef.current.editingCaseId) return changeStatus("cancel", options?.operationId); setCancelPromptOpen(true); stateRef.current = { ...stateRef.current }; return { type: "confirmation_required", operation: "cancel_case", caseId: stateRef.current.editingCaseId }; } if (actionId === "confirm_cancel_case") { if (!cancelPromptOpen) return { type: "operation_error", reason: "confirmation_required", pageId: "claim_registration", actionId }; return changeStatus("cancel", options?.operationId); } if (actionId === "submit_case") return changeStatus("submit", options?.operationId); if (actionId === "reset" || actionId === "new_case") return resetForm(actionId); return { type: "operation_error", reason: "action_executor_not_bound", actionId }; },
     async executeRowAction(actionId, row, options) { if (actionId === "edit_case") { const item = stateRef.current.cases[row - 1]; return item ? openCase(item) : { type: "operation_error", reason: "row_not_found", row }; } if (actionId === "select_event" || actionId === "edit_event") { const current = stateRef.current; const visible = current.personEvents.filter((item) => current.eventTypeFilter === "all" || item.eventType === current.eventTypeFilter).filter((item) => !current.eventDateFilter || item.occurredDate === current.eventDateFilter).filter((item) => { const key = current.eventKeyword.trim().toLowerCase(); return !key || [item.eventNo, item.administrativeArea, item.detailedAddress, item.hospitalName, item.diagnosis, item.description].some((value) => value?.toLowerCase().includes(key)); }); const item = visible[row - 1]; return item ? (actionId === "edit_event" ? openEventEditor(item) : selectEvent(item)) : { type: "operation_error", reason: "row_not_found", row }; } if (actionId === "remove_attachment") { const item = stateRef.current.attachments[row - 1]; return item ? removeAttachment(item.uploadId, options?.operationId) : { type: "operation_error", reason: "row_not_found", row }; } return { type: "operation_error", reason: "row_action_executor_not_bound", actionId, row }; },
     async executeItemAction(actionId, itemId, options) { if (actionId === "edit_case") { const item = stateRef.current.cases.find((candidate) => candidate.id === itemId) ?? (await loadCases()).find((candidate) => candidate.id === itemId); return item ? openCase(item) : { type: "operation_error", reason: "item_not_found", itemId }; } if (actionId === "select_event" || actionId === "edit_event") { const item = stateRef.current.personEvents.find((candidate) => candidate.id === itemId); return item ? (actionId === "edit_event" ? openEventEditor(item) : selectEvent(item)) : { type: "operation_error", reason: "item_not_found", itemId }; } if (actionId === "remove_attachment") { const item = stateRef.current.attachments.find((candidate) => candidate.uploadId === itemId); return item ? removeAttachment(item.uploadId, options?.operationId) : { type: "operation_error", reason: "item_not_found", itemId }; } return { type: "operation_error", reason: "item_action_executor_not_bound", actionId, itemId }; },
     getRuntimeFieldOptions() { return {}; },
+    getRuntimeCapabilities() {
+      const current = stateRef.current;
+      const editable = !readOnly && (current.editingStatus === null || (isClaimCaseEditable(current.editingStatus, "acceptance") && (Boolean(embeddedCase) || current.editingStatus === "registered")));
+      if (!editable) {
+        return {
+          availableActionIds: embeddedCase ? [] : ["reset", "new_case", "edit_case"],
+          availableFieldIds: [],
+        };
+      }
+      if (!stateRef.current.editingCaseId) {
+        return {
+          availableActionIds: [
+            "lock_insured", "reset", "new_case", "reset_event_filters", "save_case",
+            ...(current.cases.length ? ["edit_case"] : []),
+            ...(current.insuredPersonId ? ["open_event_editor"] : []),
+            ...(current.personEvents.length ? ["select_event", "edit_event"] : []),
+            ...(current.eventEditorOpen ? ["close_event_editor", "create_event"] : []),
+            ...(current.attachments.length ? ["remove_attachment"] : []),
+          ],
+        };
+      }
+      return {
+        availableActionIds: [
+          "lock_insured", "reset", "new_case", "reset_event_filters", "save_case", "edit_case", "submit_case",
+          cancelPromptOpen ? "confirm_cancel_case" : "request_cancel_case",
+          ...(current.insuredPersonId ? ["open_event_editor"] : []),
+          ...(current.personEvents.length ? ["select_event", "edit_event"] : []),
+          ...(current.eventEditorOpen ? ["close_event_editor", "create_event"] : []),
+          ...(current.attachments.length ? ["remove_attachment"] : []),
+        ],
+      };
+    },
   }));
 
   const activeCase = editingCaseId ? cases.find((item) => item.id === editingCaseId) ?? (embeddedCase?.id === editingCaseId ? embeddedCase : null) : null;
   const activeCaseInsured = activeCase?.parties.find((party) => party.role === "insured");
 
-  return <div className={`claim-image-push-stage ${attachmentsOpen ? "image-open" : ""}`}>
-    <ClaimImageWorkspace
+  return <div ref={imageStageRef} className={`claim-image-push-stage ${attachmentsOpen ? "image-open" : ""}`}>
+    {!compactEmbedded ? <ClaimImageWorkspace
       open={attachmentsOpen}
       caseNo={activeCase?.caseNo}
       attachments={attachments}
       busy={busy}
       disabled={formDisabled}
+      readOnly={readOnly}
+      uploadInHeader
       onClose={() => setAttachmentsOpen(false)}
       onUpload={(files) => void uploadFiles(files)}
       onRemove={(uploadId) => void removeAttachment(uploadId)}
-    />
-    <div className="claim-registration-page">
+    /> : null}
+    <div className={`claim-registration-page ${compactEmbedded ? "compact-embedded" : ""}`}>
     {successNotice ? <div className="claim-success-toast" role="status" aria-live="polite"><span aria-hidden="true">✓</span><strong>{successNotice}</strong></div> : null}
+    {cancelPromptOpen && activeCase ? (
+      <div className="bill-attachment-change-overlay">
+        <div className="bill-attachment-change-dialog" role="dialog" aria-modal="true" aria-labelledby="registration-cancel-title">
+          <div className="section-title" id="registration-cancel-title">确认撤件</div>
+          <p>确定撤销案件 <strong>{activeCase.caseNo}</strong> 吗？撤件后案件将不再进入后续理算流程。</p>
+          <div className="bill-attachment-change-actions">
+            <button type="button" className="danger-button" disabled={busy} onClick={() => void changeStatus("cancel")}>确认撤件</button>
+            <button type="button" className="secondary-button" disabled={busy} onClick={() => setCancelPromptOpen(false)}>取消</button>
+          </div>
+        </div>
+      </div>
+    ) : null}
 
-    {!embeddedCase ? <section className={`panel claim-case-list-panel ${caseListExpanded ? "" : "collapsed"}`}>
+    {!embeddedCase ? <section ref={caseListPanelRef} className={`panel claim-case-list-panel ${caseListExpanded ? "" : "collapsed"}`}>
       <div className="panel-title-row">
         <div>
-          <div className="section-title">受理中案件</div>
+          <div className="section-title">受理案件</div>
           <small className="muted">{caseListExpanded ? "双击案件进入编辑或查看" : `已收起，共 ${cases.length} 个案件`}</small>
         </div>
         <div className="claim-case-list-actions">
@@ -331,39 +425,46 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
       {caseListExpanded ? <div className="table-wrapper claim-case-list"><table><thead><tr><th>案件号</th><th>保单号</th><th>被保人</th><th>证件号</th><th>关联事件</th><th>报案日期</th><th>状态</th><th>更新时间</th></tr></thead><tbody>{cases.length ? cases.map((item) => { const party = item.parties.find((entry) => entry.role === "insured"); return <tr key={item.id} className={editingCaseId === item.id ? "active-row" : ""} onDoubleClick={() => void openCase(item)}><td><strong>{item.caseNo}</strong></td><td>{item.policyNo}</td><td>{party?.name ?? "-"}</td><td>{party?.idNo ?? "-"}</td><td>{item.event.eventNo}</td><td>{item.reportDate}</td><td><span className={`status-badge claim-${item.status}`}>{claimStatusLabels[item.status]}</span></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false })}</td></tr>; }) : <tr><td colSpan={8} className="config-empty-cell">暂无已立案案件</td></tr>}</tbody></table></div> : null}
     </section> : null}
 
-    <section className="panel claim-page-header">
-      <div>
+    {!compactEmbedded ? <section className="panel claim-page-header">
+      <div className="claim-page-header-title">
         <div className="section-title">{activeCase ? `案件信息 · ${activeCase.caseNo}` : "受理立案"}</div>
         <p className="config-intro">{activeCase ? `${activeCase.policyNo} ｜ ${activeCaseInsured?.name ?? "-"} ｜ ${activeCase.event.eventNo}` : "只需输入被保人证件号，系统会查询并选择其关联保单。"}</p>
       </div>
+      {!readOnly ? <div className="claim-registration-top-actions">
+        {activeCase ? <button type="button" className="secondary-button" disabled={busy || !editingCaseId || editingStatus !== "registered"} onClick={() => setCancelPromptOpen(true)}>撤件</button> : null}
+        <button type="button" disabled={busy || formDisabled} onClick={() => void saveCase(false)}>{editingCaseId ? "保存修改" : "保存立案"}</button>
+        {activeCase ? <button type="button" className="claim-submit-button" disabled={busy || !editingCaseId || editingStatus !== "registered"} onClick={() => void changeStatus("submit")}>提交</button> : null}
+      </div> : null}
       {activeCase ? <div className="claim-case-overview">
-        <div><span>案件状态</span><strong>{claimStatusLabels[activeCase.status]}</strong></div>
+        <div className="claim-case-overview-status"><span>案件状态</span><strong>{claimStatusLabels[activeCase.status]}</strong></div>
+        <div><span>当前处理人</span><strong>{activeCase.currentHandlerName}</strong><small>{activeCase.currentHandlerUserId}</small></div>
         <div><span>被保人</span><strong>{activeCaseInsured?.name ?? "-"}</strong><small>{activeCaseInsured?.idNo ?? "-"}</small></div>
         <div><span>关联事件</span><strong>{activeCase.event.eventNo}</strong><small>{activeCase.event.diagnosis || eventTypeOptions.find((option) => option.value === activeCase.event.eventType)?.label}</small></div>
         <div><span>报案信息</span><strong>{activeCase.reportDate}</strong><small>{reportChannelOptions.find((option) => option.value === activeCase.reportChannel)?.label}</small></div>
         <div><span>最后更新</span><strong>{new Date(activeCase.updatedAt).toLocaleDateString("zh-CN")}</strong><small>{new Date(activeCase.updatedAt).toLocaleTimeString("zh-CN", { hour12: false })}</small></div>
       </div> : null}
-    </section>
-    {message ? <div className={`config-message standalone ${/成功|已锁定|已保存|已提交|已撤件|已新增|已关联/.test(message) ? "success" : ""}`} aria-live="polite">{message}</div> : null}
+    </section> : null}
+    {!compactEmbedded && message ? <div className={`config-message standalone ${/成功|已锁定|已保存|已提交|已撤件|已新增|已关联/.test(message) ? "success" : ""}`} aria-live="polite">{message}</div> : null}
 
     <div className="claim-registration-workspace">
-      <aside className="panel claim-registration-nav">
+      {!compactEmbedded ? <aside className="panel claim-registration-nav">
         {([
+          ["attachments", "07", "影像件", `${attachments.length} 件资料`],
           ["basic", "01", "立案信息", policy ? "承保关系已锁定" : "待锁定承保关系"],
           ["insured", "02", "被保人信息", insured.name || "待录入"],
           ["applicant", "03", "申请人信息", applicant.name || "待录入"],
           ["payee", "04", "领款人信息", payee.name || "待录入"],
           ["event", "05", "事件信息", selectedEventId ? "已关联事件" : "待关联事件"],
-          ["attachments", "06", "影像资料", `${attachments.length} 件资料`],
+          ["remark", "06", "案件备注", caseRemarks.length ? `${caseRemarks.length} 条备注` : remark.trim() ? "待保存备注" : "暂无备注"],
         ] as Array<[RegistrationSection, string, string, string]>).map(([section, number, label, summary]) => (
-          <button type="button" className={section === "attachments" ? (attachmentsOpen ? "active" : "") : (activeSection === section ? "active" : "")} key={section} onClick={() => { if (section === "attachments") setAttachmentsOpen((open) => !open); else setActiveSection(section); }}>
+          <button type="button" className={section === "attachments" ? (attachmentsOpen ? "active" : "") : (displayedSection === section ? "active" : "")} key={section} onClick={() => { if (section === "attachments") setAttachmentsOpen((open) => !open); else setActiveSection(section); }}>
             <span>{number}</span><div><strong>{label}</strong><small>{summary}</small></div>
           </button>
         ))}
-      </aside>
+      </aside> : null}
 
       <div className="claim-registration-main">
-        {activeSection === "basic" ? <section className="panel claim-form-panel"><div className="section-title">立案信息</div><div className="claim-form-grid">
+        {displayedSection === "basic" ? <><section className="panel claim-form-panel"><div className="section-title">立案信息</div><div className="claim-form-grid">
           <label><span>被保人证件号 <Required /></span><input className={errors.insuredIdNo ? "invalid" : ""} disabled={Boolean(editingCaseId)} value={insuredIdNo} onChange={(event) => setInsuredIdNo(event.target.value.toUpperCase())} /><FieldError message={errors.insuredIdNo} /></label>
           <label className="claim-lock-action"><span>关联保单</span><button type="button" disabled={Boolean(editingCaseId) || busy} onClick={() => void lockPolicyInsured()}>{busy ? "查询中…" : policy ? "重新查询" : "查询关联保单"}</button><FieldError message={errors.policyNo} /></label>
           <label><span>报案日期 <Required /></span><AppDatePicker ariaLabel="报案日期" disabled={formDisabled} invalid={Boolean(errors.reportDate)} value={reportDate} onChange={setReportDate} /><FieldError message={errors.reportDate} /></label>
@@ -375,22 +476,26 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
             </tbody></table></div>
           </div> : null}
           {policy ? <div className="claim-policy-summary claim-wide-field"><span>当前保单：{policy.policyNo}</span><strong>{policy.policyName}</strong><small>{policy.applicantName} ｜ 保障期间 {policy.effectiveDate} ~ {policy.expiryDate}</small></div> : null}
-          <label className="claim-wide-field"><span>立案备注</span><textarea disabled={formDisabled} value={remark} onChange={(event) => setRemark(event.target.value)} /></label>
-        </div></section> : null}
+        </div></section>
+        {editingCaseId ? <section className="panel claim-form-panel claim-transition-panel"><div className="panel-title-row"><div><div className="section-title">案件流转记录</div><small className="muted">按发生时间记录案件从创建到结案的状态变化和操作人。</small></div></div>
+          <div className="table-wrapper"><table><thead><tr><th>流转动作</th><th>流转前</th><th>流转后</th><th>操作人</th><th>流转给</th><th>发生时间</th><th>说明</th></tr></thead><tbody>
+            {activeCase?.transitions?.length ? activeCase.transitions.map((item) => <tr key={item.id}><td><strong>{claimTransitionActionLabels[item.action]}</strong></td><td>{item.fromStatus ? claimStatusLabels[item.fromStatus] : "-"}</td><td><span className={`status-badge claim-${item.toStatus}`}>{claimStatusLabels[item.toStatus]}</span></td><td>{item.operatorName}</td><td>{item.targetUserName}</td><td>{new Date(item.occurredAt).toLocaleString("zh-CN", { hour12: false })}</td><td>{item.description ?? "-"}</td></tr>) : <tr><td colSpan={7} className="config-empty-cell">暂无流转记录</td></tr>}
+          </tbody></table></div>
+        </section> : null}</> : null}
 
-        {activeSection === "insured" ? <PartySection title="被保人信息" prefix="insuredParty" value={insured} errors={errors} formDisabled={formDisabled} onChange={(next) => { setInsured(next); if (applicantSameAsInsured) setApplicant(copyParty(next, "applicant", "本人")); if (payeeSource === "insured") setPayee(copyParty(next, "payee", "本人")); }} /> : null}
+        {displayedSection === "insured" ? <PartySection title="被保人信息" prefix="insuredParty" value={insured} errors={errors} formDisabled={formDisabled} onChange={(next) => { setInsured(next); if (applicantSameAsInsured) setApplicant(copyParty(next, "applicant", "本人")); if (payeeSource === "insured") setPayee(copyParty(next, "payee", "本人")); }} /> : null}
 
-        {activeSection === "applicant" ? <PartySection title="申请人信息" prefix="applicant" value={applicant} errors={errors} identityDisabled={applicantSameAsInsured} formDisabled={formDisabled} onChange={setApplicant} extra={<label className="claim-header-check"><input type="checkbox" disabled={formDisabled} checked={applicantSameAsInsured} onChange={(event) => { setApplicantSameAsInsured(event.target.checked); if (event.target.checked) setApplicant(copyParty(insured, "applicant", "本人")); }} />同被保人</label>} /> : null}
+        {displayedSection === "applicant" ? <PartySection title="申请人信息" prefix="applicant" value={applicant} errors={errors} identityDisabled={applicantSameAsInsured} formDisabled={formDisabled} onChange={setApplicant} extra={<label className="claim-header-check"><input type="checkbox" disabled={formDisabled} checked={applicantSameAsInsured} onChange={(event) => { setApplicantSameAsInsured(event.target.checked); if (event.target.checked) setApplicant(copyParty(insured, "applicant", "本人")); }} />同被保人</label>} /> : null}
 
-        {activeSection === "payee" ? <PartySection title="领款人信息" prefix="payee" value={payee} errors={errors} identityDisabled={payeeSource !== "other"} formDisabled={formDisabled} showBank onChange={setPayee} extra={<label className="claim-header-source">信息来源<AppSelect ariaLabel="领款人信息来源" disabled={formDisabled} value={payeeSource} options={payeeSourceOptions} onChange={(source) => { setPayeeSource(source); if (source === "insured") setPayee(copyParty(insured, "payee", "本人")); else if (source === "applicant") setPayee(copyParty(applicant, "payee", applicant.relationToInsured ?? "")); else setPayee(emptyParty("payee")); }} /></label>} /> : null}
+        {displayedSection === "payee" ? <PartySection title="领款人信息" prefix="payee" value={payee} errors={errors} identityDisabled={payeeSource !== "other"} formDisabled={formDisabled} showBank onChange={setPayee} extra={<label className="claim-header-source">信息来源<AppSelect ariaLabel="领款人信息来源" disabled={formDisabled} value={payeeSource} options={payeeSourceOptions} onChange={(source) => { setPayeeSource(source); if (source === "insured") setPayee(copyParty(insured, "payee", "本人")); else if (source === "applicant") setPayee(copyParty(applicant, "payee", applicant.relationToInsured ?? "")); else setPayee(emptyParty("payee")); }} /></label>} /> : null}
 
-        {activeSection === "event" ? <section className="panel claim-form-panel claim-event-panel"><div className="panel-title-row"><div><div className="section-title">事件信息 <Required /></div><small className="muted">显示当前被保人的全部事件；单击关联，双击编辑</small></div><button type="button" disabled={!insuredPersonId || formDisabled} onClick={() => openEventEditor()}>新增事件</button></div>
+        {displayedSection === "event" ? <section className="panel claim-form-panel claim-event-panel"><div className="panel-title-row"><div><div className="section-title">事件信息 <Required /></div><small className="muted">{readOnly ? "显示受理时的事件信息" : "显示当前被保人的全部事件；可关联或编辑事件"}</small></div>{!readOnly ? <button type="button" disabled={!insuredPersonId || formDisabled} onClick={() => openEventEditor()}>新增事件</button> : null}</div>
           <div className="claim-event-filters"><input aria-label="事件关键词筛选" value={eventKeyword} onChange={(event) => setEventKeyword(event.target.value)} /><AppSelect ariaLabel="事件类型筛选" value={eventTypeFilter} options={eventFilterOptions} onChange={setEventTypeFilter} /><AppDatePicker ariaLabel="事件日期筛选" value={eventDateFilter} onChange={setEventDateFilter} /><button type="button" className="secondary-button" onClick={() => { setEventKeyword(""); setEventTypeFilter("all"); setEventDateFilter(""); }}>清空筛选</button></div>
-          <div className={`table-wrapper claim-event-list ${errors.selectedEventId ? "invalid-panel" : ""}`}><table><thead><tr><th>关联</th><th>事件号</th><th>被保人姓名</th><th>类型</th><th>发生日期</th><th>行政区</th><th>医院</th><th>诊断</th><th>事件经过</th></tr></thead><tbody>{filteredEvents.length ? filteredEvents.map((item) => <tr key={item.id} className={selectedEventId === item.id ? "active-row" : ""} onDoubleClick={() => { if (!formDisabled) openEventEditor(item); }}><td><button type="button" className={selectedEventId === item.id ? "event-associated-button" : "secondary-button"} disabled={formDisabled} onClick={() => selectEvent(item)}>{selectedEventId === item.id ? "已关联" : "关联"}</button></td><td><strong>{item.eventNo}</strong></td><td>{insured.name || "-"}</td><td>{eventTypeOptions.find((option) => option.value === item.eventType)?.label}</td><td>{item.occurredDate}</td><td>{item.administrativeArea || "-"}</td><td>{item.hospitalName || "-"}</td><td>{item.diagnosis || "-"}</td><td>{item.description}</td></tr>) : <tr><td colSpan={9} className="config-empty-cell">{insuredPersonId ? "没有符合筛选条件的事件" : "请先锁定被保人"}</td></tr>}</tbody></table></div><FieldError message={errors.selectedEventId} />
+          <div className={`table-wrapper claim-event-list ${errors.selectedEventId ? "invalid-panel" : ""}`}><table><thead><tr><th>关联</th><th>事件号</th><th>被保人姓名</th><th>类型</th><th>发生日期</th><th>行政区</th><th>医院</th><th>诊断</th><th>事件经过</th><th>操作</th></tr></thead><tbody>{filteredEvents.length ? filteredEvents.map((item) => <tr key={item.id} className={selectedEventId === item.id ? "active-row" : ""} onDoubleClick={() => { if (!formDisabled) openEventEditor(item); }}><td><button type="button" className={selectedEventId === item.id ? "event-associated-button" : "secondary-button"} disabled={formDisabled} onClick={() => selectEvent(item)}>{selectedEventId === item.id ? "已关联" : "关联"}</button></td><td><strong>{item.eventNo}</strong></td><td>{insured.name || "-"}</td><td>{eventTypeOptions.find((option) => option.value === item.eventType)?.label}</td><td>{item.occurredDate}</td><td>{item.administrativeArea || "-"}</td><td>{item.hospitalName || "-"}</td><td>{item.diagnosis || "-"}</td><td>{item.description}</td><td><button type="button" className="action-link" disabled={formDisabled} onClick={() => openEventEditor(item)}>编辑</button></td></tr>) : <tr><td colSpan={10} className="config-empty-cell">{insuredPersonId ? "没有符合筛选条件的事件" : "请先锁定被保人"}</td></tr>}</tbody></table></div><FieldError message={errors.selectedEventId} />
           {eventEditorOpen ? <div className="claim-event-editor"><div className="panel-title-row"><div className="section-title">{editingEventId ? "编辑事件" : "新增事件"}</div><button type="button" className="secondary-button" onClick={() => closeEventEditor()}>取消{editingEventId ? "编辑" : "新增"}</button></div><div className="claim-form-grid">
             <label><span>事件类型 <Required /></span><AppSelect ariaLabel="新增事件类型" disabled={formDisabled} value={eventDraft.eventType} options={eventTypeOptions} onChange={(value) => setEventDraft((current) => ({ ...current, eventType: value }))} /></label>
             <label><span>事件发生日期 <Required /></span><AppDatePicker ariaLabel="事件发生日期" disabled={formDisabled} invalid={Boolean(errors.eventOccurredDate)} value={eventDraft.occurredDate} onChange={(next) => setEventDraft((current) => ({ ...current, occurredDate: next }))} /><FieldError message={errors.eventOccurredDate} /></label>
-            <label className="claim-wide-field"><span>发生地点（省/市/区县）</span><AppCombobox ariaLabel="发生地点" disabled={formDisabled} invalid={Boolean(errors.eventAdministrativeArea)} value={eventDraft.administrativeArea ?? ""} options={areaOptions} onChange={(value) => setEventDraft((current) => ({ ...current, administrativeArea: value }))} placeholder="" /><FieldError message={errors.eventAdministrativeArea} /></label>
+            <label className="claim-wide-field"><span>发生地点（省/市/区县）</span><ReferenceDataCombobox type="administrative_area" ariaLabel="发生地点" disabled={formDisabled} invalid={Boolean(errors.eventAdministrativeArea)} value={eventDraft.administrativeArea ?? ""} onChange={(value) => setEventDraft((current) => ({ ...current, administrativeArea: value }))} placeholder="输入地区或六码编码查询" /><FieldError message={errors.eventAdministrativeArea} /></label>
             <label className="claim-wide-field"><span>详细地点</span><input disabled={formDisabled} value={eventDraft.detailedAddress ?? ""} onChange={(event) => setEventDraft((current) => ({ ...current, detailedAddress: event.target.value }))} /></label>
             <label><span>就诊医院</span><input disabled={formDisabled} value={eventDraft.hospitalName ?? ""} onChange={(event) => setEventDraft((current) => ({ ...current, hospitalName: event.target.value }))} /></label>
             <label><span>诊断</span><input disabled={formDisabled} value={eventDraft.diagnosis ?? ""} onChange={(event) => setEventDraft((current) => ({ ...current, diagnosis: event.target.value }))} /></label>
@@ -398,15 +503,29 @@ const ClaimRegistrationPage = forwardRef<RegisteredPageController, ClaimRegistra
           </div><div className="claim-event-editor-actions"><button type="button" disabled={busy || formDisabled} onClick={() => void createEvent(false)}>{editingEventId ? "保存事件修改" : "保存事件并关联"}</button></div></div> : null}
         </section> : null}
 
-        {activeSection === "attachments" ? <section className="panel claim-form-panel claim-last-panel"><div className="panel-title-row"><div><div className="section-title">影像资料</div><small className="muted">支持 JPG、PNG、WebP、PDF，上传后由 OCR 自动分类</small></div><label className={`claim-upload-button ${formDisabled ? "disabled" : ""}`}>上传影像<input disabled={formDisabled} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { void uploadFiles(event.target.files); event.target.value = ""; }} /></label></div><div className="claim-attachment-list">{attachments.length ? attachments.map((item) => <div key={item.uploadId}><span>{item.category === "other" ? "待 OCR 分类" : attachmentCategories.find((option) => option.value === item.category)?.label}</span><strong>{item.fileName}</strong><small>{(item.fileSize / 1024).toFixed(1)} KB</small><button disabled={formDisabled} type="button" className="danger-link" onClick={() => void removeAttachment(item.uploadId)}>删除</button></div>) : <div className="claim-empty-upload">暂未上传影像资料</div>}</div></section> : null}
+        {displayedSection === "remark" ? <section className="panel claim-form-panel claim-remark-panel">
+          <div className="panel-title-row">
+            <div>
+              <div className="section-title">案件备注</div>
+              <small className="muted">记录本案受理、理算和审核过程中需要持续关注的补充事项。</small>
+            </div>
+          </div>
+          <div className="table-wrapper claim-remark-list"><table><thead><tr><th>环节</th><th>备注内容</th><th>添加时间</th></tr></thead><tbody>
+            {caseRemarks.length ? caseRemarks.map((item) => <tr key={item.id}><td><span className="status-badge">{claimRemarkStageLabels[item.stage]}</span></td><td>{item.content}</td><td>{new Date(item.createdAt).toLocaleString("zh-CN", { hour12: false })}</td></tr>) : <tr><td colSpan={3} className="config-empty-cell">暂无案件备注</td></tr>}
+          </tbody></table></div>
+          {allowRemarkAdd ? editingCaseId ? <div className="claim-remark-add">
+            <label><span>新增{claimRemarkStageLabels[remarkStage]}备注</span><textarea value={newRemark} onChange={(event) => setNewRemark(event.target.value)} placeholder="填写本环节需要持续关注的补充事项" /></label>
+            <div><button type="button" disabled={remarkBusy || !newRemark.trim()} onClick={() => void addCaseRemark()}>{remarkBusy ? "正在新增…" : "新增备注"}</button></div>
+          </div> : <label><span>首条受理备注</span><textarea value={remark} onChange={(event) => setRemark(event.target.value)} placeholder="保存立案时将作为第一条备注记录" /><small className="muted">保存立案后自动加入备注列表。</small></label> : null}
+        </section> : null}
+
+        {displayedSection === "attachments" ? <section className="panel claim-form-panel claim-last-panel"><div className="panel-title-row"><div><div className="section-title">影像资料</div><small className="muted">{readOnly ? "仅供审核查看" : "支持 JPG、PNG、WebP、PDF"}</small></div>{!readOnly ? <label className={`claim-upload-button ${formDisabled ? "disabled" : ""}`}>上传影像<input disabled={formDisabled} type="file" multiple accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => { void uploadFiles(event.target.files); event.target.value = ""; }} /></label> : null}</div><div className="claim-attachment-list">{attachments.length ? attachments.map((item) => <div key={item.uploadId}><strong>{item.fileName}</strong><small>{(item.fileSize / 1024).toFixed(1)} KB</small>{!readOnly ? <button disabled={formDisabled} type="button" className="danger-link" onClick={() => void removeAttachment(item.uploadId)}>删除</button> : null}</div>) : <div className="claim-empty-upload">暂无影像资料</div>}</div></section> : null}
       </div>
     </div>
 
-    <div className="claim-fixed-actions">
-      {!embeddedCase ? <button type="button" className="secondary-button" disabled={busy || !editingCaseId || editingStatus !== "registered"} onClick={() => void changeStatus("cancel")}>撤件</button> : null}
-      <button type="button" disabled={busy || formDisabled} onClick={() => void saveCase(false)}>{embeddedCase ? "保存受理信息" : editingCaseId ? "保存修改" : "保存立案"}</button>
-      {!embeddedCase ? <button type="button" className="claim-submit-button" disabled={busy || !editingCaseId || editingStatus !== "registered"} onClick={() => void changeStatus("submit")}>提交</button> : null}
-    </div>
+    {!readOnly && compactEmbedded ? <div className="claim-fixed-actions">
+      <button type="button" disabled={busy || formDisabled} onClick={() => void saveCase(false)}>保存受理信息</button>
+    </div> : null}
     </div>
   </div>;
 });

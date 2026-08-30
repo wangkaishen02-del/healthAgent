@@ -35,6 +35,7 @@ const planner: typeof requestAgentPlan = async (text) => ({
 
 const firstService = new AssistantGraphService();
 firstService.setPlannerForTesting(planner);
+firstService.setTaskPlannerForTesting(async () => ["确认案件目标", "补充必要信息", "返回案件详情"]);
 await firstService.onModuleInit();
 const interrupted = await firstService.startTask({
   taskId,
@@ -46,6 +47,7 @@ await firstService.onModuleDestroy();
 
 const restoredService = new AssistantGraphService();
 restoredService.setPlannerForTesting(planner);
+restoredService.setTaskPlannerForTesting(async () => ["确认案件目标", "补充必要信息", "返回案件详情"]);
 await restoredService.onModuleInit();
 assert.equal((await restoredService.getTask(taskId)).status, "waiting_user");
 await assert.rejects(

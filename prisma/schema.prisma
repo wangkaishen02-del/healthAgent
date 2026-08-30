@@ -65,7 +65,9 @@ enum CalculationParameterValueType {
 
 enum ClaimCaseStatus {
   registered
-  processing
+  entering
+  calculating
+  reviewing
   completed
   cancelled
 }
@@ -74,12 +76,6 @@ enum ClaimPartyRole {
   insured
   applicant
   payee
-}
-
-enum ClaimEventType {
-  disease
-  accident
-  other
 }
 
 enum ClaimReportChannel {
@@ -105,27 +101,34 @@ enum ClaimAttachmentCategory {
   other
 }
 
-model Policy {
-  id               String          @id @default(uuid()) @db.VarChar(50)
-  policyNo         String          @unique @map("policy_no") @db.VarChar(50)
-  policyName       String?         @map("policy_name") @db.VarChar(100)
-  applicantName    String          @map("applicant_name") @db.VarChar(100)
-  holderType       HolderType      @map("holder_type")
-  policyStatus     PolicyStatus    @default(enabled) @map("policy_status")
-  effectiveDate    DateTime        @map("effective_date") @db.Date
-  expiryDate       DateTime        @map("expiry_date") @db.Date
-  currency         String          @default("CNY") @db.VarChar(10)
-  totalPremium     Decimal?        @map("total_premium") @db.Decimal(18, 2)
-  insuredCount     Int?            @map("insured_count")
-  issueDate        DateTime?       @map("issue_date") @db.Date
-  underwritingDate DateTime?       @map("underwriting_date") @db.Date
-  remark           String?         @db.Text
-  createdAt        DateTime        @default(now()) @map("created_at")
-  updatedAt        DateTime        @updatedAt @map("updated_at")
+enum OcrJobStatus {
+  queued
+  processing
+  succeeded
+  failed
+}
 
-  products         PolicyProduct[]
-  coveragePlans    CoveragePlan[]
-  insureds         PolicyInsured[]
+model Policy {
+  id               String       @id @default(uuid()) @db.VarChar(50)
+  policyNo         String       @unique @map("policy_no") @db.VarChar(50)
+  policyName       String?      @map("policy_name") @db.VarChar(100)
+  applicantName    String       @map("applicant_name") @db.VarChar(100)
+  holderType       HolderType   @map("holder_type")
+  policyStatus     PolicyStatus @default(enabled) @map("policy_status")
+  effectiveDate    DateTime     @map("effective_date") @db.Date
+  expiryDate       DateTime     @map("expiry_date") @db.Date
+  currency         String       @default("CNY") @db.VarChar(10)
+  totalPremium     Decimal?     @map("total_premium") @db.Decimal(18, 2)
+  insuredCount     Int?         @map("insured_count")
+  issueDate        DateTime?    @map("issue_date") @db.Date
+  underwritingDate DateTime?    @map("underwriting_date") @db.Date
+  remark           String?      @db.Text
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+
+  products      PolicyProduct[]
+  coveragePlans CoveragePlan[]
+  insureds      PolicyInsured[]
 
   @@index([policyStatus], map: "idx_policy_status")
   @@index([effectiveDate, expiryDate], map: "idx_policy_coverage_period")
@@ -133,20 +136,20 @@ model Policy {
 }
 
 model CoveragePlan {
-  id            String          @id @default(uuid()) @db.VarChar(50)
-  policyId      String          @map("policy_id") @db.VarChar(50)
-  planCode      String          @map("plan_code") @db.VarChar(50)
-  planName      String          @map("plan_name") @db.VarChar(100)
-  effectiveDate DateTime        @map("effective_date") @db.Date
-  expiryDate    DateTime        @map("expiry_date") @db.Date
-  status        ProductStatus   @default(active)
-  remark        String?         @db.Text
-  createdAt     DateTime        @default(now()) @map("created_at")
-  updatedAt     DateTime        @updatedAt @map("updated_at")
+  id            String        @id @default(uuid()) @db.VarChar(50)
+  policyId      String        @map("policy_id") @db.VarChar(50)
+  planCode      String        @map("plan_code") @db.VarChar(50)
+  planName      String        @map("plan_name") @db.VarChar(100)
+  effectiveDate DateTime      @map("effective_date") @db.Date
+  expiryDate    DateTime      @map("expiry_date") @db.Date
+  status        ProductStatus @default(active)
+  remark        String?       @db.Text
+  createdAt     DateTime      @default(now()) @map("created_at")
+  updatedAt     DateTime      @updatedAt @map("updated_at")
 
-  policy        Policy          @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  products      PolicyProduct[]
-  insureds      PolicyInsured[]
+  policy   Policy          @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  products PolicyProduct[]
+  insureds PolicyInsured[]
 
   @@unique([policyId, planCode], map: "uk_coverage_plan_policy_id_plan_code")
   @@index([policyId], map: "idx_coverage_plan_policy_id")
@@ -154,25 +157,25 @@ model CoveragePlan {
 }
 
 model PolicyProduct {
-  id            String         @id @default(uuid()) @db.VarChar(50)
-  policyId      String         @map("policy_id") @db.VarChar(50)
+  id             String        @id @default(uuid()) @db.VarChar(50)
+  policyId       String        @map("policy_id") @db.VarChar(50)
   coveragePlanId String?       @map("coverage_plan_id") @db.VarChar(50)
-  productNo     String         @unique @map("product_no") @db.VarChar(50)
-  productCode   String         @map("product_code") @db.VarChar(50)
-  productName   String         @map("product_name") @db.VarChar(100)
-  productStatus ProductStatus  @default(active) @map("product_status")
-  effectiveDate DateTime       @map("effective_date") @db.Date
-  expiryDate    DateTime       @map("expiry_date") @db.Date
-  premium       Decimal?       @db.Decimal(18, 2)
-  sumInsured    Decimal?       @map("sum_insured") @db.Decimal(18, 2)
-  sequenceNo    Int?           @map("sequence_no")
-  remark        String?        @db.Text
-  createdAt     DateTime       @default(now()) @map("created_at")
-  updatedAt     DateTime       @updatedAt @map("updated_at")
+  productNo      String        @unique @map("product_no") @db.VarChar(50)
+  productCode    String        @map("product_code") @db.VarChar(50)
+  productName    String        @map("product_name") @db.VarChar(100)
+  productStatus  ProductStatus @default(active) @map("product_status")
+  effectiveDate  DateTime      @map("effective_date") @db.Date
+  expiryDate     DateTime      @map("expiry_date") @db.Date
+  premium        Decimal?      @db.Decimal(18, 2)
+  sumInsured     Decimal?      @map("sum_insured") @db.Decimal(18, 2)
+  sequenceNo     Int?          @map("sequence_no")
+  remark         String?       @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
 
-  policy        Policy         @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  coveragePlan  CoveragePlan?  @relation(fields: [coveragePlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  benefits      PolicyBenefit[]
+  policy       Policy          @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  coveragePlan CoveragePlan?   @relation(fields: [coveragePlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  benefits     PolicyBenefit[]
 
   @@unique([policyId, productCode], map: "uk_policy_product_policy_id_product_code")
   @@index([policyId], map: "idx_policy_product_policy_id")
@@ -182,17 +185,17 @@ model PolicyProduct {
 }
 
 model CalculationParameter {
-  id             String                        @id @default(uuid()) @db.VarChar(50)
+  id             String                    @id @default(uuid()) @db.VarChar(50)
   scope          CalculationParameterScope
-  targetId       String                        @map("target_id") @db.VarChar(50)
-  definitionId   String                        @map("definition_id") @db.VarChar(50)
-  parameterValue String                        @map("parameter_value") @db.Text
-  description    String?                       @db.Text
-  enabled        Boolean                       @default(true)
-  createdAt      DateTime                      @default(now()) @map("created_at")
-  updatedAt      DateTime                      @updatedAt @map("updated_at")
+  targetId       String                    @map("target_id") @db.VarChar(50)
+  definitionId   String                    @map("definition_id") @db.VarChar(50)
+  parameterValue String                    @map("parameter_value") @db.Text
+  description    String?                   @db.Text
+  enabled        Boolean                   @default(true)
+  createdAt      DateTime                  @default(now()) @map("created_at")
+  updatedAt      DateTime                  @updatedAt @map("updated_at")
 
-  definition     CalculationParameterDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  definition CalculationParameterDefinition @relation(fields: [definitionId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([scope, targetId, definitionId], map: "uk_calculation_parameter_scope_target_definition")
   @@index([scope, targetId], map: "idx_calculation_parameter_scope_target")
@@ -212,27 +215,27 @@ model CalculationParameterDefinition {
   createdAt        DateTime                      @default(now()) @map("created_at")
   updatedAt        DateTime                      @updatedAt @map("updated_at")
 
-  parameters       CalculationParameter[]
+  parameters CalculationParameter[]
 
   @@map("calculation_parameter_definition")
 }
 
 model PolicyBenefit {
-  id              String         @id @default(uuid()) @db.VarChar(50)
-  policyProductId String         @map("policy_product_id") @db.VarChar(50)
-  benefitNo       String         @unique @map("benefit_no") @db.VarChar(50)
-  benefitCode     String         @map("benefit_code") @db.VarChar(50)
-  benefitName     String         @map("benefit_name") @db.VarChar(100)
-  benefitStatus   BenefitStatus  @default(active) @map("benefit_status")
-  effectiveDate   DateTime       @map("effective_date") @db.Date
-  expiryDate      DateTime       @map("expiry_date") @db.Date
-  sequenceNo      Int?           @map("sequence_no")
-  claimableFlag   Boolean        @default(true) @map("claimable_flag")
-  remark          String?        @db.Text
-  createdAt       DateTime       @default(now()) @map("created_at")
-  updatedAt       DateTime       @updatedAt @map("updated_at")
+  id              String        @id @default(uuid()) @db.VarChar(50)
+  policyProductId String        @map("policy_product_id") @db.VarChar(50)
+  benefitNo       String        @unique @map("benefit_no") @db.VarChar(50)
+  benefitCode     String        @map("benefit_code") @db.VarChar(50)
+  benefitName     String        @map("benefit_name") @db.VarChar(100)
+  benefitStatus   BenefitStatus @default(active) @map("benefit_status")
+  effectiveDate   DateTime      @map("effective_date") @db.Date
+  expiryDate      DateTime      @map("expiry_date") @db.Date
+  sequenceNo      Int?          @map("sequence_no")
+  claimableFlag   Boolean       @default(true) @map("claimable_flag")
+  remark          String?       @db.Text
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
 
-  policyProduct   PolicyProduct  @relation(fields: [policyProductId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  policyProduct PolicyProduct @relation(fields: [policyProductId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([policyProductId, benefitCode], map: "uk_policy_benefit_product_id_benefit_code")
   @@index([policyProductId], map: "idx_policy_benefit_policy_product_id")
@@ -241,20 +244,20 @@ model PolicyBenefit {
 }
 
 model InsuredPerson {
-  id               String             @id @default(uuid()) @db.VarChar(50)
-  insuredNo        String             @unique @map("insured_no") @db.VarChar(50)
-  name             String             @db.VarChar(100)
-  gender           Gender?            
-  birthDate        DateTime?          @map("birth_date") @db.Date
-  idType           IdType?            @map("id_type")
-  idNo             String?            @map("id_no") @db.VarChar(50)
-  phone            String?            @db.VarChar(30)
-  occupationCode   String?            @map("occupation_code") @db.VarChar(50)
-  occupationName   String?            @map("occupation_name") @db.VarChar(100)
-  createdAt        DateTime           @default(now()) @map("created_at")
-  updatedAt        DateTime           @updatedAt @map("updated_at")
+  id             String    @id @default(uuid()) @db.VarChar(50)
+  insuredNo      String    @unique @map("insured_no") @db.VarChar(50)
+  name           String    @db.VarChar(100)
+  gender         Gender?
+  birthDate      DateTime? @map("birth_date") @db.Date
+  idType         IdType?   @map("id_type")
+  idNo           String?   @map("id_no") @db.VarChar(50)
+  phone          String?   @db.VarChar(30)
+  occupationCode String?   @map("occupation_code") @db.VarChar(50)
+  occupationName String?   @map("occupation_name") @db.VarChar(100)
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
 
-  policies         PolicyInsured[]
+  policies PolicyInsured[]
 
   @@unique([idType, idNo], map: "uk_insured_person_id_type_id_no")
   @@index([name], map: "idx_insured_person_name")
@@ -262,22 +265,22 @@ model InsuredPerson {
 }
 
 model PolicyInsured {
-  id              String         @id @default(uuid()) @db.VarChar(50)
-  policyId        String         @map("policy_id") @db.VarChar(50)
-  coveragePlanId  String?        @map("coverage_plan_id") @db.VarChar(50)
-  insuredPersonId String         @map("insured_person_id") @db.VarChar(50)
-  effectiveDate   DateTime       @map("effective_date") @db.Date
-  expiryDate      DateTime       @map("expiry_date") @db.Date
-  joinDate        DateTime?      @map("join_date") @db.Date
-  leaveDate       DateTime?      @map("leave_date") @db.Date
-  insuredRole     InsuredRole?   @map("insured_role")
-  remark          String?        @db.Text
-  createdAt       DateTime       @default(now()) @map("created_at")
-  updatedAt       DateTime       @updatedAt @map("updated_at")
+  id              String       @id @default(uuid()) @db.VarChar(50)
+  policyId        String       @map("policy_id") @db.VarChar(50)
+  coveragePlanId  String?      @map("coverage_plan_id") @db.VarChar(50)
+  insuredPersonId String       @map("insured_person_id") @db.VarChar(50)
+  effectiveDate   DateTime     @map("effective_date") @db.Date
+  expiryDate      DateTime     @map("expiry_date") @db.Date
+  joinDate        DateTime?    @map("join_date") @db.Date
+  leaveDate       DateTime?    @map("leave_date") @db.Date
+  insuredRole     InsuredRole? @map("insured_role")
+  remark          String?      @db.Text
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
 
-  policy          Policy         @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  coveragePlan    CoveragePlan?  @relation(fields: [coveragePlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
-  insuredPerson   InsuredPerson  @relation(fields: [insuredPersonId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  policy        Policy        @relation(fields: [policyId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  coveragePlan  CoveragePlan? @relation(fields: [coveragePlanId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  insuredPerson InsuredPerson @relation(fields: [insuredPersonId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@unique([policyId, insuredPersonId], map: "uk_policy_insured_policy_id_insured_person_id")
   @@index([policyId], map: "idx_policy_insured_policy_id")
@@ -287,18 +290,20 @@ model PolicyInsured {
 }
 
 model ClaimCase {
-  id               String             @id @default(uuid()) @db.VarChar(50)
-  caseNo           String             @unique @map("case_no") @db.VarChar(50)
-  policyId         String             @map("policy_id") @db.VarChar(50)
-  policyInsuredId  String             @map("policy_insured_id") @db.VarChar(50)
-  insuredPersonId  String             @map("insured_person_id") @db.VarChar(50)
-  eventId          String             @map("event_id") @db.VarChar(50)
-  reportDate       DateTime           @map("report_date") @db.Date
-  reportChannel    ClaimReportChannel @map("report_channel")
-  status           ClaimCaseStatus    @default(registered)
-  remark           String?            @db.Text
-  createdAt        DateTime           @default(now()) @map("created_at")
-  updatedAt        DateTime           @updatedAt @map("updated_at")
+  id              String             @id @default(uuid()) @db.VarChar(50)
+  caseNo          String             @unique @map("case_no") @db.VarChar(50)
+  policyId        String             @map("policy_id") @db.VarChar(50)
+  policyInsuredId String             @map("policy_insured_id") @db.VarChar(50)
+  insuredPersonId String             @map("insured_person_id") @db.VarChar(50)
+  eventId         String             @map("event_id") @db.VarChar(50)
+  reportDate      DateTime           @map("report_date") @db.Date
+  reportChannel   ClaimReportChannel @map("report_channel")
+  status          ClaimCaseStatus    @default(registered)
+  currentHandlerUserId String             @default("default-user") @map("current_handler_user_id") @db.VarChar(50)
+  currentHandlerName   String             @default("默认用户") @map("current_handler_name") @db.VarChar(100)
+  remark          String?            @db.Text
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
 
   @@index([policyId], map: "idx_claim_case_policy_id")
   @@index([policyInsuredId], map: "idx_claim_case_policy_insured_id")
@@ -306,30 +311,33 @@ model ClaimCase {
   @@index([eventId], map: "idx_claim_case_event_id")
   @@index([reportDate], map: "idx_claim_case_report_date")
   @@index([status], map: "idx_claim_case_status")
+  @@index([updatedAt], map: "idx_claim_case_updated_at")
+  @@index([status, updatedAt], map: "idx_claim_case_status_updated_at")
+  @@index([currentHandlerUserId, status, updatedAt], map: "idx_claim_case_handler_status_updated")
   @@map("claim_case")
 }
 
 model ClaimParty {
-  id                String         @id @default(uuid()) @db.VarChar(50)
-  claimCaseId       String         @map("claim_case_id") @db.VarChar(50)
+  id                String              @id @default(uuid()) @db.VarChar(50)
+  claimCaseId       String              @map("claim_case_id") @db.VarChar(50)
   role              ClaimPartyRole
-  name              String         @db.VarChar(100)
-  gender            Gender         @default(unknown)
-  birthDate         DateTime?      @map("birth_date") @db.Date
-  idType            IdType         @default(id_card) @map("id_type")
-  idNo              String         @map("id_no") @db.VarChar(50)
-  idValidFrom       DateTime?      @map("id_valid_from") @db.Date
-  idValidTo         DateTime?      @map("id_valid_to") @db.Date
-  idLongTerm        Boolean        @default(false) @map("id_long_term")
-  address           String?        @db.VarChar(300)
-  phone             String         @db.VarChar(30)
-  relationToInsured String?        @map("relation_to_insured") @db.VarChar(50)
-  bankName          String?        @map("bank_name") @db.VarChar(100)
-  bankAccountName   String?        @map("bank_account_name") @db.VarChar(100)
-  bankAccountNo     String?        @map("bank_account_no") @db.VarChar(80)
+  name              String              @db.VarChar(100)
+  gender            Gender              @default(unknown)
+  birthDate         DateTime?           @map("birth_date") @db.Date
+  idType            IdType              @default(id_card) @map("id_type")
+  idNo              String              @map("id_no") @db.VarChar(50)
+  idValidFrom       DateTime?           @map("id_valid_from") @db.Date
+  idValidTo         DateTime?           @map("id_valid_to") @db.Date
+  idLongTerm        Boolean             @default(false) @map("id_long_term")
+  address           String?             @db.VarChar(300)
+  phone             String              @db.VarChar(30)
+  relationToInsured String?             @map("relation_to_insured") @db.VarChar(50)
+  bankName          String?             @map("bank_name") @db.VarChar(100)
+  bankAccountName   String?             @map("bank_account_name") @db.VarChar(100)
+  bankAccountNo     String?             @map("bank_account_no") @db.VarChar(80)
   paymentMethod     ClaimPaymentMethod? @map("payment_method")
-  createdAt         DateTime       @default(now()) @map("created_at")
-  updatedAt         DateTime       @updatedAt @map("updated_at")
+  createdAt         DateTime            @default(now()) @map("created_at")
+  updatedAt         DateTime            @updatedAt @map("updated_at")
 
   @@unique([claimCaseId, role], map: "uk_claim_party_case_role")
   @@index([claimCaseId], map: "idx_claim_party_case_id")
@@ -337,21 +345,92 @@ model ClaimParty {
   @@map("claim_party")
 }
 
+model ClaimCaseRemark {
+  id          String   @id @default(uuid()) @db.VarChar(50)
+  claimCaseId String   @map("claim_case_id") @db.VarChar(50)
+  stage       String   @db.VarChar(30)
+  content     String   @db.Text
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([claimCaseId, createdAt], map: "idx_claim_case_remark_case_created")
+  @@map("claim_case_remark")
+}
+
+model ClaimCaseTransition {
+  id             String   @id @default(uuid()) @db.VarChar(50)
+  claimCaseId    String   @map("claim_case_id") @db.VarChar(50)
+  action         String   @db.VarChar(40)
+  fromStatus     String?  @map("from_status") @db.VarChar(30)
+  toStatus       String   @map("to_status") @db.VarChar(30)
+  operatorUserId String   @map("operator_user_id") @db.VarChar(50)
+  operatorName   String   @map("operator_name") @db.VarChar(100)
+  targetUserId   String   @default("default-user") @map("target_user_id") @db.VarChar(50)
+  targetUserName String   @default("默认用户") @map("target_user_name") @db.VarChar(100)
+  description    String?  @db.VarChar(300)
+  occurredAt     DateTime @default(now()) @map("occurred_at")
+
+  @@index([claimCaseId, occurredAt], map: "idx_claim_case_transition_case_occurred")
+  @@index([operatorUserId, occurredAt], map: "idx_claim_case_transition_operator_occurred")
+  @@index([toStatus, occurredAt], map: "idx_claim_case_transition_status_occurred")
+  @@index([targetUserId, occurredAt], map: "idx_claim_case_transition_target_occurred")
+  @@map("claim_case_transition")
+}
+
+model AppUserSnapshot {
+  userId      String   @id @map("user_id") @db.VarChar(100)
+  username    String   @db.VarChar(100)
+  displayName String   @map("display_name") @db.VarChar(150)
+  email       String?  @db.VarChar(200)
+  roles       Json
+  firstSeenAt DateTime @default(now()) @map("first_seen_at")
+  lastSeenAt  DateTime @default(now()) @map("last_seen_at")
+
+  @@index([username], map: "idx_app_user_snapshot_username")
+  @@index([lastSeenAt], map: "idx_app_user_snapshot_last_seen")
+  @@map("app_user_snapshot")
+}
+
+model OperationAudit {
+  id            String   @id @default(uuid()) @db.VarChar(50)
+  actorUserId   String   @map("actor_user_id") @db.VarChar(100)
+  actorUsername String   @map("actor_username") @db.VarChar(100)
+  actorName     String   @map("actor_name") @db.VarChar(150)
+  actorRoles    Json     @map("actor_roles")
+  method        String   @db.VarChar(10)
+  path          String   @db.VarChar(300)
+  resourceType  String   @map("resource_type") @db.VarChar(100)
+  resourceId    String?  @map("resource_id") @db.VarChar(100)
+  outcome       String   @db.VarChar(20)
+  statusCode    Int      @map("status_code")
+  errorCode     String?  @map("error_code") @db.VarChar(100)
+  requestId     String   @map("request_id") @db.VarChar(100)
+  ipAddress     String?  @map("ip_address") @db.VarChar(100)
+  userAgent     String?  @map("user_agent") @db.VarChar(300)
+  occurredAt    DateTime @default(now()) @map("occurred_at")
+
+  @@index([actorUserId, occurredAt], map: "idx_operation_audit_actor_time")
+  @@index([resourceType, resourceId, occurredAt], map: "idx_operation_audit_resource_time")
+  @@index([outcome, occurredAt], map: "idx_operation_audit_outcome_time")
+  @@index([requestId], map: "idx_operation_audit_request_id")
+  @@map("operation_audit")
+}
+
 model ClaimEvent {
-  id                 String         @id @default(uuid()) @db.VarChar(50)
-  eventNo            String         @unique @map("event_no") @db.VarChar(50)
-  insuredPersonId    String         @map("insured_person_id") @db.VarChar(50)
-  eventType          ClaimEventType @map("event_type")
-  occurredDate       DateTime       @map("occurred_date") @db.Date
-  administrativeArea String         @map("administrative_area") @db.VarChar(200)
-  detailedAddress    String?        @map("detailed_address") @db.VarChar(300)
-  hospitalName       String?        @map("hospital_name") @db.VarChar(150)
-  diagnosis          String?        @db.VarChar(300)
-  description        String         @db.Text
-  createdAt          DateTime       @default(now()) @map("created_at")
-  updatedAt          DateTime       @updatedAt @map("updated_at")
+  id                 String   @id @default(uuid()) @db.VarChar(50)
+  eventNo            String   @unique @map("event_no") @db.VarChar(50)
+  insuredPersonId    String   @map("insured_person_id") @db.VarChar(50)
+  eventType          String   @map("event_type") @db.VarChar(30)
+  occurredDate       DateTime @map("occurred_date") @db.Date
+  administrativeArea String   @map("administrative_area") @db.VarChar(200)
+  detailedAddress    String?  @map("detailed_address") @db.VarChar(300)
+  hospitalName       String?  @map("hospital_name") @db.VarChar(150)
+  diagnosis          String?  @db.VarChar(300)
+  description        String   @db.Text
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
 
   @@index([insuredPersonId, occurredDate], map: "idx_claim_event_person_date")
+  @@index([insuredPersonId, eventType, occurredDate], map: "idx_claim_event_person_type_date")
   @@index([eventType], map: "idx_claim_event_type")
   @@map("claim_event")
 }
@@ -372,71 +451,309 @@ model ClaimAttachment {
   @@map("claim_attachment")
 }
 
-model CalculationVariableDefinition {
-  id           Int      @id @default(autoincrement())
-  policyId     String   @map("policy_id") @db.VarChar(50)
-  category     String   @db.VarChar(30)
-  variableName String   @map("variable_name") @db.VarChar(100)
-  valueType    String   @map("value_type") @db.VarChar(30)
-  unit         String?  @db.VarChar(30)
-  timeRange    String?  @map("time_range") @db.VarChar(20)
-  responsibilityRange String? @map("responsibility_range") @db.VarChar(30)
-  baseName     String?  @map("base_name") @db.VarChar(100)
-  defaultValue String?  @map("default_value") @db.Text
-  description  String?  @db.Text
-  custom       Boolean  @default(true)
-  enabled      Boolean  @default(true)
+model ClaimAttachmentOcr {
+  id                       String       @id @default(uuid()) @db.VarChar(50)
+  uploadId                 String       @unique @map("upload_id") @db.VarChar(50)
+  status                   OcrJobStatus @default(queued)
+  documentType             String?      @map("document_type") @db.VarChar(30)
+  classificationConfidence Float?       @map("classification_confidence")
+  rawText                  String?      @map("raw_text") @db.Text
+  lines                    Json?
+  structuredData           Json?        @map("structured_data")
+  engine                   String?      @db.VarChar(50)
+  durationMs               Int?         @map("duration_ms")
+  pageCount                Int?         @map("page_count")
+  attempts                 Int          @default(0)
+  lastError                String?      @map("last_error") @db.Text
+  queuedAt                 DateTime     @default(now()) @map("queued_at")
+  startedAt                DateTime?    @map("started_at")
+  completedAt              DateTime?    @map("completed_at")
+  nextAttemptAt            DateTime     @default(now()) @map("next_attempt_at")
+  createdAt                DateTime     @default(now()) @map("created_at")
+  updatedAt                DateTime     @updatedAt @map("updated_at")
+
+  @@index([status, nextAttemptAt, queuedAt], map: "idx_claim_attachment_ocr_queue")
+  @@index([documentType], map: "idx_claim_attachment_ocr_document_type")
+  @@map("claim_attachment_ocr")
+}
+
+model ClaimCaseEventEntry {
+  id           String   @id @default(uuid()) @db.VarChar(50)
+  claimCaseId  String   @map("claim_case_id") @db.VarChar(50)
+  eventType    String   @map("event_type") @db.VarChar(30)
+  occurredDate DateTime @map("occurred_date") @db.Date
+  location     String?  @db.VarChar(300)
+  description  String   @db.Text
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  @@unique([policyId, variableName], map: "uk_calc_variable_policy_name")
-  @@index([policyId, category], map: "idx_calc_variable_policy_category")
-  @@map("calculation_variable_definition")
+  @@index([claimCaseId, occurredDate], map: "idx_claim_case_event_entry_case_date")
+  @@map("claim_case_event_entry")
+}
+
+model ClaimCaseDiseaseEntry {
+  id            String   @id @default(uuid()) @db.VarChar(50)
+  claimCaseId   String   @map("claim_case_id") @db.VarChar(50)
+  diseaseName   String   @map("disease_name") @db.VarChar(200)
+  icdCode       String?  @map("icd_code") @db.VarChar(50)
+  diagnosisDate DateTime @map("diagnosis_date") @db.Date
+  hospital      String   @db.VarChar(200)
+  note          String?  @db.Text
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@index([claimCaseId, diagnosisDate], map: "idx_claim_case_disease_entry_case_date")
+  @@map("claim_case_disease_entry")
+}
+
+model SystemDictionary {
+  id             Int      @id @default(autoincrement())
+  dictionaryType String   @map("dictionary_type") @db.VarChar(60)
+  typeName       String   @map("type_name") @db.VarChar(100)
+  itemCode       String   @map("item_code") @db.VarChar(30)
+  itemName       String   @map("item_name") @db.VarChar(150)
+  sequenceNo     Int      @default(0) @map("sequence_no")
+  enabled        Boolean  @default(true)
+  description    String?  @db.Text
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([dictionaryType, itemCode], map: "uk_system_dictionary_type_code")
+  @@index([dictionaryType, enabled, sequenceNo], map: "idx_system_dictionary_type_enabled_sequence")
+  @@map("system_dictionary")
+}
+
+model CalculationParameterCatalog {
+  id             Int      @id @default(autoincrement())
+  parameterCode  String   @unique @default(dbgenerated()) @map("parameter_code") @db.VarChar(6)
+  policyId       String?  @map("policy_id") @db.VarChar(50)
+  category       String   @db.VarChar(30)
+  parameterName  String   @map("parameter_name") @db.VarChar(100)
+  valueType      String   @map("value_type") @db.VarChar(30)
+  unit           String?  @db.VarChar(30)
+  dictionaryType String?  @map("dictionary_type") @db.VarChar(60)
+  defaultValue   String?  @map("default_value") @db.Text
+  custom         Boolean  @default(false)
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([policyId, category, parameterName], map: "idx_calculation_parameter_catalog_policy_category")
+  @@index([dictionaryType], map: "idx_calculation_parameter_catalog_dictionary_type")
+  @@map("calculation_parameter_catalog")
+}
+
+model CalculationLedgerParameterCatalog {
+  id                  Int      @id @default(autoincrement())
+  parameterCode       String   @unique @default(dbgenerated()) @map("parameter_code") @db.VarChar(6)
+  policyId            String?  @map("policy_id") @db.VarChar(50)
+  parameterName       String   @map("parameter_name") @db.VarChar(100)
+  valueType           String   @map("value_type") @db.VarChar(30)
+  unit                String?  @db.VarChar(30)
+  timeRange           String   @map("time_range") @db.VarChar(20)
+  responsibilityRange String   @map("responsibility_range") @db.VarChar(30)
+  defaultValue        String?  @map("default_value") @db.Text
+  custom              Boolean  @default(false)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@index([policyId, parameterName], map: "idx_calculation_ledger_parameter_catalog_policy")
+  @@map("calculation_ledger_parameter_catalog")
 }
 
 model BenefitCalculationFormula {
-  id              Int      @id @default(autoincrement())
-  policyId        String   @map("policy_id") @db.VarChar(50)
-  benefitId       String   @unique @map("benefit_id") @db.VarChar(50)
-  formulaName     String   @map("formula_name") @db.VarChar(150)
-  matchExpression String?  @map("match_expression") @db.Text
-  steps           Json
-  enabled         Boolean  @default(true)
-  createdAt       DateTime @default(now()) @map("created_at")
-  updatedAt       DateTime @updatedAt @map("updated_at")
+  id                Int      @id @default(autoincrement())
+  policyId          String   @map("policy_id") @db.VarChar(50)
+  benefitId         String   @unique @map("benefit_id") @db.VarChar(50)
+  formulaName       String   @map("formula_name") @db.VarChar(150)
+  matchExpression   String?  @map("match_expression") @db.Text
+  steps             Json
+  enabled           Boolean  @default(true)
+  standardFormulaId Int?     @map("standard_formula_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  standardFormula StandardCalculationFormula? @relation(fields: [standardFormulaId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([policyId], map: "idx_benefit_formula_policy")
+  @@index([standardFormulaId], map: "idx_benefit_formula_standard")
   @@map("benefit_calculation_formula")
 }
 
+model StandardCalculationFormula {
+  id              Int      @id @default(autoincrement())
+  formulaCode     String   @unique @default(dbgenerated()) @map("formula_code") @db.VarChar(20)
+  formulaName     String   @map("formula_name") @db.VarChar(150)
+  matchExpression String   @map("match_expression") @db.Text
+  steps           Json
+  tags            String[] @default([])
+  sourcePolicyId  String?  @map("source_policy_id") @db.VarChar(50)
+  sourceBenefitId String?  @map("source_benefit_id") @db.VarChar(50)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  referencedFormulas BenefitCalculationFormula[]
+
+  @@index([createdAt], map: "idx_standard_formula_created")
+  @@map("standard_calculation_formula")
+}
+
 model ClaimBill {
-  id                 String   @id @default(uuid()) @db.VarChar(50)
-  claimCaseId        String   @map("claim_case_id") @db.VarChar(50)
-  billData           Json     @map("bill_data")
-  customValues       Json     @map("custom_values")
-  selectedBenefitIds Json     @map("selected_benefit_ids")
-  createdAt          DateTime @default(now()) @map("created_at")
-  updatedAt          DateTime @updatedAt @map("updated_at")
+  id                   String    @id @default(uuid()) @db.VarChar(50)
+  claimCaseId          String    @map("claim_case_id") @db.VarChar(50)
+  invoiceCode          String    @default("") @map("invoice_code") @db.VarChar(50)
+  invoiceNo            String    @default("") @map("invoice_no") @db.VarChar(100)
+  checkCode            String    @default("") @map("check_code") @db.VarChar(100)
+  billType             String    @default("") @map("bill_type") @db.VarChar(50)
+  patientName          String    @default("") @map("patient_name") @db.VarChar(100)
+  patientIdNo          String    @default("") @map("patient_id_no") @db.VarChar(50)
+  visitNo              String    @default("") @map("visit_no") @db.VarChar(100)
+  institution          String    @default("") @db.VarChar(200)
+  department           String    @default("") @db.VarChar(100)
+  billDate             DateTime  @map("bill_date") @db.Date
+  admissionDate        DateTime? @map("admission_date") @db.Date
+  dischargeDate        DateTime? @map("discharge_date") @db.Date
+  diagnosis            String    @default("") @db.Text
+  medicalInsuranceType String    @default("") @map("medical_insurance_type") @db.VarChar(50)
+  settlementNo         String    @default("") @map("settlement_no") @db.VarChar(100)
+  totalAmount          Decimal   @default(0) @map("total_amount") @db.Decimal(18, 2)
+  cashier              String    @default("") @db.VarChar(100)
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt @map("updated_at")
 
   @@index([claimCaseId], map: "idx_claim_bill_case")
+  @@index([invoiceNo], map: "idx_claim_bill_invoice_no")
   @@map("claim_bill")
 }
 
+model ClaimBillAmount {
+  id          Int      @id @default(autoincrement())
+  billId      String   @map("bill_id") @db.VarChar(50)
+  amountName  String   @map("amount_name") @db.VarChar(100)
+  amountValue Decimal  @default(0) @map("amount_value") @db.Decimal(18, 2)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([billId, amountName], map: "uk_claim_bill_amount")
+  @@index([billId], map: "idx_claim_bill_amount_bill")
+  @@map("claim_bill_amount")
+}
+
+model ClaimBillCustomValue {
+  id                 Int       @id @default(autoincrement())
+  billId             String    @map("bill_id") @db.VarChar(50)
+  parameterCatalogId Int?      @map("parameter_catalog_id")
+  variableName       String    @map("variable_name") @db.VarChar(100)
+  valueType          String    @map("value_type") @db.VarChar(30)
+  valueText          String?   @map("value_text") @db.Text
+  valueNumber        Decimal?  @map("value_number") @db.Decimal(18, 4)
+  valueBoolean       Boolean?  @map("value_boolean")
+  valueDate          DateTime? @map("value_date") @db.Date
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@unique([billId, variableName], map: "uk_claim_bill_custom_value")
+  @@index([billId], map: "idx_claim_bill_custom_value_bill")
+  @@index([parameterCatalogId], map: "idx_claim_bill_custom_value_catalog")
+  @@map("claim_bill_custom_value")
+}
+
+model ClaimBillBenefit {
+  id        Int      @id @default(autoincrement())
+  billId    String   @map("bill_id") @db.VarChar(50)
+  benefitId String   @map("benefit_id") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([billId, benefitId], map: "uk_claim_bill_benefit")
+  @@index([billId], map: "idx_claim_bill_benefit_bill")
+  @@index([benefitId], map: "idx_claim_bill_benefit_benefit")
+  @@map("claim_bill_benefit")
+}
+
+model ClaimBillAttachment {
+  id        Int      @id @default(autoincrement())
+  billId    String   @map("bill_id") @db.VarChar(50)
+  uploadId  String   @map("upload_id") @db.VarChar(50)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([billId, uploadId], map: "uk_claim_bill_attachment")
+  @@index([billId], map: "idx_claim_bill_attachment_bill")
+  @@index([uploadId], map: "idx_claim_bill_attachment_upload")
+  @@map("claim_bill_attachment")
+}
+
 model ClaimCalculationRun {
-  id           String    @id @default(uuid()) @db.VarChar(50)
-  claimCaseId  String    @map("claim_case_id") @db.VarChar(50)
-  runNo        String    @unique @map("run_no") @db.VarChar(50)
-  status       String    @db.VarChar(30)
-  totalAmount  Decimal   @map("total_amount") @db.Decimal(18, 2)
-  resultData   Json      @map("result_data")
-  committedAt  DateTime? @map("committed_at")
-  createdAt    DateTime  @default(now()) @map("created_at")
+  id          String    @id @default(uuid()) @db.VarChar(50)
+  claimCaseId String    @map("claim_case_id") @db.VarChar(50)
+  runNo       String    @unique @map("run_no") @db.VarChar(50)
+  status      String    @db.VarChar(30)
+  totalAmount Decimal   @map("total_amount") @db.Decimal(18, 2)
+  resultData  Json      @map("result_data")
+  committedAt DateTime? @map("committed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
 
   @@index([claimCaseId, createdAt], map: "idx_calc_run_case_created")
   @@map("claim_calculation_run")
 }
 
-model ClaimLedgerBalance {
+model ClaimCaseCalculationResult {
+  id                        String   @id @default(uuid()) @db.VarChar(50)
+  claimCaseId               String   @map("claim_case_id") @db.VarChar(50)
+  runNo                     String   @unique @map("run_no") @db.VarChar(50)
+  policyId                  String   @map("policy_id") @db.VarChar(50)
+  insuredPersonId           String   @map("insured_person_id") @db.VarChar(50)
+  totalAmount               Decimal  @map("total_amount") @db.Decimal(18, 2)
+  billCount                 Int      @map("bill_count")
+  responsibilityResultCount Int      @map("responsibility_result_count")
+  createdAt                 DateTime @default(now()) @map("created_at")
+
+  @@index([claimCaseId, createdAt], map: "idx_case_calc_result_case_created")
+  @@map("claim_case_calculation_result")
+}
+
+model ClaimBillBenefitCalculationResult {
+  id                         String   @id @default(uuid()) @db.VarChar(50)
+  calculationResultId        String   @map("calculation_result_id") @db.VarChar(50)
+  claimCaseId                String   @map("claim_case_id") @db.VarChar(50)
+  billId                     String   @map("bill_id") @db.VarChar(50)
+  invoiceNo                  String   @map("invoice_no") @db.VarChar(100)
+  benefitId                  String   @map("benefit_id") @db.VarChar(50)
+  benefitCode                String   @map("benefit_code") @db.VarChar(50)
+  benefitName                String   @map("benefit_name") @db.VarChar(200)
+  formulaName                String   @map("formula_name") @db.VarChar(200)
+  sequenceNo                 Int      @map("sequence_no")
+  matched                    Boolean
+  matchExpression            String   @map("match_expression") @db.Text
+  substitutedMatchExpression String   @map("substituted_match_expression") @db.Text
+  amount                     Decimal  @db.Decimal(18, 2)
+  createdAt                  DateTime @default(now()) @map("created_at")
+
+  @@unique([calculationResultId, billId, benefitId], map: "uk_bill_benefit_calc_result")
+  @@index([claimCaseId, billId], map: "idx_bill_benefit_calc_case_bill")
+  @@index([calculationResultId, sequenceNo], map: "idx_bill_benefit_calc_result_sequence")
+  @@map("claim_bill_benefit_calculation_result")
+}
+
+model ClaimCalculationProcess {
+  id                    String   @id @default(uuid()) @db.VarChar(50)
+  billBenefitResultId   String   @map("bill_benefit_result_id") @db.VarChar(50)
+  stepId                String   @map("step_id") @db.VarChar(50)
+  stepName              String   @map("step_name") @db.VarChar(200)
+  sequenceNo            Int      @map("sequence_no")
+  expression            String   @db.Text
+  substitutedExpression String   @map("substituted_expression") @db.Text
+  resultFlag            Boolean  @default(false) @map("result_flag")
+  resultValue           Json     @map("result_value")
+  ledgerTargetCode      String?  @map("ledger_target_code") @db.VarChar(80)
+  ledgerTargetName      String?  @map("ledger_target_name") @db.VarChar(100)
+  ledgerOpeningAmount   Decimal? @map("ledger_opening_amount") @db.Decimal(18, 2)
+  ledgerClosingAmount   Decimal? @map("ledger_closing_amount") @db.Decimal(18, 2)
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([billBenefitResultId, sequenceNo], map: "idx_calc_process_result_sequence")
+  @@map("claim_calculation_process")
+}
+
+model ClaimLedgerCurrentValue {
   id              String   @id @default(uuid()) @db.VarChar(50)
   policyId        String   @map("policy_id") @db.VarChar(50)
   insuredPersonId String   @map("insured_person_id") @db.VarChar(50)
@@ -444,34 +761,34 @@ model ClaimLedgerBalance {
   ledgerCode      String   @map("ledger_code") @db.VarChar(80)
   ledgerName      String   @map("ledger_name") @db.VarChar(100)
   periodYear      Int      @map("period_year")
-  usedAmount      Decimal  @default(0) @map("used_amount") @db.Decimal(18, 2)
+  currentAmount   Decimal  @default(0) @map("current_amount") @db.Decimal(18, 2)
   updatedAt       DateTime @updatedAt @map("updated_at")
   createdAt       DateTime @default(now()) @map("created_at")
 
-  @@unique([policyId, insuredPersonId, benefitId, ledgerCode, periodYear], map: "uk_claim_ledger_balance")
-  @@index([insuredPersonId, periodYear], map: "idx_claim_ledger_person_year")
-  @@map("claim_ledger_balance")
+  @@unique([policyId, insuredPersonId, benefitId, ledgerCode, periodYear], map: "uk_claim_ledger_current_value")
+  @@index([insuredPersonId, periodYear], map: "idx_claim_ledger_current_person_year")
+  @@map("claim_ledger_current_value")
 }
 
-model ClaimLedgerEntry {
-  id              String   @id @default(uuid()) @db.VarChar(50)
-  calculationRunId String  @map("calculation_run_id") @db.VarChar(50)
-  claimCaseId     String   @map("claim_case_id") @db.VarChar(50)
-  billId          String?  @map("bill_id") @db.VarChar(50)
-  policyId        String   @map("policy_id") @db.VarChar(50)
-  insuredPersonId String   @map("insured_person_id") @db.VarChar(50)
-  benefitId       String   @map("benefit_id") @db.VarChar(50)
-  ledgerCode      String   @map("ledger_code") @db.VarChar(80)
-  ledgerName      String   @map("ledger_name") @db.VarChar(100)
-  periodYear      Int      @map("period_year")
-  openingAmount   Decimal  @map("opening_amount") @db.Decimal(18, 2)
-  changeAmount    Decimal  @map("change_amount") @db.Decimal(18, 2)
-  closingAmount   Decimal  @map("closing_amount") @db.Decimal(18, 2)
-  createdAt       DateTime @default(now()) @map("created_at")
+model ClaimLedgerAccumulationRecord {
+  id                  String   @id @default(uuid()) @db.VarChar(50)
+  calculationResultId String   @map("calculation_result_id") @db.VarChar(50)
+  claimCaseId         String   @map("claim_case_id") @db.VarChar(50)
+  billId              String?  @map("bill_id") @db.VarChar(50)
+  policyId            String   @map("policy_id") @db.VarChar(50)
+  insuredPersonId     String   @map("insured_person_id") @db.VarChar(50)
+  benefitId           String   @map("benefit_id") @db.VarChar(50)
+  ledgerCode          String   @map("ledger_code") @db.VarChar(80)
+  ledgerName          String   @map("ledger_name") @db.VarChar(100)
+  periodYear          Int      @map("period_year")
+  beforeAmount        Decimal  @map("before_amount") @db.Decimal(18, 2)
+  accumulatedAmount   Decimal  @map("accumulated_amount") @db.Decimal(18, 2)
+  afterAmount         Decimal  @map("after_amount") @db.Decimal(18, 2)
+  createdAt           DateTime @default(now()) @map("created_at")
 
-  @@index([claimCaseId], map: "idx_claim_ledger_entry_case")
-  @@index([insuredPersonId, benefitId, periodYear], map: "idx_claim_ledger_entry_person_benefit")
-  @@map("claim_ledger_entry")
+  @@index([claimCaseId], map: "idx_claim_ledger_accumulation_case")
+  @@index([insuredPersonId, benefitId, periodYear], map: "idx_claim_ledger_accumulation_person_benefit")
+  @@map("claim_ledger_accumulation_record")
 }
 
 model IdempotencyRecord {
@@ -487,4 +804,20 @@ model IdempotencyRecord {
   @@unique([scope, operationKey], map: "uk_idempotency_scope_operation_key")
   @@index([createdAt], map: "idx_idempotency_created_at")
   @@map("idempotency_record")
+}
+
+model AssistantMemoryTurn {
+  id             String   @id @default(uuid()) @db.VarChar(50)
+  taskId         String   @unique @map("task_id") @db.VarChar(50)
+  userId         String   @map("user_id") @db.VarChar(100)
+  username       String   @db.VarChar(100)
+  userText       String   @map("user_text") @db.Text
+  assistantReply String   @map("assistant_reply") @db.Text
+  recognized     Json
+  toolCalls      Json     @map("tool_calls")
+  pagePath       Json     @map("page_path")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([userId, createdAt], map: "idx_assistant_memory_user_created")
+  @@map("assistant_memory_turn")
 }

@@ -1,18 +1,39 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { formatToolCall, type AssistantPlan, type AssistantToolCall } from "../src/assistant/policy-query-assistant";
+import { isAssistantOperationError, summarizeAssistantToolResults, type AssistantToolExecutionRecord } from "../src/assistant/tool-execution-result";
+import { applyRuntimePageCapabilities, type RuntimePageCapabilities } from "../src/assistant/runtime-page-capabilities";
 import type { RegisteredPageController } from "../src/assistant/page-controller";
 import type { PageRegistration, RegisteredRegion } from "../src/assistant/page-registry";
 import { apiFetch } from "../src/api/client";
-import type { CoveragePlan, PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem, PolicyProductView } from "../src/underwriting/types";
+import type { PageResult, PolicyDetailView, PolicyInsuredView, PolicyListItem } from "../src/underwriting/types";
 import CalculationConfigPage from "./components/CalculationConfigPage";
+import StandardFormulaManagementPage from "./components/StandardFormulaManagementPage";
 import ClaimEntryCalculationPage from "./components/ClaimEntryCalculationPage";
 import ClaimQueryPage from "./components/ClaimQueryPage";
 import ClaimRegistrationPage from "./components/ClaimRegistrationPage";
+import { APP_ROLE_LABELS, useAuth, type AppRole } from "./auth/AuthProvider";
+import AuditLogPage from "./components/AuditLogPage";
+import { BasicView, BenefitsView, delay, formatPolicyStatus, INSURED_PAGE_SIZE, InsuredsView, Pagination, throwIfAssistantAborted } from "./components/PolicyWorkspaceViews";
 
-type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "calculation_config";
+type MainTab = "policy" | "claim" | "claim_registration" | "claim_entry_calculation" | "claim_review_completion" | "calculation_config" | "standard_formulas" | "audit_logs";
 type DrawerTab = "basic" | "benefits" | "insureds";
+type InsuredPolicyLedgerItem = {
+  id: string;
+  scope: string;
+  targetCode: string;
+  targetName: string;
+  ledgerCode: string;
+  ledgerName: string;
+  periodYear: number;
+  currentAmount: number;
+  updatedAt: string;
+};
+type InsuredPolicyLedgerData = {
+  insuredPerson: { id: string; insuredNo: string; name: string; idNo?: string | null };
+  items: InsuredPolicyLedgerItem[];
+};
 type LlmProvider = "ollama" | "deepseek";
 type PolicyFilters = {
   policyNo: string;
@@ -28,30 +49,68 @@ type AssistantMessage = {
   source?: string;
   systemNote?: string;
   steps?: string[];
+  variant?: "tool-results" | "reasoning";
+  thought?: string;
+  actionExplanation?: string;
 };
 type AssistantContinuationContext = {
-  currentPagePath?: string[];
   currentPageRegistry?: unknown;
   history?: Array<{ toolCalls: AssistantToolCall[] }>;
   lastOperationResult?: unknown;
   backendToolResults?: unknown[];
+  currentPlanStep?: number;
+};
+type AssistantVisiblePlan = {
+  steps: string[];
+  currentStep: number;
+  completed: boolean;
+};
+type AssistantTaskIntent = {
+  mode: "read" | "write" | "mixed" | "navigate" | "explain" | "unknown";
+  summary: string;
+  objectives: string[];
+};
+const ASSISTANT_INTENT_LABELS: Record<AssistantTaskIntent["mode"], string> = {
+  read: "只读查询",
+  write: "数据变更",
+  mixed: "查询与变更",
+  navigate: "页面导航",
+  explain: "解释说明",
+  unknown: "待确认",
 };
 type AssistantTaskResponse = {
   taskId: string;
   status: "running" | "waiting_page" | "waiting_user" | "completed" | "cancelled";
   plan: AssistantPlan | null;
+  taskPlan: string[];
+  taskIntent: AssistantTaskIntent;
   context?: AssistantContinuationContext;
   question?: string;
   requestedFields?: string[];
 };
+type AssistantMemoryTurn = {
+  taskId: string;
+  userText: string;
+  assistantReply: string;
+  recognized: string[];
+  toolCalls: string[];
+  pagePath: string[];
+  createdAt: string;
+};
 
 const POLICY_PAGE_SIZE = 10;
-const INSURED_PAGE_SIZE = 10;
 const ASSISTANT_POLICY_CONTEXT_LIMIT = 5;
 const ASSISTANT_LIST_CONTEXT_LIMIT = 5;
 const MAX_ASSISTANT_HISTORY_ROUNDS = 8;
 const MAX_ASSISTANT_BACKEND_RESULTS = 4;
+const MAX_ASSISTANT_PAGE_RESUMES = 16;
+const MAX_IDENTICAL_TOOL_PLANS = 2;
 const LLM_PROVIDER_STORAGE_KEY = "health-agent-llm-provider";
+const ASSISTANT_WELCOME_MESSAGE: AssistantMessage = {
+  id: "assistant-welcome",
+  role: "assistant",
+  content: "你好，我是智能助手。你可以直接说：查张三有哪些保单、查华曜科技的保单、查停用保单。",
+};
 const llmProviderOptions: Array<{ value: LlmProvider; label: string }> = [
   { value: "ollama", label: "本地模型" },
   { value: "deepseek", label: "DeepSeek" },
@@ -70,11 +129,20 @@ const policyStatusOptions = [
   { value: "disabled", label: "停用" },
 ] as const;
 
+function userInitials(displayName: string) {
+  const normalized = displayName.trim();
+  if (!normalized) return "U";
+  return [...normalized].slice(-2).join("").toUpperCase();
+}
+
 function pageIdToMainTab(pageId: string): MainTab | null {
   if (pageId === "policy_query" || pageId === "policy_detail") return "policy";
   if (pageId === "claim_query") return "claim";
   if (pageId === "claim_registration") return "claim_registration";
+  if (pageId === "claim_entry_calculation") return "claim_entry_calculation";
+  if (pageId === "claim_review_completion") return "claim_review_completion";
   if (pageId === "calculation_config") return "calculation_config";
+  if (pageId === "standard_formula_management") return "standard_formulas";
   return null;
 }
 
@@ -129,388 +197,17 @@ function buildInsuredListContext(
   };
 }
 
-function formatPolicyStatus(value?: string) {
-  if (value === "enabled") return "启用";
-  if (value === "disabled") return "停用";
-  if (value === "active") return "启用";
-  if (value === "inactive") return "停用";
-  return value ?? "-";
-}
-
-function formatDateRange(start: string, end: string) {
-  return `${start} ~ ${end}`;
-}
-
-function formatGender(value?: string) {
-  if (value === "male") return "男";
-  if (value === "female") return "女";
-  return "-";
-}
-
-function formatInsuredRole(value?: string) {
-  if (value === "employee") return "员工";
-  if (value === "spouse") return "配偶";
-  if (value === "child") return "子女";
-  if (value === "parent") return "父母";
-  return "-";
-}
-
-function delay(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function throwIfAssistantAborted(signal?: AbortSignal) {
-  if (signal?.aborted) throw new DOMException("assistant_execution_aborted", "AbortError");
-}
-
-function Pagination({
-  currentPage,
-  totalPages,
-  total,
-  onChange,
-}: {
-  currentPage: number;
-  totalPages: number;
-  total: number;
-  onChange: (page: number) => void;
-}) {
-  const pageItems = useMemo(() => {
-    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
-    const pages = [1, currentPage - 1, currentPage, currentPage + 1, totalPages]
-      .filter((page) => page >= 1 && page <= totalPages)
-      .sort((a, b) => a - b)
-      .filter((page, index, values) => index === 0 || page !== values[index - 1]);
-    return pages.flatMap((page, index) => {
-      const previous = pages[index - 1];
-      return index > 0 && page - previous > 1 ? ["ellipsis" as const, page] : [page];
-    });
-  }, [currentPage, totalPages]);
-
-  return (
-    <div className="pagination">
-      <span className="pagination-info">
-        第 {currentPage} / {totalPages} 页，共 {total} 条
-      </span>
-      <button className="page-btn" disabled={currentPage === 1} onClick={() => onChange(currentPage - 1)}>
-        上一页
-      </button>
-      {pageItems.map((page, index) => page === "ellipsis" ? (
-        <span className="pagination-info" key={`ellipsis-${index}`}>…</span>
-      ) : (
-        <button
-          key={page}
-          className={`page-btn ${page === currentPage ? "active" : ""}`}
-          onClick={() => onChange(page)}
-        >
-          {page}
-        </button>
-      ))}
-      <button className="page-btn" disabled={currentPage === totalPages} onClick={() => onChange(currentPage + 1)}>
-        下一页
-      </button>
-    </div>
-  );
-}
-
-function BasicView({ data }: { data: PolicyDetailView }) {
-  const summary = [
-    { label: "保障计划数", value: data.coveragePlans.length },
-    { label: "险种数", value: data.products.length },
-    { label: "责任数", value: data.products.reduce((sum, item) => sum + item.benefits.length, 0) },
-    { label: "被保人数", value: data.insuredCount },
-  ];
-  const basic = [
-    { label: "保单号", value: data.policy.policyNo },
-    { label: "保单名称", value: data.policy.policyName },
-    { label: "投保单位", value: data.policy.applicantName },
-    { label: "投保人类型", value: data.policy.holderType === "company" ? "单位" : "团体" },
-    { label: "生效日期", value: data.policy.effectiveDate },
-    { label: "终止日期", value: data.policy.expiryDate },
-    { label: "承保日期", value: data.policy.underwritingDate },
-    { label: "总保费", value: data.policy.totalPremium ?? "-" },
-    { label: "保单状态", value: formatPolicyStatus(data.policy.policyStatus) },
-  ];
-
-  return (
-    <div className="grid two">
-      <section className="subpanel">
-        <h3>保单基本信息</h3>
-        <div className="kv-grid">
-          {basic.map((item) => (
-            <div className="kv-item" key={item.label}>
-              <span>{item.label}</span>
-              <strong>{item.value ?? "-"}</strong>
-            </div>
-          ))}
-        </div>
-      </section>
-      <section className="subpanel">
-        <h3>概览</h3>
-        <div className="summary-grid">
-          {summary.map((item) => (
-            <div className="summary-item" key={item.label}>
-              <span>{item.label}</span>
-              <strong>{item.value}</strong>
-            </div>
-          ))}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function BenefitsView({ plans, products }: { plans: CoveragePlan[]; products: PolicyProductView[] }) {
-  const [collapsedHierarchyKeys, setCollapsedHierarchyKeys] = useState<Set<string>>(() => new Set());
-  const benefits = products.flatMap((product) =>
-    product.benefits.map((benefit) => ({ product, benefit })),
-  );
-  const hierarchyRows = plans.flatMap((plan) => {
-    const planKey = `plan-${plan.id}`;
-    const planProducts = products.filter((product) => product.coveragePlanId === plan.id);
-    return [
-      {
-        key: planKey,
-        level: 0,
-        scope: "plan",
-        scopeLabel: "保障计划",
-        code: plan.planCode,
-        name: plan.planName,
-        ancestorKeys: [] as string[],
-        hasChildren: planProducts.length > 0,
-      },
-      ...planProducts.flatMap((product) => {
-        const productKey = `product-${product.id}`;
-        return [{
-          key: productKey,
-          level: 1,
-          scope: "product",
-          scopeLabel: "险种",
-          code: product.productCode,
-          name: product.productName,
-          ancestorKeys: [planKey],
-          hasChildren: product.benefits.length > 0,
-        },
-        ...product.benefits.map((benefit) => ({
-          key: `benefit-${benefit.id}`,
-          level: 2,
-          scope: "benefit",
-          scopeLabel: "责任",
-          code: benefit.benefitCode,
-          name: benefit.benefitName,
-          ancestorKeys: [planKey, productKey],
-          hasChildren: false,
-        }))];
-      }),
-    ];
-  });
-  const hierarchyIdentity = hierarchyRows.map((row) => row.key).join("|");
-  const visibleHierarchyRows = hierarchyRows.filter((row) =>
-    row.ancestorKeys.every((key) => !collapsedHierarchyKeys.has(key)),
-  );
-
-  useEffect(() => {
-    setCollapsedHierarchyKeys(new Set());
-  }, [hierarchyIdentity]);
-
-  function toggleHierarchyRow(key: string) {
-    setCollapsedHierarchyKeys((current) => {
-      const next = new Set(current);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }
-
-  return (
-    <>
-      <div className="panel-title-row">
-        <h3>保障计划、险种与责任</h3>
-        <span className="muted">{plans.length} 个保障计划，{products.length} 个险种，{benefits.length} 项责任</span>
-      </div>
-      <div className="detail-table-shell">
-        <div className="table-wrapper detail-table-wrapper benefits-table-wrapper config-hierarchy-table">
-          <table className="compact-table hierarchy-fixed-table benefits-hierarchy-table">
-            <thead>
-              <tr>
-                <th>层级</th>
-                <th>对象编码</th>
-                <th>对象名称</th>
-              </tr>
-            </thead>
-            <tbody>
-              {visibleHierarchyRows.map((row) => (
-                <tr key={row.key}>
-                  <td>
-                    <span className="config-tree-level" style={{ paddingLeft: `${row.level * 12}px` }}>
-                      {row.hasChildren ? (
-                        <button
-                          type="button"
-                          className="config-tree-toggle"
-                          aria-expanded={!collapsedHierarchyKeys.has(row.key)}
-                          aria-label={`${collapsedHierarchyKeys.has(row.key) ? "展开" : "收起"}${row.scopeLabel}${row.name}`}
-                          onClick={() => toggleHierarchyRow(row.key)}
-                        >
-                          {collapsedHierarchyKeys.has(row.key) ? "▸" : "▾"}
-                        </button>
-                      ) : <span className="config-tree-toggle-placeholder" aria-hidden="true" />}
-                      <span className={`config-level-badge ${row.scope}`}>{row.scopeLabel}</span>
-                    </span>
-                  </td>
-                  <td><code style={{ marginLeft: `${row.level * 12}px` }}>{row.code}</code></td>
-                  <td><span className="config-tree-name" style={{ paddingLeft: `${row.level * 18}px` }}>{row.name}</span></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function CoveragePlanSelect({
-  plans,
-  value,
-  onChange,
-}: {
-  plans: CoveragePlan[];
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selectRef = useRef<HTMLDivElement | null>(null);
-  const selectedPlan = plans.find((plan) => plan.id === value);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (selectRef.current && !selectRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
-  }, []);
-
-  return (
-    <div className="insured-plan-filter">
-      <span>保障计划</span>
-      <div className="custom-select" ref={selectRef}>
-        <button
-          type="button"
-          className="filter-control custom-select-trigger"
-          aria-label="保障计划筛选"
-          aria-expanded={open}
-          onClick={() => setOpen((current) => !current)}
-        >
-          <span>{selectedPlan ? `${selectedPlan.planCode} / ${selectedPlan.planName}` : "全部保障计划"}</span>
-          <span className="select-arrow">▾</span>
-        </button>
-        {open ? (
-          <div className="custom-select-menu">
-            <button
-              type="button"
-              className={`custom-select-option ${value === "" ? "active" : ""}`}
-              onClick={() => { onChange(""); setOpen(false); }}
-            >
-              全部保障计划
-            </button>
-            {plans.map((plan) => (
-              <button
-                type="button"
-                className={`custom-select-option ${value === plan.id ? "active" : ""}`}
-                key={plan.id}
-                onClick={() => { onChange(plan.id); setOpen(false); }}
-              >
-                {plan.planCode} / {plan.planName}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function InsuredsView({
-  insureds,
-  plans,
-  selectedPlanId,
-  total,
-  page,
-  setSelectedPlanId,
-  setPage,
-}: {
-  insureds: PolicyInsuredView[];
-  plans: CoveragePlan[];
-  selectedPlanId: string;
-  total: number;
-  page: number;
-  setSelectedPlanId: (planId: string) => void;
-  setPage: (page: number) => void;
-}) {
-  const totalPages = Math.max(1, Math.ceil(total / INSURED_PAGE_SIZE));
-
-  return (
-    <>
-      <div className="panel-title-row">
-        <h3>被保人清单</h3>
-        <div className="insured-list-tools">
-          <CoveragePlanSelect plans={plans} value={selectedPlanId} onChange={setSelectedPlanId} />
-          <span className="muted">{total} 人</span>
-        </div>
-      </div>
-      <div className="detail-table-shell">
-        <div className="table-wrapper detail-table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th className="index-col">序号</th>
-                <th>被保人编号</th>
-                <th>保障计划</th>
-                <th>姓名</th>
-                <th>性别</th>
-                <th>出生日期</th>
-                <th>手机号</th>
-                <th>证件号</th>
-                <th>被保角色</th>
-                <th>加入日期</th>
-                <th>保障期间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {insureds.length > 0 ? insureds.map((item, index) => (
-                <tr key={item.id}>
-                  <td>{(page - 1) * INSURED_PAGE_SIZE + index + 1}</td>
-                  <td>{item.insuredPerson.insuredNo}</td>
-                  <td className="insured-plan-cell">
-                    <code>{item.coveragePlan?.planCode ?? "-"}</code>
-                    <span>{item.coveragePlan?.planName ?? "未关联保障计划"}</span>
-                  </td>
-                  <td>{item.insuredPerson.name}</td>
-                  <td>{formatGender(item.insuredPerson.gender)}</td>
-                  <td>{item.insuredPerson.birthDate ?? "-"}</td>
-                  <td>{item.insuredPerson.phone ?? "-"}</td>
-                  <td>{item.insuredPerson.idNo ?? "-"}</td>
-                  <td>{formatInsuredRole(item.insuredRole)}</td>
-                  <td>{item.joinDate ?? "-"}</td>
-                  <td>{formatDateRange(item.effectiveDate, item.expiryDate)}</td>
-                </tr>
-              )) : (
-                <tr><td className="config-empty-cell" colSpan={11}>该保障计划下没有被保人。</td></tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <Pagination currentPage={page} totalPages={totalPages} total={total} onChange={setPage} />
-      </div>
-    </>
-  );
-}
-
 export default function Page() {
+  const { user, hasAnyRole, logout } = useAuth();
   const [mainTab, setMainTab] = useState<MainTab>("policy");
   const [openTabs, setOpenTabs] = useState<MainTab[]>(["policy"]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [claimMenuOpen, setClaimMenuOpen] = useState(false);
   const [configMenuOpen, setConfigMenuOpen] = useState(false);
+  const [systemMenuOpen, setSystemMenuOpen] = useState(false);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const topNavRef = useRef<HTMLElement | null>(null);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
   const [filters, setFilters] = useState<PolicyFilters>(EMPTY_POLICY_FILTERS);
   const [policies, setPolicies] = useState<PolicyListItem[]>([]);
@@ -524,21 +221,23 @@ export default function Page() {
   const [insuredTotal, setInsuredTotal] = useState(0);
   const [insuredPage, setInsuredPage] = useState(1);
   const [insuredPlanId, setInsuredPlanId] = useState("");
+  const [insuredLedgerOpen, setInsuredLedgerOpen] = useState(false);
+  const [insuredLedgerLoading, setInsuredLedgerLoading] = useState(false);
+  const [insuredLedgerError, setInsuredLedgerError] = useState("");
+  const [insuredLedgerData, setInsuredLedgerData] = useState<InsuredPolicyLedgerData | null>(null);
   const [assistantOpen, setAssistantOpen] = useState(false);
   const [assistantInput, setAssistantInput] = useState("");
-  const [llmProvider, setLlmProvider] = useState<LlmProvider>("ollama");
+  const [llmProvider, setLlmProvider] = useState<LlmProvider>("deepseek");
   const [modelSelectOpen, setModelSelectOpen] = useState(false);
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantStopping, setAssistantStopping] = useState(false);
   const [assistantProgress, setAssistantProgress] = useState<string | null>(null);
-  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([
-    {
-      id: "assistant-welcome",
-      role: "assistant",
-      content:
-        "你好，我是智能助手。你可以直接说：查张三有哪些保单、查华曜科技的保单、查停用保单。",
-    },
-  ]);
+  const [assistantMessages, setAssistantMessages] = useState<AssistantMessage[]>([ASSISTANT_WELCOME_MESSAGE]);
+  const [assistantTaskPlan, setAssistantTaskPlan] = useState<AssistantVisiblePlan | null>(null);
+  const [assistantTaskIntent, setAssistantTaskIntent] = useState<AssistantTaskIntent | null>(null);
+  const [assistantPlanExpanded, setAssistantPlanExpanded] = useState(false);
+  const [assistantMemoryLoading, setAssistantMemoryLoading] = useState(false);
+  const [assistantMemoryClearing, setAssistantMemoryClearing] = useState(false);
   const [assistantRecognized, setAssistantRecognized] = useState<string[]>([]);
   const [assistantPendingTask, setAssistantPendingTask] = useState<{
     taskId: string;
@@ -553,10 +252,44 @@ export default function Page() {
   const drawerDataRef = useRef<PolicyDetailView | null>(null);
   const insuredPlanIdRef = useRef("");
   const calculationConfigControllerRef = useRef<RegisteredPageController | null>(null);
+  const standardFormulaControllerRef = useRef<RegisteredPageController | null>(null);
   const claimQueryControllerRef = useRef<RegisteredPageController | null>(null);
   const claimRegistrationControllerRef = useRef<RegisteredPageController | null>(null);
+  const claimEntryCalculationControllerRef = useRef<RegisteredPageController | null>(null);
+  const claimReviewCompletionControllerRef = useRef<RegisteredPageController | null>(null);
   const assistantAbortControllerRef = useRef<AbortController | null>(null);
   const assistantTaskIdRef = useRef<string | null>(null);
+  const assistantPageRegistryCacheRef = useRef(new Map<string, unknown>());
+
+  function getRegisteredPageController(pageId: string) {
+    if (pageId === "calculation_config") return calculationConfigControllerRef.current;
+    if (pageId === "standard_formula_management") return standardFormulaControllerRef.current;
+    if (pageId === "claim_query") return claimQueryControllerRef.current;
+    if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
+    if (pageId === "claim_entry_calculation") return claimEntryCalculationControllerRef.current;
+    if (pageId === "claim_review_completion") return claimReviewCompletionControllerRef.current;
+    return null;
+  }
+
+  function runtimeCapabilitiesFor(pageId: string) {
+    if (pageId === "policy_query") {
+      return {
+        availableActionIds: policiesRef.current.length
+          ? ["search", "reset", "view_detail", "view_benefits", "view_insureds"]
+          : ["search", "reset"],
+        availableFieldIds: Object.keys(EMPTY_POLICY_FILTERS),
+      } satisfies RuntimePageCapabilities;
+    }
+    if (pageId === "policy_detail") {
+      return drawerDataRef.current
+        ? {
+            availableActionIds: ["view_detail", "view_benefits", "view_insureds"],
+            availableFieldIds: ["coveragePlanId"],
+          } satisfies RuntimePageCapabilities
+        : { availableActionIds: [], availableFieldIds: [] } satisfies RuntimePageCapabilities;
+    }
+    return getRegisteredPageController(pageId)?.getRuntimeCapabilities?.();
+  }
 
   function updateInsuredPlanId(value: string) {
     insuredPlanIdRef.current = value;
@@ -564,6 +297,17 @@ export default function Page() {
   }
 
   function openMainTab(tab: MainTab) {
+    const requiredRoles: Record<MainTab, AppRole[]> = {
+      policy: ["claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer"],
+      claim: ["claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer"],
+      claim_registration: ["claim_acceptor"],
+      claim_entry_calculation: ["claim_calculator"],
+      claim_review_completion: ["claim_reviewer"],
+      calculation_config: ["claim_admin"],
+      standard_formulas: ["claim_admin"],
+      audit_logs: ["claim_admin"],
+    };
+    if (!hasAnyRole(...requiredRoles[tab])) return;
     setOpenTabs((tabs) => (tabs.includes(tab) ? tabs : [...tabs, tab]));
     setMainTab(tab);
   }
@@ -592,6 +336,40 @@ export default function Page() {
   }, []);
 
   useEffect(() => {
+    const abortController = new AbortController();
+    setAssistantMemoryLoading(true);
+    void apiFetch("/api/assistant/memory?limit=20", { signal: abortController.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("assistant_memory_load_failed");
+        const payload = await response.json() as { turns?: AssistantMemoryTurn[] };
+        const historyMessages = (payload.turns ?? []).flatMap<AssistantMessage>((turn) => [
+          {
+            id: `memory-user-${turn.taskId}`,
+            role: "user",
+            content: turn.userText,
+          },
+          {
+            id: `memory-assistant-${turn.taskId}`,
+            role: "assistant",
+            content: turn.assistantReply,
+            source: "历史记忆",
+            steps: turn.toolCalls,
+          },
+        ]);
+        setAssistantMessages((current) => current.length === 1 && current[0]?.id === ASSISTANT_WELCOME_MESSAGE.id
+          ? [ASSISTANT_WELCOME_MESSAGE, ...historyMessages]
+          : current);
+      })
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === "AbortError")) {
+          console.warn("assistant memory load failed");
+        }
+      })
+      .finally(() => setAssistantMemoryLoading(false));
+    return () => abortController.abort();
+  }, [user.id]);
+
+  useEffect(() => {
     filtersRef.current = filters;
   }, [filters]);
 
@@ -603,15 +381,36 @@ export default function Page() {
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
+      if (topNavRef.current && !topNavRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+        setClaimMenuOpen(false);
+        setConfigMenuOpen(false);
+        setSystemMenuOpen(false);
+      }
       if (selectRef.current && !selectRef.current.contains(event.target as Node)) {
         setStatusOpen(false);
       }
       if (modelSelectRef.current && !modelSelectRef.current.contains(event.target as Node)) {
         setModelSelectOpen(false);
       }
+      if (userMenuRef.current && !userMenuRef.current.contains(event.target as Node)) {
+        setUserMenuOpen(false);
+      }
+    }
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setMenuOpen(false);
+      setClaimMenuOpen(false);
+      setConfigMenuOpen(false);
+      setSystemMenuOpen(false);
+      setUserMenuOpen(false);
     }
     document.addEventListener("click", handleClickOutside);
-    return () => document.removeEventListener("click", handleClickOutside);
+    document.addEventListener("keydown", handleEscape);
+    return () => {
+      document.removeEventListener("click", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
   }, []);
 
   async function loadPolicies(nextFilters: PolicyFilters, page = 1) {
@@ -648,6 +447,25 @@ export default function Page() {
     return data;
   }
 
+  async function openInsuredLedger(item: PolicyInsuredView) {
+    if (!drawerData) return;
+    setInsuredLedgerOpen(true);
+    setInsuredLedgerLoading(true);
+    setInsuredLedgerError("");
+    setInsuredLedgerData({ insuredPerson: item.insuredPerson, items: [] });
+    try {
+      const params = new URLSearchParams({ policyId: drawerData.policy.id, insuredPersonId: item.insuredPerson.id });
+      const response = await apiFetch(`/api/automatic-calculation/ledgers?${params.toString()}`, { cache: "no-store" });
+      const result = await response.json() as InsuredPolicyLedgerData & { message?: string };
+      if (!response.ok) throw new Error(result.message ?? "insured_ledger_load_failed");
+      setInsuredLedgerData(result);
+    } catch {
+      setInsuredLedgerError("台账加载失败，请稍后重试。");
+    } finally {
+      setInsuredLedgerLoading(false);
+    }
+  }
+
   async function openPolicyDrawer(policyId: string, tab: DrawerTab) {
     setActivePolicyId(policyId);
     setDrawerTab(tab);
@@ -665,8 +483,12 @@ export default function Page() {
   }
 
   async function loadAssistantPageRegistry(pageId: string, signal?: AbortSignal) {
+    if (assistantPageRegistryCacheRef.current.has(pageId)) {
+      return assistantPageRegistryCacheRef.current.get(pageId);
+    }
     const response = await apiFetch(`/api/assistant/registry?resource=page&view=compact&pageId=${encodeURIComponent(pageId)}`, { signal });
     const data = (await response.json()) as { page?: unknown };
+    assistantPageRegistryCacheRef.current.set(pageId, data.page);
     return data.page;
   }
 
@@ -687,15 +509,9 @@ export default function Page() {
     let currentPolicies = policiesRef.current;
     let executionTab = initialTab;
     let lastOperationResult: unknown = previousOperationResult;
+    const toolResults: AssistantToolExecutionRecord[] = [];
     let openedPageId: string | null = null;
     const steps: string[] = [];
-    const getRegisteredPageController = (pageId: string) => {
-      if (pageId === "calculation_config") return calculationConfigControllerRef.current;
-      if (pageId === "claim_query") return claimQueryControllerRef.current;
-      if (pageId === "claim_registration") return claimRegistrationControllerRef.current;
-      return null;
-    };
-
     const fieldExecutors: Record<string, (value: string) => Promise<unknown>> = {};
     (Object.keys(EMPTY_POLICY_FILTERS) as Array<keyof PolicyFilters>).forEach((fieldId) => {
       fieldExecutors[`policy_query.${fieldId}`] = async (value) => {
@@ -749,6 +565,9 @@ export default function Page() {
             policyNo: policy.policyNo,
             policyName: policy.policyName,
             applicantName: policy.applicantName,
+            policyStatus: policy.policyStatus,
+            effectiveDate: policy.effectiveDate,
+            expiryDate: policy.expiryDate,
             insuredCount: policy.insuredCount,
             matchedInsuredCount: matchedInsureds?.total ?? undefined,
             matchedInsureds: matchedInsureds?.items.map((item) => ({
@@ -780,6 +599,10 @@ export default function Page() {
           type: "detail_view",
           pageId: "policy_detail",
           actionId: "view_detail",
+          policyNo: detail.policy.policyNo,
+          policyStatus: detail.policy.policyStatus,
+          effectiveDate: detail.policy.effectiveDate,
+          expiryDate: detail.policy.expiryDate,
           coveragePlanCount: detail.coveragePlans.length,
           productCount: detail.products.length,
           insuredCount: detail.insuredCount,
@@ -817,6 +640,7 @@ export default function Page() {
       const actionOptions = operationNamespace
         ? { operationId: `${operationNamespace}:${toolIndex}` }
         : undefined;
+      try {
       // 页面动作有页面前置条件：即使 LLM 省略了 open_page，也不能在错误页面上执行。
       const requiredTab = toolCall.tool === "open_page" ? null : pageIdToMainTab(toolCall.args.pageId);
       if (requiredTab && (executionTab !== requiredTab || !executionOpenTabs.has(requiredTab))) {
@@ -853,11 +677,20 @@ export default function Page() {
         if (targetTab === "calculation_config") {
           await getRegisteredPageController("calculation_config")?.executeAction("reset");
         }
+        if (targetTab === "standard_formulas") {
+          await getRegisteredPageController("standard_formula_management")?.executeAction("reset");
+        }
         if (targetTab === "claim") {
           await getRegisteredPageController("claim_query")?.executeAction("reset");
         }
         if (targetTab === "claim_registration") {
           await getRegisteredPageController("claim_registration")?.executeAction("reset");
+        }
+        if (targetTab === "claim_entry_calculation") {
+          await getRegisteredPageController("claim_entry_calculation")?.executeAction("reset");
+        }
+        if (targetTab === "claim_review_completion") {
+          await getRegisteredPageController("claim_review_completion")?.executeAction("reset");
         }
 
         await delay(120);
@@ -867,6 +700,8 @@ export default function Page() {
         executionOpenTabs.add(targetTab);
         openedPageId = toolCall.args.pageId;
         if (targetTab === "policy") await loadPolicies({ ...EMPTY_POLICY_FILTERS });
+        lastOperationResult = { type: "page_opened", pageId: toolCall.args.pageId, success: true };
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
         continue;
       }
 
@@ -875,26 +710,32 @@ export default function Page() {
       if (toolCall.tool === "set_field") {
         const executor = fieldExecutors[`${toolCall.args.pageId}.${toolCall.args.fieldId}`];
         const controller = getRegisteredPageController(toolCall.args.pageId);
-        lastOperationResult = executor
+        const operationResult = executor
           ? await executor(toolCall.args.value)
           : controller
             ? await controller.setField(toolCall.args.fieldId, toolCall.args.value)
             : { type: "operation_error", reason: "field_executor_not_bound", pageId: toolCall.args.pageId, fieldId: toolCall.args.fieldId };
+        lastOperationResult = operationResult;
+        toolResults.push({ tool: formatToolCall(toolCall), result: operationResult });
         await delay(180);
         throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(operationResult)) break;
         continue;
       }
 
       if (toolCall.tool === "click_button") {
         const executor = pageActionExecutors[`${toolCall.args.pageId}.${toolCall.args.actionId}`];
         const controller = getRegisteredPageController(toolCall.args.pageId);
-        lastOperationResult = executor
+        const operationResult = executor
           ? await executor()
           : controller
             ? await controller.executeAction(toolCall.args.actionId, actionOptions)
             : { type: "operation_error", reason: "action_executor_not_bound", pageId: toolCall.args.pageId, actionId: toolCall.args.actionId };
+        lastOperationResult = operationResult;
+        toolResults.push({ tool: formatToolCall(toolCall), result: operationResult });
         await delay(220);
         throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(operationResult)) break;
         continue;
       }
 
@@ -902,8 +743,10 @@ export default function Page() {
         const controller = getRegisteredPageController(toolCall.args.pageId);
         if (controller) {
           lastOperationResult = await controller.executeRowAction(toolCall.args.actionId, toolCall.args.row, actionOptions);
+          toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
           await delay(220);
           throwIfAssistantAborted(signal);
+          if (isAssistantOperationError(lastOperationResult)) break;
           continue;
         }
         const selectedPolicy = currentPolicies[toolCall.args.row - 1];
@@ -916,24 +759,33 @@ export default function Page() {
           const targetTab = drawerTabMap[toolCall.args.actionId as keyof typeof drawerTabMap];
           if (!targetTab) {
             lastOperationResult = { type: "operation_error", reason: "row_action_executor_not_bound", actionId: toolCall.args.actionId };
-            continue;
+          } else {
+            const { detail, insuredResult } = await openPolicyDrawer(selectedPolicy.id, targetTab);
+            openedPageId = "policy_detail";
+            lastOperationResult = {
+              type: "open_policy_drawer",
+              policyId: selectedPolicy.id,
+              tab: toolCall.args.actionId,
+              policyNo: detail.policy.policyNo,
+              policyName: detail.policy.policyName,
+              coveragePlanCount: detail.coveragePlans.length,
+              coveragePlans: detail.coveragePlans.map((plan) => ({ id: plan.id, code: plan.planCode, name: plan.planName })),
+              insuredCount: detail.insuredCount,
+              listResult: insuredResult ? buildInsuredListContext(insuredResult) : undefined,
+            };
           }
-          const { detail, insuredResult } = await openPolicyDrawer(selectedPolicy.id, targetTab);
-          openedPageId = "policy_detail";
+        } else {
           lastOperationResult = {
-            type: "open_policy_drawer",
-            policyId: selectedPolicy.id,
-            tab: toolCall.args.actionId,
-            policyNo: detail.policy.policyNo,
-            policyName: detail.policy.policyName,
-            coveragePlanCount: detail.coveragePlans.length,
-            coveragePlans: detail.coveragePlans.map((plan) => ({ id: plan.id, code: plan.planCode, name: plan.planName })),
-            insuredCount: detail.insuredCount,
-            listResult: insuredResult ? buildInsuredListContext(insuredResult) : undefined,
+            type: "operation_error",
+            reason: "row_not_found",
+            pageId: toolCall.args.pageId,
+            row: toolCall.args.row,
           };
-          await delay(220);
-          throwIfAssistantAborted(signal);
         }
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
+        await delay(220);
+        throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(lastOperationResult)) break;
       }
 
       if (toolCall.tool === "click_list_item_action") {
@@ -987,8 +839,20 @@ export default function Page() {
             itemId: toolCall.args.itemId,
           };
         }
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
         await delay(220);
         throwIfAssistantAborted(signal);
+        if (isAssistantOperationError(lastOperationResult)) break;
+      }
+      } catch {
+        throwIfAssistantAborted(signal);
+        lastOperationResult = {
+          type: "operation_error",
+          reason: "tool_execution_failed",
+          tool: formatToolCall(toolCall),
+        };
+        toolResults.push({ tool: formatToolCall(toolCall), result: lastOperationResult });
+        break;
       }
     }
 
@@ -1005,8 +869,26 @@ export default function Page() {
       Object.entries(runtimeOptionProviders).map(([fieldKey, provider]) => [fieldKey, provider()]),
     ) satisfies RuntimeFieldOptions;
     Object.assign(runtimeFieldOptions, calculationConfigControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, standardFormulaControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimQueryControllerRef.current?.getRuntimeFieldOptions() ?? {});
     Object.assign(runtimeFieldOptions, claimRegistrationControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, claimEntryCalculationControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    Object.assign(runtimeFieldOptions, claimReviewCompletionControllerRef.current?.getRuntimeFieldOptions() ?? {});
+    const runtimePageCapabilities = Object.fromEntries(
+      [
+        "policy_query",
+        "policy_detail",
+        "calculation_config",
+        "standard_formula_management",
+        "claim_query",
+        "claim_registration",
+        "claim_entry_calculation",
+        "claim_review_completion",
+      ].flatMap((pageId) => {
+        const capabilities = runtimeCapabilitiesFor(pageId);
+        return capabilities ? [[pageId, capabilities] as const] : [];
+      }),
+    ) satisfies Record<string, RuntimePageCapabilities>;
 
     return {
       steps,
@@ -1014,9 +896,11 @@ export default function Page() {
       openTabs: executionOpenTabs,
       openedPageId,
       runtimeFieldOptions,
-      executionResult: lastOperationResult ?? {
+      runtimePageCapabilities,
+      toolResults,
+      executionResult: summarizeAssistantToolResults(toolResults, lastOperationResult ?? {
         executedActions: toolCalls.map(formatToolCall),
-      },
+      }),
     };
   }
 
@@ -1036,6 +920,11 @@ export default function Page() {
     });
     setAssistantInput("");
     setAssistantPendingTask(null);
+    if (!pendingTask) {
+      setAssistantTaskPlan(null);
+      setAssistantTaskIntent(null);
+      setAssistantPlanExpanded(false);
+    }
 
     setAssistantBusy(true);
     setAssistantStopping(false);
@@ -1044,14 +933,9 @@ export default function Page() {
     try {
       let currentPage: MainTab = mainTab;
       let currentOpenTabs = new Set(openTabs);
-      let currentPagePath = mainTab === "policy"
-        ? ["综合查询", "保单信息查询"]
-        : mainTab === "calculation_config"
-          ? ["理赔配置", "保单理算配置"]
-          : mainTab === "claim_registration"
-            ? ["理赔处理", "受理立案"]
-            : ["综合查询", "案件查询"];
-      let allSteps: string[] = [];
+      let displayedToolEventSequence = 0;
+      let previousToolPlanSignature = "";
+      let identicalToolPlanCount = 0;
       let lastExecutedPlan: AssistantPlan | null = null;
       let lastExecutionResult: {
         currentPage: string;
@@ -1063,9 +947,15 @@ export default function Page() {
         ? "policy_query"
         : mainTab === "calculation_config"
           ? "calculation_config"
+          : mainTab === "standard_formulas"
+            ? "standard_formula_management"
           : mainTab === "claim_registration"
             ? "claim_registration"
-            : "claim_query";
+            : mainTab === "claim_entry_calculation"
+              ? "claim_entry_calculation"
+              : mainTab === "claim_review_completion"
+                ? "claim_review_completion"
+                : "claim_query";
 
       async function parseTaskResponse(response: Response) {
         if (!response.ok) {
@@ -1075,6 +965,74 @@ export default function Page() {
           throw new Error(errorPayload?.detail ?? errorPayload?.message ?? "assistant_task_failed");
         }
         return response.json() as Promise<AssistantTaskResponse>;
+      }
+
+      function appendToolResults(lines: string[]) {
+        if (!lines.length) return;
+        displayedToolEventSequence += 1;
+        setAssistantMessages((current) => {
+          const last = current.at(-1);
+          if (last?.variant === "tool-results") {
+            return [
+              ...current.slice(0, -1),
+              { ...last, content: `${last.content}\n${lines.join("\n")}` },
+            ];
+          }
+          return [...current, {
+            id: `assistant-tool-result-${Date.now()}-${displayedToolEventSequence}`,
+            role: "assistant" as const,
+            content: lines.join("\n"),
+            source: "工具结果",
+            variant: "tool-results" as const,
+          }];
+        });
+      }
+
+      function showTaskToolResults(response: AssistantTaskResponse) {
+        const plan = response.plan;
+        if (!plan) return;
+        appendToolResults((plan.discoverySteps ?? []).map((step) => `✓ ${step}`));
+      }
+
+      function showPageToolResults(records: AssistantToolExecutionRecord[]) {
+        appendToolResults(records.map((record) => {
+          const failed = isAssistantOperationError(record.result);
+          const reason = failed && record.result && typeof record.result === "object"
+            ? String((record.result as { reason?: unknown }).reason ?? "unknown_error")
+            : "";
+          return `${failed ? "×" : "✓"} ${record.tool}${reason ? ` · ${reason}` : ""}`;
+        }));
+      }
+
+      function showModelReasoning(plan: AssistantPlan, taskPlanLength: number) {
+        if (!plan.thought && !plan.actionExplanation) return;
+        displayedToolEventSequence += 1;
+        setAssistantMessages((current) => [...current, {
+          id: `assistant-reasoning-${Date.now()}-${displayedToolEventSequence}`,
+          role: "assistant" as const,
+          content: taskPlanLength && plan.planStep ? `计划进度 ${plan.planStep}/${taskPlanLength}` : "本轮决策",
+          source: "模型过程",
+          variant: "reasoning" as const,
+          thought: plan.thought,
+          actionExplanation: plan.actionExplanation,
+        }]);
+      }
+
+      function syncTaskPlan(response: AssistantTaskResponse) {
+        setAssistantTaskIntent(response.taskIntent ?? null);
+        if (!response.taskPlan.length) {
+          setAssistantTaskPlan(null);
+          return;
+        }
+        const currentStep = Math.min(
+          response.taskPlan.length,
+          Math.max(1, response.plan?.planStep ?? response.context?.currentPlanStep ?? 1),
+        );
+        setAssistantTaskPlan({
+          steps: response.taskPlan,
+          currentStep: response.status === "completed" ? response.taskPlan.length : currentStep,
+          completed: response.status === "completed",
+        });
       }
 
       let task: AssistantTaskResponse;
@@ -1089,7 +1047,11 @@ export default function Page() {
       } else {
         const taskId = crypto.randomUUID();
         assistantTaskIdRef.current = taskId;
-        const initialRegistry = await loadAssistantPageRegistry(initialPageId, abortController.signal);
+        const loadedInitialRegistry = await loadAssistantPageRegistry(initialPageId, abortController.signal);
+        const initialRegistry = applyRuntimePageCapabilities(
+          loadedInitialRegistry,
+          runtimeCapabilitiesFor(initialPageId),
+        );
         task = await parseTaskResponse(await apiFetch("/api/assistant/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1098,7 +1060,6 @@ export default function Page() {
             text,
             provider: selectedProvider,
             context: {
-              currentPagePath,
               currentPageRegistry: initialRegistry,
               history: [],
               backendToolResults: [],
@@ -1108,16 +1069,29 @@ export default function Page() {
         }));
       }
 
-      for (let pageResumeCount = 0; task.status === "waiting_page" && pageResumeCount < 16; pageResumeCount += 1) {
+      syncTaskPlan(task);
+      if (!pendingTask && task.taskPlan.length) setAssistantProgress(`计划第 ${task.plan?.planStep ?? 1}/${task.taskPlan.length} 步：${task.taskPlan[(task.plan?.planStep ?? 1) - 1]}`);
+      showTaskToolResults(task);
+
+      for (let pageResumeCount = 0; task.status === "waiting_page" && pageResumeCount < MAX_ASSISTANT_PAGE_RESUMES; pageResumeCount += 1) {
         throwIfAssistantAborted(abortController.signal);
         const plan = task.plan;
         if (!plan) throw new Error("assistant_task_plan_missing");
+        const toolPlanSignature = JSON.stringify(plan.toolCalls);
+        if (toolPlanSignature === previousToolPlanSignature) identicalToolPlanCount += 1;
+        else {
+          previousToolPlanSignature = toolPlanSignature;
+          identicalToolPlanCount = 1;
+        }
+        if (identicalToolPlanCount > MAX_IDENTICAL_TOOL_PLANS) {
+          throw new Error("assistant_repeated_tool_plan");
+        }
         lastExecutedPlan = plan;
         setAssistantRecognized(plan.recognized ?? []);
-        const thought = plan.thought ?? plan.reply;
-        setAssistantProgress(`LLM 思路：${thought}`);
-        allSteps = [...allSteps, ...(plan.discoverySteps ?? [])];
-        setAssistantProgress(`LLM 思路：${thought}（正在执行）`);
+        showModelReasoning(plan, task.taskPlan.length);
+        setAssistantProgress(task.taskPlan.length
+          ? `正在执行计划 ${plan.planStep ?? task.context?.currentPlanStep ?? 1}/${task.taskPlan.length}`
+          : "正在执行当前操作");
         const execution = await executeAssistantTools(
           plan.toolCalls,
           currentPage,
@@ -1127,35 +1101,33 @@ export default function Page() {
           abortController.signal,
         );
         throwIfAssistantAborted(abortController.signal);
+        showPageToolResults(execution.toolResults);
         lastExecutionResult = execution;
         currentPage = execution.currentPage;
         currentOpenTabs = execution.openTabs;
-        allSteps = [...allSteps, ...execution.steps];
 
         const previousContext = task.context ?? {};
         let currentPageRegistry = previousContext.currentPageRegistry;
-        if (plan.discoveryResults && plan.discoveryResults.length > 0) {
-          currentPageRegistry = applyRuntimeFieldOptions(
-            plan.discoveryResults[plan.discoveryResults.length - 1],
-            execution.runtimeFieldOptions,
-          );
-        }
         if (execution.openedPageId) {
           const openedPageRegistry = await loadAssistantPageRegistry(execution.openedPageId, abortController.signal);
           if (openedPageRegistry && typeof openedPageRegistry === "object") {
             currentPageRegistry = applyRuntimeFieldOptions(openedPageRegistry, execution.runtimeFieldOptions);
-            const pagePath = (openedPageRegistry as { pagePath?: unknown }).pagePath;
-            if (Array.isArray(pagePath) && pagePath.every((item) => typeof item === "string")) {
-              currentPagePath = pagePath;
-            }
+            currentPageRegistry = applyRuntimePageCapabilities(
+              currentPageRegistry,
+              execution.runtimePageCapabilities[execution.openedPageId],
+            );
           }
         }
         if (currentPageRegistry && typeof currentPageRegistry === "object") {
           currentPageRegistry = applyRuntimeFieldOptions(currentPageRegistry, execution.runtimeFieldOptions);
+          const registryPageId = String((currentPageRegistry as { pageId?: unknown }).pageId ?? "");
+          currentPageRegistry = applyRuntimePageCapabilities(
+            currentPageRegistry,
+            execution.runtimePageCapabilities[registryPageId],
+          );
         }
 
         const nextContext: AssistantContinuationContext = {
-          currentPagePath,
           currentPageRegistry,
           history: [
             ...(previousContext.history ?? []),
@@ -1164,6 +1136,7 @@ export default function Page() {
           lastOperationResult: execution.executionResult,
           backendToolResults: (plan.backendToolResults ?? previousContext.backendToolResults ?? [])
             .slice(-MAX_ASSISTANT_BACKEND_RESULTS),
+          currentPlanStep: plan.planStep ?? previousContext.currentPlanStep,
         };
 
         task = await parseTaskResponse(await apiFetch(`/api/assistant/tasks/${encodeURIComponent(task.taskId)}/resume`, {
@@ -1172,6 +1145,8 @@ export default function Page() {
           body: JSON.stringify({ type: "page_result", context: nextContext }),
           signal: abortController.signal,
         }));
+        syncTaskPlan(task);
+        showTaskToolResults(task);
       }
 
       if (task.status === "waiting_page") {
@@ -1192,8 +1167,9 @@ export default function Page() {
           role: "assistant",
           content: question,
           source: `${selectedProviderLabel} 回复`,
+          thought: finalPlan?.thought,
+          actionExplanation: finalPlan?.actionExplanation,
           systemNote: "任务已由 LangGraph 暂停，回复后将从当前检查点继续。",
-          steps: allSteps,
         });
         return;
       }
@@ -1224,8 +1200,9 @@ export default function Page() {
         role: "assistant",
         content: finalPlan.reply,
         source: `${selectedProviderLabel} 回复`,
+        thought: finalPlan.thought,
+        actionExplanation: finalPlan.actionExplanation,
         systemNote: resultSummary,
-        steps: allSteps,
       });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
@@ -1269,6 +1246,22 @@ export default function Page() {
     setAssistantPendingTask(null);
   }
 
+  async function clearAssistantHistory() {
+    if (assistantBusy || assistantPendingTask || assistantMemoryClearing) return;
+    if (!window.confirm("确定清除当前账号的 Agent 历史记忆吗？清除后无法恢复。")) return;
+    setAssistantMemoryClearing(true);
+    try {
+      const response = await apiFetch("/api/assistant/memory", { method: "DELETE" });
+      if (!response.ok) throw new Error("assistant_memory_clear_failed");
+      setAssistantMessages([ASSISTANT_WELCOME_MESSAGE]);
+      setAssistantRecognized([]);
+    } catch {
+      window.alert("清除历史记忆失败，请稍后重试。");
+    } finally {
+      setAssistantMemoryClearing(false);
+    }
+  }
+
   const totalPolicyPages = Math.max(1, Math.ceil(policyTotal / POLICY_PAGE_SIZE));
   const selectedStatusLabel =
     policyStatusOptions.find((option) => option.value === filters.policyStatus)?.label ?? "全部";
@@ -1277,10 +1270,13 @@ export default function Page() {
     <>
       <header className="topbar">
         <div className="topbar-left">
-          <div className="topbar-brand">healthAgent 承保管理系统</div>
-          <nav className="topnav">
-            <div className="menu-item active">
-              <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setClaimMenuOpen(false); setConfigMenuOpen(false); }}>
+          <div className="topbar-brand">
+            <span className="topbar-brand-mark" aria-hidden="true">hA</span>
+            <span><strong>healthAgent</strong><small>团体健康险理赔平台</small></span>
+          </div>
+          <nav className="topnav" ref={topNavRef}>
+            {hasAnyRole("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer") && <div className="menu-item active">
+              <button className="menu-trigger" onClick={() => { setMenuOpen((value) => !value); setClaimMenuOpen(false); setConfigMenuOpen(false); setSystemMenuOpen(false); }}>
                 综合查询 ▾
               </button>
               <div className={`dropdown ${menuOpen ? "" : "hidden"}`}>
@@ -1291,26 +1287,38 @@ export default function Page() {
                   案件查询
                 </button>
               </div>
-            </div>
-            <div className="menu-item">
-              <button className="menu-trigger" onClick={() => { setConfigMenuOpen((value) => !value); setMenuOpen(false); setClaimMenuOpen(false); }}>
+            </div>}
+            {hasAnyRole("claim_admin") && <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setConfigMenuOpen((value) => !value); setMenuOpen(false); setClaimMenuOpen(false); setSystemMenuOpen(false); }}>
                 理赔配置 ▾
               </button>
               <div className={`dropdown ${configMenuOpen ? "" : "hidden"}`}>
                 <button className="dropdown-item" onClick={() => { openMainTab("calculation_config"); setConfigMenuOpen(false); }}>
                   保单理算配置
                 </button>
+                <button className="dropdown-item" onClick={() => { openMainTab("standard_formulas"); setConfigMenuOpen(false); }}>
+                  标准公式管理
+                </button>
               </div>
-            </div>
-            <div className="menu-item">
-              <button className="menu-trigger" onClick={() => { setClaimMenuOpen((value) => !value); setMenuOpen(false); setConfigMenuOpen(false); }}>
+            </div>}
+            {hasAnyRole("claim_acceptor", "claim_calculator", "claim_reviewer") && <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setClaimMenuOpen((value) => !value); setMenuOpen(false); setConfigMenuOpen(false); setSystemMenuOpen(false); }}>
                 理赔处理 ▾
               </button>
               <div className={`dropdown ${claimMenuOpen ? "" : "hidden"}`}>
-                <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>
-                <button className="dropdown-item" onClick={() => { openMainTab("claim_entry_calculation"); setClaimMenuOpen(false); }}>录入与理算</button>
+                {hasAnyRole("claim_acceptor") && <button className="dropdown-item" onClick={() => { openMainTab("claim_registration"); setClaimMenuOpen(false); }}>受理立案</button>}
+                {hasAnyRole("claim_calculator") && <button className="dropdown-item" onClick={() => { openMainTab("claim_entry_calculation"); setClaimMenuOpen(false); }}>录入与理算</button>}
+                {hasAnyRole("claim_reviewer") && <button className="dropdown-item" onClick={() => { openMainTab("claim_review_completion"); setClaimMenuOpen(false); }}>审核结案</button>}
               </div>
-            </div>
+            </div>}
+            {hasAnyRole("claim_admin") && <div className="menu-item">
+              <button className="menu-trigger" onClick={() => { setSystemMenuOpen((value) => !value); setMenuOpen(false); setClaimMenuOpen(false); setConfigMenuOpen(false); }}>
+                系统管理 ▾
+              </button>
+              <div className={`dropdown ${systemMenuOpen ? "" : "hidden"}`}>
+                <button className="dropdown-item" onClick={() => { openMainTab("audit_logs"); setSystemMenuOpen(false); }}>操作审计</button>
+              </div>
+            </div>}
           </nav>
         </div>
         <div className="topbar-right">
@@ -1319,8 +1327,40 @@ export default function Page() {
             type="button"
             onClick={() => setAssistantOpen((value) => !value)}
           >
-            智能助手
+            <span aria-hidden="true">✦</span> 智能助手
           </button>
+          <div className="user-menu" ref={userMenuRef}>
+            <button
+              className={`user-menu-trigger ${userMenuOpen ? "open" : ""}`}
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              onClick={() => setUserMenuOpen((value) => !value)}
+            >
+              <span className="user-avatar">{userInitials(user.displayName)}</span>
+              <span className="current-user">
+                <strong>{user.displayName}</strong>
+                <small>{user.roles.includes("claim_admin") ? "系统管理员" : APP_ROLE_LABELS[user.roles[0]] ?? "业务用户"}</small>
+              </span>
+              <span className="user-menu-caret" aria-hidden="true">⌄</span>
+            </button>
+            <div className={`user-dropdown ${userMenuOpen ? "" : "hidden"}`} role="menu">
+              <div className="user-dropdown-profile">
+                <span className="user-avatar large">{userInitials(user.displayName)}</span>
+                <div><strong>{user.displayName}</strong><small>@{user.username}</small></div>
+              </div>
+              <div className="user-dropdown-section">
+                <span className="user-dropdown-label">当前角色</span>
+                <div className="user-role-list">
+                  {user.roles.map((role) => <span key={role}>{APP_ROLE_LABELS[role]}</span>)}
+                </div>
+              </div>
+              <div className="user-dropdown-meta"><span>账号 ID</span><strong>{user.id}</strong></div>
+              <button className="user-logout-button" role="menuitem" type="button" onClick={() => void logout()}>
+                <span aria-hidden="true">↪</span> 退出登录
+              </button>
+            </div>
+          </div>
         </div>
       </header>
 
@@ -1335,10 +1375,16 @@ export default function Page() {
                   ? "受理立案"
                   : tab === "claim_entry_calculation"
                     ? "录入与理算"
-                  : "保单理算配置";
+                    : tab === "claim_review_completion"
+                      ? "审核结案"
+                    : tab === "calculation_config"
+                      ? "保单理算配置"
+                      : tab === "standard_formulas"
+                        ? "标准公式管理"
+                      : "操作审计";
             return (
               <div className={`tab ${mainTab === tab ? "active" : ""}`} key={tab}>
-                <button className="tab-button" onClick={() => setMainTab(tab)}>{label}</button>
+                <button className="tab-button" aria-current={mainTab === tab ? "page" : undefined} onClick={() => setMainTab(tab)}>{label}</button>
                 <button className="tab-close" type="button" aria-label={`关闭${label}`} onClick={() => closeMainTab(tab)}>×</button>
               </div>
             );
@@ -1510,12 +1556,33 @@ export default function Page() {
                         void loadPolicyInsureds(drawerData.policy.id, 1, planId);
                       }}
                       setPage={(page) => { void loadPolicyInsureds(drawerData.policy.id, page); }}
+                      onViewLedger={(item) => void openInsuredLedger(item)}
                     />
                   )}
                 </div>
               </div>
             </aside>
           </div>
+          {insuredLedgerOpen ? (
+            <div className="insured-ledger-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) setInsuredLedgerOpen(false); }}>
+              <section className="insured-ledger-dialog" role="dialog" aria-modal="true" aria-labelledby="insured-ledger-title">
+                <div className="insured-ledger-header">
+                  <div>
+                    <div className="section-title" id="insured-ledger-title">被保人当前保单台账</div>
+                    <small>{insuredLedgerData?.insuredPerson.name ?? "-"} ｜ {insuredLedgerData?.insuredPerson.insuredNo ?? "-"} ｜ {drawerData?.policy.policyNo ?? "-"}</small>
+                  </div>
+                  <button type="button" className="page-back-button" onClick={() => setInsuredLedgerOpen(false)}>关闭</button>
+                </div>
+                <div className="insured-ledger-content">
+                  {insuredLedgerLoading ? <div className="config-empty-cell">正在加载台账…</div> : insuredLedgerError ? <div className="field-error">{insuredLedgerError}</div> : insuredLedgerData?.items.length ? (
+                    <div className="table-wrapper"><table><thead><tr><th>年度</th><th>层级</th><th>对象编码</th><th>对象名称</th><th>台账项目</th><th>当前值</th><th>更新时间</th></tr></thead><tbody>
+                      {insuredLedgerData.items.map((item) => <tr key={item.id}><td>{item.periodYear}</td><td><span className="status-badge">{item.scope}</span></td><td><code>{item.targetCode}</code></td><td>{item.targetName}</td><td>{item.ledgerName}</td><td><strong>¥ {item.currentAmount.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></td><td>{new Date(item.updatedAt).toLocaleString("zh-CN", { hour12: false })}</td></tr>)}
+                    </tbody></table></div>
+                  ) : <div className="config-empty-cell">该被保人在当前保单下暂无台账记录。</div>}
+                </div>
+              </section>
+            </div>
+          ) : null}
         </section>
 
         <section className={`page-section ${openTabs.includes("claim") && mainTab === "claim" ? "" : "hidden"}`}>
@@ -1527,11 +1594,20 @@ export default function Page() {
         </section>
 
         <section className={`page-section ${openTabs.includes("claim_entry_calculation") && mainTab === "claim_entry_calculation" ? "" : "hidden"}`}>
-          <ClaimEntryCalculationPage />
+          <ClaimEntryCalculationPage ref={claimEntryCalculationControllerRef} />
         </section>
+
+        <section className={`page-section ${openTabs.includes("claim_review_completion") && mainTab === "claim_review_completion" ? "" : "hidden"}`}>
+          <ClaimEntryCalculationPage ref={claimReviewCompletionControllerRef} mode="review" />
+        </section>
+        {openTabs.includes("audit_logs") && mainTab === "audit_logs" && <AuditLogPage />}
 
         <section className={`page-section ${openTabs.includes("calculation_config") && mainTab === "calculation_config" ? "" : "hidden"}`}>
           <CalculationConfigPage ref={calculationConfigControllerRef} />
+        </section>
+
+        <section className={`page-section ${openTabs.includes("standard_formulas") && mainTab === "standard_formulas" ? "" : "hidden"}`}>
+          <StandardFormulaManagementPage ref={standardFormulaControllerRef} />
         </section>
       </main>
 
@@ -1575,18 +1651,40 @@ export default function Page() {
               </div>
             </div>
           </div>
-          <button className="assistant-close" type="button" onClick={() => setAssistantOpen(false)}>
-            收起
-          </button>
+          <div className="assistant-header-actions">
+            <button
+              className="assistant-clear-memory"
+              type="button"
+              disabled={assistantBusy || Boolean(assistantPendingTask) || assistantMemoryLoading || assistantMemoryClearing}
+              onClick={() => void clearAssistantHistory()}
+            >
+              {assistantMemoryClearing ? "清除中" : "清除记忆"}
+            </button>
+            <button className="assistant-close" type="button" onClick={() => setAssistantOpen(false)}>
+              收起
+            </button>
+          </div>
         </div>
 
         <div className="assistant-messages" ref={assistantMessagesRef}>
           {assistantMessages.map((message) => (
-            <article key={message.id} className={`assistant-message ${message.role}`}>
+            <article key={message.id} className={`assistant-message ${message.role}${message.variant ? ` ${message.variant}` : ""}`}>
               <div className="assistant-message-role">
                 {message.role === "assistant" ? (message.source ?? "助手") : "我"}
               </div>
               <div className="assistant-message-content">{message.content}</div>
+              {(message.thought || message.actionExplanation) && message.variant !== "tool-results" ? (
+                <details className="assistant-model-reasoning">
+                  <summary>
+                    <strong>思考与行动解释</strong>
+                    <span>{message.actionExplanation ?? message.thought}</span>
+                  </summary>
+                  <div className="assistant-model-reasoning-body">
+                    {message.thought ? <p><strong>思考</strong><span>{message.thought}</span></p> : null}
+                    {message.actionExplanation ? <p><strong>行动解释</strong><span>{message.actionExplanation}</span></p> : null}
+                  </div>
+                </details>
+              ) : null}
               {message.systemNote ? (
                 <div className="assistant-system-note">
                   <strong>系统结果</strong>
@@ -1622,6 +1720,47 @@ export default function Page() {
                 <li key={`recognized-${index}`}>{item}</li>
               ))}
             </ul>
+          </div>
+        ) : null}
+
+        {assistantTaskIntent || assistantTaskPlan ? (
+          <div className={`assistant-plan-dock ${assistantPlanExpanded ? "expanded" : ""}`}>
+            <button
+              type="button"
+              className="assistant-plan-toggle"
+              aria-expanded={assistantPlanExpanded}
+              onClick={() => setAssistantPlanExpanded((expanded) => !expanded)}
+            >
+              <span>任务理解与行动计划</span>
+              {assistantTaskPlan ? <span className="assistant-plan-count">
+                {assistantTaskPlan.completed ? assistantTaskPlan.steps.length : assistantTaskPlan.currentStep}/{assistantTaskPlan.steps.length}
+              </span> : null}
+              <span className="assistant-plan-arrow">{assistantPlanExpanded ? "⌄" : "⌃"}</span>
+            </button>
+            {assistantPlanExpanded ? (
+              <div className="assistant-plan-details">
+                {assistantTaskIntent ? <div className="assistant-task-intent">
+                  <p><strong>意图：</strong>{ASSISTANT_INTENT_LABELS[assistantTaskIntent.mode]}</p>
+                  <p><strong>目标：</strong>{assistantTaskIntent.summary}</p>
+                  {assistantTaskIntent.objectives.length ? <ul>
+                    {assistantTaskIntent.objectives.map((objective, index) => <li key={`assistant-objective-${index}`}>{objective}</li>)}
+                  </ul> : null}
+                </div> : null}
+                {assistantTaskPlan ? <ol className="assistant-plan-steps">
+                {assistantTaskPlan.steps.map((step, index) => {
+                  const stepNumber = index + 1;
+                  const completed = assistantTaskPlan.completed || stepNumber < assistantTaskPlan.currentStep;
+                  const current = !assistantTaskPlan.completed && stepNumber === assistantTaskPlan.currentStep;
+                  return (
+                    <li key={`assistant-plan-step-${index}`} className={completed ? "completed" : current ? "current" : "pending"}>
+                      <span>{completed ? "✓" : stepNumber}</span>
+                      <p>{step}</p>
+                    </li>
+                  );
+                })}
+              </ol> : null}
+              </div>
+            ) : null}
           </div>
         ) : null}
 

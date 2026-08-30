@@ -3,6 +3,7 @@ import type { ClaimEventInput } from "../../../../src/claims/types.ts";
 import { IdempotencyService } from "../idempotency/idempotency.service.ts";
 import { ClaimsService } from "./claims.service.ts";
 import { isClaimEventInput } from "./claim-validation.ts";
+import { Roles } from "../auth/auth.decorators.ts";
 
 @Controller("claim-events")
 export class ClaimEventsController {
@@ -12,6 +13,7 @@ export class ClaimEventsController {
   ) {}
 
   @Get()
+  @Roles("claim_viewer", "claim_acceptor", "claim_calculator", "claim_reviewer")
   async list(@Query() query: Record<string, string | undefined>) {
     if (!query.insuredPersonId) throw new BadRequestException("insured_person_required");
     return { items: await this.claims.listEvents({
@@ -23,6 +25,7 @@ export class ClaimEventsController {
   }
 
   @Post()
+  @Roles("claim_acceptor", "claim_calculator")
   async create(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { insuredPersonId?: unknown }).insuredPersonId !== "string" || !isClaimEventInput(body)) {
       throw new BadRequestException("invalid_claim_event");
@@ -42,6 +45,7 @@ export class ClaimEventsController {
   }
 
   @Put()
+  @Roles("claim_acceptor", "claim_calculator")
   async update(@Body() body: unknown, @Headers("idempotency-key") operationKey?: string) {
     if (!body || typeof body !== "object" || typeof (body as { id?: unknown }).id !== "string" || typeof (body as { insuredPersonId?: unknown }).insuredPersonId !== "string" || !isClaimEventInput(body)) {
       throw new BadRequestException("invalid_claim_event");
