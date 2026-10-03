@@ -4,7 +4,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import type { ClaimCase, ClaimCaseStatus, ClaimPartySnapshot } from "../../src/claims/types";
 import { CLAIM_CASE_STATUSES, CLAIM_STATUS_LABELS } from "../../src/claims/state-machine";
-import { apiFetch } from "../../src/api/client";
+import { apiFetch, recordAuditClick } from "../../src/api/client";
 import AppSelect, { type AppSelectOption } from "./AppSelect";
 import ClaimEntryCalculationPage from "./ClaimEntryCalculationPage";
 
@@ -91,6 +91,7 @@ const ClaimQueryPage = forwardRef<RegisteredPageController>(function ClaimQueryP
       if (!response.ok) throw new Error("query_failed");
       const result = await response.json() as ClaimPageResult;
       setItems(result.items); setTotal(result.total); setPage(result.page); setDetail(null);
+      void recordAuditClick("claim_search", { description: `案件查询，返回 ${result.total} 条记录` });
       stateRef.current = { filters: nextFilters, items: result.items };
       return { type: "claim_search", matchedCaseCount: result.total, page: result.page, items: result.items.slice(0, 20).map((item) => ({ itemId: item.id, caseNo: item.caseNo, policyNo: item.policyNo, insuredName: item.parties.find((party) => party.role === "insured")?.name, status: item.status })) };
     } catch {
@@ -106,6 +107,7 @@ const ClaimQueryPage = forwardRef<RegisteredPageController>(function ClaimQueryP
 
   function openDetail(item: ClaimCase) {
     setDetail(item); setDetailTab("basic");
+    void recordAuditClick("claim_view", { caseId: item.id, description: `查看案件 ${item.caseNo}` });
     return { type: "detail_view", pageId: "claim_query", caseId: item.id, caseNo: item.caseNo, status: item.status, readonly: true };
   }
 

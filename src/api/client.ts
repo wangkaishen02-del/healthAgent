@@ -16,3 +16,11 @@ export function apiFetch(path: string, init?: RequestInit) {
   if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
   return fetch(apiUrl(path), { ...init, headers });
 }
+
+export function recordAuditClick(action: "claim_search" | "claim_view" | "claim_transition_history_view", input?: { caseId?: string; description?: string }) {
+  return apiFetch("/api/audit-logs/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ action, ...input }),
+  }).catch(() => undefined);
+}

@@ -5,7 +5,7 @@ import { CLAIM_STATUS_LABELS } from "../../src/claims/state-machine";
 import type { ClaimCase, ClaimPersonEvent } from "../../src/claims/types";
 
 export type AcceptanceReviewTab = "acceptance_basic" | "acceptance_insured" | "acceptance_applicant" | "acceptance_payee" | "acceptance_remark";
-export type EntryTab = "bill" | "event" | "disease" | AcceptanceReviewTab;
+export type EntryTab = "bill" | "event" | "disease" | "transitions" | AcceptanceReviewTab;
 export type EntryWorkflowStatus = "editing" | "calculated";
 export type BillAttachmentChangeDecision = "change" | "cancel" | "keep";
 
@@ -176,5 +176,4 @@ export type ClaimEntryCalculationPageProps = {
 };
 
 export const detailStatusLabels: Record<ClaimCase["status"], string> = CLAIM_STATUS_LABELS;
-
 

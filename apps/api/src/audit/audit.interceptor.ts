@@ -47,9 +47,9 @@ export class AuditInterceptor implements NestInterceptor {
     const request = context.switchToHttp().getRequest<AuditRequest>();
     const response = context.switchToHttp().getResponse<AuditResponse>();
     if (request.user) void this.auditService.observeUser(request.user);
-    if (!request.user || !MUTATION_METHODS.has(request.method)) return next.handle();
-
     const path = (request.originalUrl ?? request.url ?? "unknown").split("?", 1)[0];
+    if (!request.user || !MUTATION_METHODS.has(request.method) || path === "/api/audit-logs/events") return next.handle();
+
     const requestIdHeader = request.headers["x-request-id"];
     const requestId = (Array.isArray(requestIdHeader) ? requestIdHeader[0] : requestIdHeader) || randomUUID();
     response.setHeader("X-Request-Id", requestId);
@@ -57,6 +57,7 @@ export class AuditInterceptor implements NestInterceptor {
       user: request.user,
       method: request.method,
       path,
+      action: "api_mutation",
       resourceType: path.replace(/^\/api\//, "").split("/", 1)[0] || "unknown",
       resourceId: resourceId(request),
       requestId,

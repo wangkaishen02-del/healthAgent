@@ -1316,7 +1316,7 @@ export default function Page() {
                 系统管理 ▾
               </button>
               <div className={`dropdown ${systemMenuOpen ? "" : "hidden"}`}>
-                <button className="dropdown-item" onClick={() => { openMainTab("audit_logs"); setSystemMenuOpen(false); }}>操作审计</button>
+                <button className="dropdown-item" onClick={() => { openMainTab("audit_logs"); setSystemMenuOpen(false); }}>操作日志</button>
               </div>
             </div>}
           </nav>

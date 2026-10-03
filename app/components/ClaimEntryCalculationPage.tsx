@@ -3,7 +3,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { RegisteredPageController } from "../../src/assistant/page-controller";
 import type { ClaimCase, ClaimPersonEvent, ClaimUpload } from "../../src/claims/types";
-import { apiFetch } from "../../src/api/client";
+import type { ClaimTransitionAction } from "../../src/claims/types";
+import { apiFetch, recordAuditClick } from "../../src/api/client";
 import AppCombobox from "./AppCombobox";
 import ReferenceDataCombobox from "./ReferenceDataCombobox";
 import AppDatePicker from "./AppDatePicker";
@@ -35,6 +36,18 @@ import {
   type EntryWorkflowStatus,
   type ProcessingCaseResult,
 } from "./ClaimEntryCalculationModel";
+
+const transitionActionLabels: Record<ClaimTransitionAction, string> = {
+  create: "创建案件",
+  submit: "提交录入",
+  calculate: "完成理算",
+  rollback: "流程回退",
+  rollback_calculation: "理算回退",
+  submit_review: "提交审核",
+  complete: "审核结案",
+  cancel: "案件撤件",
+  legacy_import: "历史数据导入",
+};
 
 const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntryCalculationPageProps>(function ClaimEntryCalculationPage({ mode = "processing", initialCase, onClose }, assistantRef) {
   const reviewMode = mode === "review";
@@ -1455,6 +1468,10 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
           <button className={activeTab === "disease" ? "active" : ""} onClick={() => setActiveTab("disease")}>
             <span>08</span><div><strong>{readOnlyMode ? "疾病信息" : "疾病录入"}</strong><small>{diseases.length} 条疾病</small></div>
           </button>
+          <div className="entry-side-tabs-group-label">案件流程</div>
+          <button className={activeTab === "transitions" ? "active" : ""} onClick={() => { setActiveTab("transitions"); void recordAuditClick("claim_transition_history_view", { caseId: selectedCase.id, description: `查看案件 ${selectedCase.caseNo} 的流转记录` }); }}>
+            <span>10</span><div><strong>流转记录</strong><small>{selectedCase.transitions?.length ?? 0} 条记录</small></div>
+          </button>
         </aside>
 
         <div className="entry-main">
@@ -1573,6 +1590,35 @@ const ClaimEntryCalculationPage = forwardRef<RegisteredPageController, ClaimEntr
                 </fieldset>
                 {!calculationDataLocked ? <div className="claim-event-editor-actions"><button type="button" onClick={() => void addEvent()}>{editingEventId ? "保存事件修改" : "保存事件"}</button></div> : null}
               </div> : null}
+            </section>
+          )}
+
+          {activeTab === "transitions" && (
+            <section className="panel entry-list-panel claim-transition-panel">
+              <div className="panel-title-row">
+                <div>
+                  <div className="section-title">案件流转记录</div>
+                  <small className="muted">按时间倒序展示案件状态变化及处理人交接记录。</small>
+                </div>
+                <span className="muted">共 {selectedCase.transitions?.length ?? 0} 条</span>
+              </div>
+              <div className="table-wrapper">
+                <table>
+                  <thead><tr><th>流转时间</th><th>流转动作</th><th>状态变化</th><th>操作人</th><th>接收人</th><th>说明</th></tr></thead>
+                  <tbody>
+                    {selectedCase.transitions?.length ? [...selectedCase.transitions].reverse().map((transition) => (
+                      <tr key={transition.id}>
+                        <td>{new Date(transition.occurredAt).toLocaleString("zh-CN", { hour12: false })}</td>
+                        <td><strong>{transitionActionLabels[transition.action]}</strong></td>
+                        <td>{transition.fromStatus ? <><span className={`status-badge claim-${transition.fromStatus}`}>{detailStatusLabels[transition.fromStatus]}</span><span className="claim-transition-arrow">→</span></> : null}<span className={`status-badge claim-${transition.toStatus}`}>{detailStatusLabels[transition.toStatus]}</span></td>
+                        <td>{transition.operatorName || "-"}</td>
+                        <td>{transition.targetUserName || "-"}</td>
+                        <td>{transition.description || "-"}</td>
+                      </tr>
+                    )) : <tr><td className="config-empty-cell" colSpan={6}>暂无流转记录。</td></tr>}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
 

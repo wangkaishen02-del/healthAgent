@@ -398,6 +398,8 @@ model OperationAudit {
   actorRoles    Json     @map("actor_roles")
   method        String   @db.VarChar(10)
   path          String   @db.VarChar(300)
+  action        String   @default("api_mutation") @db.VarChar(80)
+  description   String?  @db.VarChar(300)
   resourceType  String   @map("resource_type") @db.VarChar(100)
   resourceId    String?  @map("resource_id") @db.VarChar(100)
   outcome       String   @db.VarChar(20)
